@@ -1,0 +1,122 @@
+[
+  {
+    "id": 1,
+    "start": 0.00,
+    "end": 4.20,
+    "text": "Hello everyone, welcome back to the channel."
+  },
+  {
+    "id": 2,
+    "start": 4.30,
+    "end": 8.90,
+    "text": "Today we're going to discuss JWT authentication."
+  },
+  {
+    "id": 3,
+    "start": 9.10,
+    "end": 10.40,
+    "text": "Wait, let me restart."
+  },
+  {
+    "id": 4,
+    "start": 10.70,
+    "end": 15.30,
+    "text": "Today we're going to discuss JWT authentication."
+  },
+  {
+    "id": 5,
+    "start": 15.60,
+    "end": 21.40,
+    "text": "JWT stands for JSON Web Token."
+  },
+  {
+    "id": 6,
+    "start": 21.70,
+    "end": 24.90,
+    "text": "JWT is short for JSON Web Token."
+  },
+  {
+    "id": 7,
+    "start": 25.10,
+    "end": 29.50,
+    "text": "It consists of three different parts."
+  },
+  {
+    "id": 8,
+    "start": 29.80,
+    "end": 33.60,
+    "text": "It consists of three separate parts."
+  },
+  {
+    "id": 9,
+    "start": 34.00,
+    "end": 37.50,
+    "text": "The first part is called the header."
+  },
+  {
+    "id": 10,
+    "start": 37.70,
+    "end": 39.10,
+    "text": "Sorry."
+  },
+  {
+    "id": 11,
+    "start": 39.30,
+    "end": 43.80,
+    "text": "The first part is called the header."
+  },
+  {
+    "id": 12,
+    "start": 44.20,
+    "end": 48.90,
+    "text": "The second part is called the payload."
+  },
+  {
+    "id": 13,
+    "start": 49.30,
+    "end": 55.80,
+    "text": "The payload stores user information and claims."
+  },
+  {
+    "id": 14,
+    "start": 56.20,
+    "end": 58.40,
+    "text": "No, that's not right."
+  },
+  {
+    "id": 15,
+    "start": 58.70,
+    "end": 65.60,
+    "text": "The payload stores claims and additional user information."
+  },
+  {
+    "id": 16,
+    "start": 66.00,
+    "end": 69.50,
+    "text": "Finally, the signature verifies integrity."
+  },
+  {
+    "id": 17,
+    "start": 70.10,
+    "end": 74.20,
+    "text": "Finally, the signature verifies integrity."
+  },
+  {
+    "id": 18,
+    "start": 75.00,
+    "end": 79.40,
+    "text": "This is extremely important."
+  },
+  {
+    "id": 19,
+    "start": 79.80,
+    "end": 84.30,
+    "text": "Again, this is extremely important."
+  },
+  {
+    "id": 20,
+    "start": 85.00,
+    "end": 90.20,
+    "text": "Let's move on to access tokens."
+  }
+]
