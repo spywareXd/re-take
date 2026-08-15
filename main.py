@@ -1,5 +1,9 @@
+﻿from pipeline.token_matching.eval.run_eval import run_eval
+
+
 def main():
-    print("Hello from re-take!")
+    result = run_eval()
+    print(result["status"])
 
 
 if __name__ == "__main__":
