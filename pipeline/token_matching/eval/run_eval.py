@@ -1,34 +1,36 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 
-from ..candidate_generator import generate_candidate_pairs
-from ..normalize import split_into_units
-from ..schemas import TranscriptSegment
+# Ensure project root is in sys.path
+_repo_root_path = Path(__file__).resolve().parents[3]
+if str(_repo_root_path) not in sys.path:
+    sys.path.insert(0, str(_repo_root_path))
+
+try:
+    from pipeline.token_matching.candidate_generator import generate_candidate_pairs
+    from pipeline.token_matching.normalize import load_transcript_units
+except ImportError:
+    from ..candidate_generator import generate_candidate_pairs
+    from ..normalize import load_transcript_units
 
 
 def _repo_root() -> Path:
-    return Path(__file__).resolve().parents[3]
-
-
-def _load_transcript(path: Path) -> list[TranscriptSegment]:
-    raw_items = json.loads(path.read_text(encoding="utf-8"))
-    return [TranscriptSegment(**item) for item in raw_items]
-
-
-def _load_labels(path: Path) -> list[dict[str, object]]:
-    return json.loads(path.read_text(encoding="utf-8"))
+    return _repo_root_path
 
 
 def run_eval() -> dict[str, object]:
     root = _repo_root()
-    transcript_path = root / "data" / "transcripts" / "test.json"
+    output_path = root / "data" / "raw" / "transcripts" / "output_transcript.json"
+    test_path = root / "data" / "transcripts" / "test.json"
+    transcript_path = output_path if output_path.exists() else test_path
+
     labels_path = root / "data" / "transcripts" / "test_labels.json"
     report_path = root / "pipeline" / "token_matching" / "eval" / "report.md"
 
-    segments = _load_transcript(transcript_path)
-    units = [unit for segment in segments for unit in split_into_units(segment)]
+    units = load_transcript_units(transcript_path)
     candidates = generate_candidate_pairs(units)
 
     if not labels_path.exists():
@@ -43,10 +45,11 @@ def run_eval() -> dict[str, object]:
         return {
             "status": "labels_missing",
             "transcript": str(transcript_path),
+            "units": len(units),
             "candidates": [candidate.to_dict() for candidate in candidates],
         }
 
-    labels = _load_labels(labels_path)
+    labels = json.loads(labels_path.read_text(encoding="utf-8"))
     report = (
         "# Token Matching Eval\n\n"
         f"- Transcript: `{transcript_path}`\n"

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
-from typing import Any
+from typing import Any, Sequence
 
 
 @dataclass(slots=True)
@@ -10,6 +10,21 @@ class TranscriptSegment:
     start: float
     end: float
     text: str
+    speaker: str = "speaker_0"
+    confidence: float | None = 1.0
+    words: list[dict[str, Any]] = field(default_factory=list)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "TranscriptSegment":
+        return cls(
+            id=data["id"],
+            start=float(data["start"]),
+            end=float(data["end"]),
+            text=str(data.get("text", "")),
+            speaker=str(data.get("speaker", "speaker_0")),
+            confidence=float(data["confidence"]) if data.get("confidence") is not None else None,
+            words=list(data.get("words", [])),
+        )
 
 
 @dataclass(slots=True)
@@ -22,6 +37,8 @@ class ComparableUnit:
     normalized_text: str
     tokens: list[str]
     token_set: set[str]
+    speaker: str = "speaker_0"
+    confidence: float | None = 1.0
     is_below_min_token_length: bool = False
 
 
@@ -31,6 +48,9 @@ class CandidateUnitRef:
     segment_id: int
     start: float
     end: float
+    raw_text: str = ""
+    speaker: str = "speaker_0"
+    confidence: float | None = 1.0
 
     @classmethod
     def from_unit(cls, unit: ComparableUnit) -> "CandidateUnitRef":
@@ -39,6 +59,9 @@ class CandidateUnitRef:
             segment_id=unit.source_segment_id,
             start=unit.start,
             end=unit.end,
+            raw_text=unit.raw_text,
+            speaker=unit.speaker,
+            confidence=unit.confidence,
         )
 
 
