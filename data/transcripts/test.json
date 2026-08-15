@@ -1,122 +1,168 @@
-[
-  {
-    "id": 1,
-    "start": 0.00,
-    "end": 4.20,
-    "text": "Hello everyone, welcome back to the channel."
-  },
-  {
-    "id": 2,
-    "start": 4.30,
-    "end": 8.90,
-    "text": "Today we're going to discuss JWT authentication."
-  },
-  {
-    "id": 3,
-    "start": 9.10,
-    "end": 10.40,
-    "text": "Wait, let me restart."
-  },
-  {
-    "id": 4,
-    "start": 10.70,
-    "end": 15.30,
-    "text": "Today we're going to discuss JWT authentication."
-  },
-  {
-    "id": 5,
-    "start": 15.60,
-    "end": 21.40,
-    "text": "JWT stands for JSON Web Token."
-  },
-  {
-    "id": 6,
-    "start": 21.70,
-    "end": 24.90,
-    "text": "JWT is short for JSON Web Token."
-  },
-  {
-    "id": 7,
-    "start": 25.10,
-    "end": 29.50,
-    "text": "It consists of three different parts."
-  },
-  {
-    "id": 8,
-    "start": 29.80,
-    "end": 33.60,
-    "text": "It consists of three separate parts."
-  },
-  {
-    "id": 9,
-    "start": 34.00,
-    "end": 37.50,
-    "text": "The first part is called the header."
-  },
-  {
-    "id": 10,
-    "start": 37.70,
-    "end": 39.10,
-    "text": "Sorry."
-  },
-  {
-    "id": 11,
-    "start": 39.30,
-    "end": 43.80,
-    "text": "The first part is called the header."
-  },
-  {
-    "id": 12,
-    "start": 44.20,
-    "end": 48.90,
-    "text": "The second part is called the payload."
-  },
-  {
-    "id": 13,
-    "start": 49.30,
-    "end": 55.80,
-    "text": "The payload stores user information and claims."
-  },
-  {
-    "id": 14,
-    "start": 56.20,
-    "end": 58.40,
-    "text": "No, that's not right."
-  },
-  {
-    "id": 15,
-    "start": 58.70,
-    "end": 65.60,
-    "text": "The payload stores claims and additional user information."
-  },
-  {
-    "id": 16,
-    "start": 66.00,
-    "end": 69.50,
-    "text": "Finally, the signature verifies integrity."
-  },
-  {
-    "id": 17,
-    "start": 70.10,
-    "end": 74.20,
-    "text": "Finally, the signature verifies integrity."
-  },
-  {
-    "id": 18,
-    "start": 75.00,
-    "end": 79.40,
-    "text": "This is extremely important."
-  },
-  {
-    "id": 19,
-    "start": 79.80,
-    "end": 84.30,
-    "text": "Again, this is extremely important."
-  },
-  {
-    "id": 20,
-    "start": 85.00,
-    "end": 90.20,
-    "text": "Let's move on to access tokens."
-  }
-]
+{
+  "source": "jwt_auth_tutorial.mp4",
+  "duration": 90.20,
+  "language": "en",
+  "created_at": "2026-08-15T22:00:00Z",
+  "segments": [
+    {
+      "id": 1,
+      "start": 0.00,
+      "end": 4.20,
+      "speaker": "speaker_0",
+      "text": "Hello everyone, welcome back to the channel.",
+      "confidence": 0.96
+    },
+    {
+      "id": 2,
+      "start": 4.30,
+      "end": 8.90,
+      "speaker": "speaker_0",
+      "text": "Today we're going to discuss JWT authentication.",
+      "confidence": 0.94
+    },
+    {
+      "id": 3,
+      "start": 9.10,
+      "end": 10.40,
+      "speaker": "speaker_0",
+      "text": "Wait, let me restart.",
+      "confidence": 0.88
+    },
+    {
+      "id": 4,
+      "start": 10.70,
+      "end": 15.30,
+      "speaker": "speaker_0",
+      "text": "Today we're going to discuss JWT authentication.",
+      "confidence": 0.97
+    },
+    {
+      "id": 5,
+      "start": 15.60,
+      "end": 21.40,
+      "speaker": "speaker_0",
+      "text": "JWT stands for JSON Web Token.",
+      "confidence": 0.95
+    },
+    {
+      "id": 6,
+      "start": 21.70,
+      "end": 24.90,
+      "speaker": "speaker_0",
+      "text": "JWT is short for JSON Web Token.",
+      "confidence": 0.93
+    },
+    {
+      "id": 7,
+      "start": 25.10,
+      "end": 29.50,
+      "speaker": "speaker_0",
+      "text": "It consists of three different parts.",
+      "confidence": 0.91
+    },
+    {
+      "id": 8,
+      "start": 29.80,
+      "end": 33.60,
+      "speaker": "speaker_0",
+      "text": "It consists of three separate parts.",
+      "confidence": 0.96
+    },
+    {
+      "id": 9,
+      "start": 34.00,
+      "end": 37.50,
+      "speaker": "speaker_0",
+      "text": "The first part is called the header.",
+      "confidence": 0.94
+    },
+    {
+      "id": 10,
+      "start": 37.70,
+      "end": 39.10,
+      "speaker": "speaker_0",
+      "text": "Sorry.",
+      "confidence": 0.82
+    },
+    {
+      "id": 11,
+      "start": 39.30,
+      "end": 43.80,
+      "speaker": "speaker_0",
+      "text": "The first part is called the header.",
+      "confidence": 0.98
+    },
+    {
+      "id": 12,
+      "start": 44.20,
+      "end": 48.90,
+      "speaker": "speaker_0",
+      "text": "The second part is called the payload.",
+      "confidence": 0.97
+    },
+    {
+      "id": 13,
+      "start": 49.30,
+      "end": 55.80,
+      "speaker": "speaker_0",
+      "text": "The payload stores user information and claims.",
+      "confidence": 0.92
+    },
+    {
+      "id": 14,
+      "start": 56.20,
+      "end": 58.40,
+      "speaker": "speaker_0",
+      "text": "No, that's not right.",
+      "confidence": 0.85
+    },
+    {
+      "id": 15,
+      "start": 58.70,
+      "end": 65.60,
+      "speaker": "speaker_0",
+      "text": "The payload stores claims and additional user information.",
+      "confidence": 0.97
+    },
+    {
+      "id": 16,
+      "start": 66.00,
+      "end": 69.50,
+      "speaker": "speaker_0",
+      "text": "Finally, the signature verifies integrity.",
+      "confidence": 0.93
+    },
+    {
+      "id": 17,
+      "start": 70.10,
+      "end": 74.20,
+      "speaker": "speaker_0",
+      "text": "Finally, the signature verifies integrity.",
+      "confidence": 0.98
+    },
+    {
+      "id": 18,
+      "start": 75.00,
+      "end": 79.40,
+      "speaker": "speaker_0",
+      "text": "This is extremely important.",
+      "confidence": 0.90
+    },
+    {
+      "id": 19,
+      "start": 79.80,
+      "end": 84.30,
+      "speaker": "speaker_0",
+      "text": "Again, this is extremely important.",
+      "confidence": 0.95
+    },
+    {
+      "id": 20,
+      "start": 85.00,
+      "end": 90.20,
+      "speaker": "speaker_0",
+      "text": "Let's move on to access tokens.",
+      "confidence": 0.96
+    }
+  ]
+}
