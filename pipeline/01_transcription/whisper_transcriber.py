@@ -1,8 +1,21 @@
 import os
+import sys
 import math
+from pathlib import Path
 from typing import Optional
 from models.transcript import Transcript
 from models.segment import Segment, Word
+
+# Auto-add NVIDIA CUDA/cuDNN DLL paths on Windows
+if sys.platform == "win32":
+    site_packages = Path(sys.prefix) / "Lib" / "site-packages"
+    for p in site_packages.glob("nvidia/*/bin"):
+        if p.is_dir():
+            try:
+                os.add_dll_directory(str(p.resolve()))
+                os.environ["PATH"] = str(p.resolve()) + os.pathsep + os.environ.get("PATH", "")
+            except Exception:
+                pass
 
 try:
     from .base import BaseTranscriber  # type: ignore
@@ -13,7 +26,7 @@ except ImportError:
 class WhisperTranscriber(BaseTranscriber):
     """
     STT Adapter using faster-whisper (CTranslate2).
-    Provides fast, local execution with word-level timestamps and VAD filtering.
+    Provides fast, local execution on CPU or NVIDIA GPU (CUDA) with word-level timestamps and VAD.
     """
 
     def __init__(self, model_size: str = "base", device: str = "auto", compute_type: str = "default", **kwargs):
@@ -31,7 +44,16 @@ class WhisperTranscriber(BaseTranscriber):
                 raise ImportError(
                     "faster-whisper is not installed. Install it with: pip install faster-whisper"
                 )
-            self._model = WhisperModel(self.model_size, device=self.device, compute_type=self.compute_type)
+
+            # Auto-select compute_type for GPU if default is passed
+            compute_type = self.compute_type
+            if compute_type == "default":
+                if self.device in ["cuda", "auto"]:
+                    compute_type = "int8_float16" if "large" in self.model_size else "float16"
+                else:
+                    compute_type = "int8"
+
+            self._model = WhisperModel(self.model_size, device=self.device, compute_type=compute_type)
         return self._model
 
     def transcribe(self, audio_path: str, source_name: Optional[str] = None, **kwargs) -> Transcript:

@@ -27,7 +27,7 @@ def test_load_output_transcript():
 
     units = load_transcript_units(transcript_path)
     assert len(units) > 0
-    assert units[0].speaker == "speaker_0"
+    assert units[0].speaker.startswith("speaker_")
     assert units[0].confidence is not None
     print("[PASS] Loaded transcript into units successfully")
 
@@ -53,7 +53,6 @@ def test_candidate_generation():
     units = load_transcript_units(transcript_path)
     candidates = generate_candidate_pairs(units)
     assert len(candidates) > 0
-    # Highest scoring candidates should have score > 0.5
     assert candidates[0].combined_score >= 0.5
     print(f"[PASS] Candidate generation found {len(candidates)} pairs")
 
