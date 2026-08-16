@@ -1,0 +1,15 @@
+{
+  "include": [
+    "."
+  ],
+  "extraPaths": [
+    ".",
+    "../re-take",
+    "re-take"
+  ],
+  "venvPath": ".",
+  "venv": ".venv",
+  "pythonVersion": "3.11",
+  "reportMissingImports": "warning",
+  "reportMissingTypeStubs": false
+}

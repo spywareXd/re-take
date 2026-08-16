@@ -8,7 +8,6 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-# Dynamically import the numbered directory module
 transcription_module = importlib.import_module("pipeline.01_transcription")
 get_transcriber = transcription_module.get_transcriber
 TimestampGenerator = transcription_module.TimestampGenerator
@@ -40,8 +39,9 @@ def test_factory_registry():
     assert "whisper" in TRANSCRIBER_REGISTRY
     assert "whisperx" in TRANSCRIBER_REGISTRY
     assert "assemblyai" in TRANSCRIBER_REGISTRY
+    assert "sarvam" in TRANSCRIBER_REGISTRY
     assert "mock" in TRANSCRIBER_REGISTRY
-    print("[PASS] Factory registry contains all providers: whisper, whisperx, assemblyai, mock")
+    print("[PASS] Factory registry contains all providers: whisper, whisperx, assemblyai, sarvam, mock")
 
 
 if __name__ == "__main__":
