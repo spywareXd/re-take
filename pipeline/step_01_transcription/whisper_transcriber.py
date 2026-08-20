@@ -60,12 +60,15 @@ class WhisperTranscriber(BaseTranscriber):
         model = self._get_model()
         language = kwargs.get("language", "en")
         vad_filter = kwargs.get("vad_filter", True)
+        vad_parameters = kwargs.get("vad_parameters")
+        # Callers can override word-level alignment for their transcription workflow.
         word_timestamps = kwargs.get("word_timestamps", True)
 
         segments_iter, info = model.transcribe(
             audio_path,
             language=language,
             vad_filter=vad_filter,
+            vad_parameters=vad_parameters,
             word_timestamps=word_timestamps,
         )
 

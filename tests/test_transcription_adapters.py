@@ -1,6 +1,5 @@
 import os
 import sys
-import importlib
 from pathlib import Path
 
 # Add project root to sys.path
@@ -8,10 +7,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-transcription_module = importlib.import_module("pipeline.01_transcription")
-get_transcriber = transcription_module.get_transcriber
-TimestampGenerator = transcription_module.TimestampGenerator
-TRANSCRIBER_REGISTRY = transcription_module.TRANSCRIBER_REGISTRY
+from pipeline.step_01_transcription import TRANSCRIBER_REGISTRY, TimestampGenerator, WhisperTranscriber, get_transcriber
 
 from models.transcript import Transcript
 
@@ -44,8 +40,32 @@ def test_factory_registry():
     print("[PASS] Factory registry contains all providers: whisper, whisperx, assemblyai, sarvam, mock")
 
 
+def test_whisper_vad_parameters_are_forwarded():
+    class FakeInfo:
+        duration = 0.0
+        language = "en"
+
+    class FakeWhisperModel:
+        transcribe_kwargs: dict[str, object]
+
+        def transcribe(self, audio_path: str, **kwargs):
+            self.transcribe_kwargs = kwargs
+            return iter(()), FakeInfo()
+
+    fake_model = FakeWhisperModel()
+    transcriber = WhisperTranscriber()
+    transcriber._model = fake_model
+    transcriber.transcribe("dummy_audio.wav", vad_parameters={"min_silence_duration_ms": 500})
+
+    assert fake_model.transcribe_kwargs["vad_filter"] is True
+    assert fake_model.transcribe_kwargs["vad_parameters"] == {"min_silence_duration_ms": 500}
+    assert fake_model.transcribe_kwargs["word_timestamps"] is True
+    print("[PASS] Whisper VAD parameters are forwarded")
+
+
 if __name__ == "__main__":
     test_models_and_json_parsing()
     test_mock_transcriber_adapter()
     test_factory_registry()
+    test_whisper_vad_parameters_are_forwarded()
     print("\nAll transcription adapter tests passed successfully!")

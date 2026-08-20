@@ -84,6 +84,7 @@ class CandidatePair:
     unit_a: CandidateUnitRef
     unit_b: CandidateUnitRef
     scores: CandidateScores
+    lexical_score: float
     combined_score: float
     restart_phrase_detected: bool
     containment_direction: str | None
@@ -96,6 +97,7 @@ class CandidatePair:
             "unit_a": asdict(self.unit_a),
             "unit_b": asdict(self.unit_b),
             "scores": self.scores.to_dict(),
+            "lexical_score": self.lexical_score,
             "combined_score": self.combined_score,
             "restart_phrase_detected": self.restart_phrase_detected,
             "containment_direction": self.containment_direction,

@@ -9,12 +9,8 @@ _repo_root_path = Path(__file__).resolve().parents[3]
 if str(_repo_root_path) not in sys.path:
     sys.path.insert(0, str(_repo_root_path))
 
-try:
-    from pipeline.token_matching.candidate_generator import rank_similar_sentence_ids
-    from pipeline.token_matching.normalize import load_transcript_units
-except ImportError:
-    from ..candidate_generator import rank_similar_sentence_ids
-    from ..normalize import load_transcript_units
+from pipeline.step_03_token_matching.candidate_generator import rank_similar_sentence_ids
+from pipeline.step_03_token_matching.normalize import load_transcript_units
 
 
 def _repo_root() -> Path:

@@ -10,7 +10,7 @@ from .schemas import CandidatePair, CandidateScores, CandidateUnitRef, Comparabl
 from .windowing import get_candidates_in_window
 
 
-def _combine_scores(scores: CandidateScores, recency_weight: float, config: object) -> float:
+def _lexical_score(scores: CandidateScores, config: object) -> float:
     weights = getattr(config, "lexical_weights", default_config.lexical_weights)
     lexical_total = (
         scores.sequence * weights.get("sequence", 0.0)
@@ -19,9 +19,18 @@ def _combine_scores(scores: CandidateScores, recency_weight: float, config: obje
         + scores.bigram * weights.get("bigram", 0.0)
     )
     near_exact_boost = max(scores.near_exact_match, scores.exact_match)
-    combined = max(lexical_total, near_exact_boost)
-    combined = min(1.0, combined * recency_weight)
-    return combined
+    return max(lexical_total, near_exact_boost)
+
+
+def _restart_phrase_detected(
+    all_units: list[ComparableUnit],
+    first_index: int,
+    second_index: int,
+    config: object,
+) -> bool:
+    start_index, end_index = sorted((first_index, second_index))
+    intervening_text = " ".join(unit.raw_text for unit in all_units[start_index + 1 : end_index])
+    return bool(intervening_text) and restart_phrase_score(intervening_text, config=config) > 0.0
 
 
 def generate_candidate_pairs(
@@ -32,9 +41,10 @@ def generate_candidate_pairs(
     filler_words = set(getattr(config, "filler_words", default_config.filler_words))
     candidate_pairs: list[CandidatePair] = []
     seen_pairs: set[tuple[str, str]] = set()
+    unit_indexes = {unit.unit_id: index for index, unit in enumerate(all_units)}
     candidate_id = 1
 
-    for unit in all_units:
+    for unit_index, unit in enumerate(all_units):
         if unit.is_below_min_token_length:
             continue
 
@@ -48,31 +58,8 @@ def generate_candidate_pairs(
 
             seen_pairs.add(pair_key)
 
+            other_index = unit_indexes[other.unit_id]
             exact = exact_match_score(unit, other)
-            if exact:
-                scores = CandidateScores(
-                    exact_match=1.0,
-                    near_exact_match=1.0,
-                    jaccard=1.0,
-                    sequence=1.0,
-                    containment=1.0,
-                    bigram=1.0,
-                )
-                candidate_pairs.append(
-                    CandidatePair(
-                        candidate_id=candidate_id,
-                        unit_a=CandidateUnitRef.from_unit(unit),
-                        unit_b=CandidateUnitRef.from_unit(other),
-                        scores=scores,
-                        combined_score=1.0,
-                        restart_phrase_detected=False,
-                        containment_direction="equal_length",
-                        recency_weight=recency_weight,
-                    )
-                )
-                candidate_id += 1
-                continue
-
             near_exact = near_exact_match_score(unit, other, filler_words=filler_words)
             jaccard = jaccard_score(unit, other)
             sequence = sequence_similarity_score(unit, other)
@@ -87,21 +74,24 @@ def generate_candidate_pairs(
                 containment=containment.score,
                 bigram=bigram,
             )
-            restart_detected = restart_phrase_score(f"{unit.raw_text} {other.raw_text}", config=config) > 0.0
-            combined_score = _combine_scores(scores, recency_weight, config)
+            lexical_score = _lexical_score(scores, config)
+            if lexical_score < candidate_threshold:
+                continue
+
+            restart_detected = _restart_phrase_detected(all_units, unit_index, other_index, config)
+            is_certain_match = bool(exact or near_exact)
+            combined_score = lexical_score if is_certain_match else lexical_score * recency_weight
             if restart_detected:
                 combined_score = min(1.0, combined_score + 0.05)
-
-            if combined_score < candidate_threshold:
-                continue
 
             candidate_pairs.append(
                 CandidatePair(
                     candidate_id=candidate_id,
-                    unit_a=CandidateUnitRef.from_unit(unit),
-                    unit_b=CandidateUnitRef.from_unit(other),
-                    scores=scores,
-                    combined_score=combined_score,
+                        unit_a=CandidateUnitRef.from_unit(unit),
+                        unit_b=CandidateUnitRef.from_unit(other),
+                        scores=scores,
+                        lexical_score=lexical_score,
+                        combined_score=combined_score,
                     restart_phrase_detected=restart_detected,
                     containment_direction=containment.direction,
                     recency_weight=recency_weight,
@@ -135,6 +125,7 @@ def rank_similar_sentence_ids(
                 "segment_a_id": pair.unit_a.segment_id,
                 "segment_b_id": pair.unit_b.segment_id,
                 "combined_score": pair.combined_score,
+                "containment_direction": pair.containment_direction,
                 "candidate_id": pair.candidate_id,
             }
         )

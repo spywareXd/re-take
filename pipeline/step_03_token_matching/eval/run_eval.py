@@ -9,12 +9,8 @@ _repo_root_path = Path(__file__).resolve().parents[3]
 if str(_repo_root_path) not in sys.path:
     sys.path.insert(0, str(_repo_root_path))
 
-try:
-    from pipeline.token_matching.candidate_generator import generate_candidate_pairs
-    from pipeline.token_matching.normalize import load_transcript_units
-except ImportError:
-    from ..candidate_generator import generate_candidate_pairs
-    from ..normalize import load_transcript_units
+from pipeline.step_03_token_matching.candidate_generator import generate_candidate_pairs
+from pipeline.step_03_token_matching.normalize import load_transcript_units
 
 
 def _repo_root() -> Path:
@@ -28,7 +24,7 @@ def run_eval() -> dict[str, object]:
     transcript_path = output_path if output_path.exists() else test_path
 
     labels_path = root / "data" / "transcripts" / "test_labels.json"
-    report_path = root / "pipeline" / "token_matching" / "eval" / "report.md"
+    report_path = root / "pipeline" / "step_03_token_matching" / "eval" / "report.md"
 
     units = load_transcript_units(transcript_path)
     candidates = generate_candidate_pairs(units)
