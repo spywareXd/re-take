@@ -10,6 +10,7 @@ from .schemas import CandidatePair, CandidateScores, CandidateUnitRef, Comparabl
 from .storage import load_comparable_units, save_comparable_units
 from .unit_splitter import (
     build_comparable_unit,
+    extract_segment_words,
     flatten_transcript_words,
     split_transcript_into_units,
     split_words_by_pause,
@@ -30,6 +31,7 @@ __all__ = [
     "containment_details",
     "containment_score",
     "exact_match_score",
+    "extract_segment_words",
     "flatten_transcript_words",
     "generate_candidate_pairs",
     "get_candidates_in_window",

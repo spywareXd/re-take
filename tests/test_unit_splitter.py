@@ -10,6 +10,7 @@ from pipeline.step_03_token_matching.config import PAUSE_SPLIT_THRESHOLD_SECONDS
 from pipeline.step_03_token_matching.schemas import WordTimestamp
 from pipeline.step_03_token_matching.unit_splitter import (
     build_comparable_unit,
+    extract_segment_words,
     flatten_transcript_words,
     split_transcript_into_units,
     split_words_by_pause,
@@ -138,7 +139,116 @@ def test_average_confidence_computed_correctly():
     assert pytest.approx(unit.confidence, rel=1e-4) == expected_confidence
 
 
-def test_output_transcript_segment_1_splits_on_pause():
+def test_consecutive_segments_zero_gap_remain_separate():
+    """
+    Two consecutive faster-whisper segments with 0.0s gap must remain two separate units.
+    """
+    mock_transcript = {
+        "segments": [
+            {
+                "id": 1,
+                "start": 0.0,
+                "end": 2.0,
+                "speaker": "speaker_0",
+                "text": "First take here",
+                "words": [
+                    {"word": "First", "start": 0.0, "end": 0.6, "confidence": 0.9},
+                    {"word": "take", "start": 0.6, "end": 1.2, "confidence": 0.9},
+                    {"word": "here", "start": 1.2, "end": 2.0, "confidence": 0.9},
+                ],
+            },
+            {
+                "id": 2,
+                "start": 2.0,
+                "end": 4.0,
+                "speaker": "speaker_0",
+                "text": "Second take now",
+                "words": [
+                    {"word": "Second", "start": 2.0, "end": 2.6, "confidence": 0.9},
+                    {"word": "take", "start": 2.6, "end": 3.2, "confidence": 0.9},
+                    {"word": "now", "start": 3.2, "end": 4.0, "confidence": 0.9},
+                ],
+            },
+        ]
+    }
+
+    units = split_transcript_into_units(mock_transcript, pause_threshold=PAUSE_SPLIT_THRESHOLD_SECONDS)
+    assert len(units) == 2
+    assert units[0].unit_id == "1:0"
+    assert units[0].source_segment_id == 1
+    assert units[0].raw_text == "First take here"
+
+    assert units[1].unit_id == "2:0"
+    assert units[1].source_segment_id == 2
+    assert units[1].raw_text == "Second take now"
+
+
+def test_consecutive_segments_gap_under_threshold_remain_separate():
+    """
+    Two consecutive segments with a 0.76s gap (< 0.8s threshold) must NOT be merged.
+    """
+    mock_transcript = {
+        "segments": [
+            {
+                "id": 3,
+                "start": 12.0,
+                "end": 13.0,
+                "speaker": "speaker_0",
+                "text": "Fellas you wonder why Monoxidil works for some dudes but not",
+                "words": [
+                    {"word": "Fellas", "start": 12.0, "end": 12.5, "confidence": 0.8},
+                    {"word": "not", "start": 12.6, "end": 13.0, "confidence": 0.8},
+                ],
+            },
+            {
+                "id": 4,
+                "start": 13.76,
+                "end": 14.8,
+                "speaker": "speaker_0",
+                "text": "Fellas you wonder why some Monoxidil",
+                "words": [
+                    # Gap from 13.0 to 13.76 is 0.76s (under 0.8s threshold)
+                    {"word": "Fellas", "start": 13.76, "end": 14.2, "confidence": 0.8},
+                    {"word": "Monoxidil", "start": 14.3, "end": 14.8, "confidence": 0.8},
+                ],
+            },
+        ]
+    }
+
+    units = split_transcript_into_units(mock_transcript, pause_threshold=PAUSE_SPLIT_THRESHOLD_SECONDS)
+    assert len(units) == 2
+    assert units[0].source_segment_id == 3
+    assert units[1].source_segment_id == 4
+    assert units[0].unit_id == "3:0"
+    assert units[1].unit_id == "4:0"
+    assert units[0].raw_text == "Fellas not"
+    assert units[1].raw_text == "Fellas Monoxidil"
+
+
+def test_segment_with_no_internal_pause_passes_as_single_unit():
+    mock_transcript = {
+        "segments": [
+            {
+                "id": 1,
+                "start": 0.0,
+                "end": 2.0,
+                "text": "Continuous sentence without pause",
+                "words": [
+                    {"word": "Continuous", "start": 0.0, "end": 0.5},
+                    {"word": "sentence", "start": 0.55, "end": 1.0},
+                    {"word": "without", "start": 1.05, "end": 1.5},
+                    {"word": "pause", "start": 1.55, "end": 2.0},
+                ],
+            }
+        ]
+    }
+    units = split_transcript_into_units(mock_transcript, pause_threshold=PAUSE_SPLIT_THRESHOLD_SECONDS)
+    assert len(units) == 1
+    assert units[0].unit_id == "1:0"
+    assert units[0].raw_text == "Continuous sentence without pause"
+
+
+def test_output_transcript_segment_boundaries_and_splits():
     transcript_path = PROJECT_ROOT / "data" / "raw" / "transcripts" / "output_transcript.json"
     if not transcript_path.exists():
         pytest.skip("output_transcript.json not found")
@@ -146,13 +256,22 @@ def test_output_transcript_segment_1_splits_on_pause():
     from pipeline.step_03_token_matching.normalize import load_transcript_units
 
     units = load_transcript_units(transcript_path, pause_threshold=PAUSE_SPLIT_THRESHOLD_SECONDS)
-    seg1_units = [u for u in units if u.source_segment_id == 1]
 
-    # In output_transcript.json, segment 1 has a 1.70s pause between "CTA now" (end 4.22s) and "you" (start 5.92s)
-    # This must produce two separate ComparableUnits, not one.
-    assert len(seg1_units) == 2
-    assert "CTA final CTA now" in seg1_units[0].raw_text
-    assert seg1_units[0].end == 4.22
-    assert "you know the answer about this new method" in seg1_units[1].raw_text
-    assert seg1_units[1].start == 5.92
+    # Segment 1 has 1.7s pause -> 2 units: 1:0 and 1:1
+    seg1 = [u for u in units if u.source_segment_id == 1]
+    assert len(seg1) == 2
+    assert seg1[0].unit_id == "1:0"
+    assert seg1[1].unit_id == "1:1"
+    assert "CTA final CTA now" in seg1[0].raw_text
+    assert "you know the answer about this new method" in seg1[1].raw_text
 
+    # Segments 3, 4, 5 were previously merged when using global flattening; now each is separate!
+    seg3 = [u for u in units if u.source_segment_id == 3]
+    seg4 = [u for u in units if u.source_segment_id == 4]
+    seg5 = [u for u in units if u.source_segment_id == 5]
+    assert len(seg3) == 1
+    assert len(seg4) == 1
+    assert len(seg5) == 1
+    assert seg3[0].unit_id == "3:0"
+    assert seg4[0].unit_id == "4:0"
+    assert seg5[0].unit_id == "5:0"

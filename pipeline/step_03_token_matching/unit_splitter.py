@@ -1,3 +1,15 @@
+"""
+Unit Splitter Module.
+
+ARCHITECTURAL PRINCIPLE:
+ASR segment boundaries produced by the transcriber (e.g. Faster-Whisper, AssemblyAI, Sarvam)
+are authoritative and must NEVER be merged back together across segment boundaries, regardless
+of how small the timestamp gap is between consecutive segments (e.g. 0.0s or 0.76s).
+Merging across segments causes distinct retakes and restarts to be fused into one unusable blob.
+
+Pause-based sub-splitting is applied STRICTLY WITHIN each individual segment's own word list.
+"""
+
 from __future__ import annotations
 
 import json
@@ -12,91 +24,71 @@ from .schemas import ComparableUnit, TranscriptSegment, WordTimestamp
 TERMINAL_PUNCTUATION_RE = re.compile(r"[.!?]$")
 
 
-def flatten_transcript_words(
-    transcript: Union[str, Path, dict[str, Any], list[Any], Any],
+def extract_segment_words(
+    segment: Union[dict[str, Any], Any],
+    default_segment_id: int = 1,
 ) -> list[WordTimestamp]:
     """
-    Flattens all segments' word lists into a single ordered list for the whole transcript,
-    carrying source_segment_id and speaker per word.
+    Extracts word timestamps from a single ASR segment.
+    If word-level timestamps are not present, interpolates fallback timestamps across the segment duration.
     """
-    if isinstance(transcript, (str, Path)):
-        path = Path(transcript)
-        if not path.exists():
-            raise FileNotFoundError(f"Transcript file not found: {path}")
-        raw_data = json.loads(path.read_text(encoding="utf-8"))
-    elif isinstance(transcript, (dict, list)):
-        raw_data = transcript
-    elif hasattr(transcript, "segments"):
-        raw_data = {"segments": [s.model_dump() if hasattr(s, "model_dump") else s for s in transcript.segments]}
+    if isinstance(segment, dict):
+        seg_id = int(segment.get("id", default_segment_id))
+        seg_start = float(segment.get("start", 0.0))
+        seg_end = float(segment.get("end", 0.0))
+        speaker = str(segment.get("speaker", "speaker_0"))
+        seg_conf = float(segment["confidence"]) if segment.get("confidence") is not None else 1.0
+        words = segment.get("words", [])
+        text = str(segment.get("text", ""))
     else:
-        raise ValueError(f"Unsupported transcript source type: {type(transcript)}")
+        seg_id = int(getattr(segment, "id", default_segment_id))
+        seg_start = float(getattr(segment, "start", 0.0))
+        seg_end = float(getattr(segment, "end", 0.0))
+        speaker = str(getattr(segment, "speaker", "speaker_0"))
+        raw_conf = getattr(segment, "confidence", 1.0)
+        seg_conf = float(raw_conf) if raw_conf is not None else 1.0
+        words = getattr(segment, "words", []) or []
+        text = str(getattr(segment, "text", ""))
 
-    if isinstance(raw_data, dict):
-        segments = raw_data.get("segments", [])
-    elif isinstance(raw_data, list):
-        segments = raw_data
-    else:
-        raise ValueError("Invalid transcript JSON format.")
+    segment_words: list[WordTimestamp] = []
 
-    flattened: list[WordTimestamp] = []
+    if words:
+        for w in words:
+            if isinstance(w, dict):
+                w_text = str(w.get("word", "")).strip()
+                w_start = float(w.get("start", seg_start))
+                w_end = float(w.get("end", seg_end))
+                w_conf = float(w["confidence"]) if w.get("confidence") is not None else seg_conf
+            else:
+                w_text = str(getattr(w, "word", "")).strip()
+                w_start = float(getattr(w, "start", seg_start))
+                w_end = float(getattr(w, "end", seg_end))
+                raw_w_conf = getattr(w, "confidence", seg_conf)
+                w_conf = float(raw_w_conf) if raw_w_conf is not None else seg_conf
 
-    for seg in segments:
-        if isinstance(seg, dict):
-            seg_id = int(seg.get("id", len(flattened) + 1))
-            seg_start = float(seg.get("start", 0.0))
-            seg_end = float(seg.get("end", 0.0))
-            speaker = str(seg.get("speaker", "speaker_0"))
-            seg_conf = float(seg["confidence"]) if seg.get("confidence") is not None else 1.0
-            words = seg.get("words", [])
-            text = str(seg.get("text", ""))
-        else:
-            seg_id = int(getattr(seg, "id", len(flattened) + 1))
-            seg_start = float(getattr(seg, "start", 0.0))
-            seg_end = float(getattr(seg, "end", 0.0))
-            speaker = str(getattr(seg, "speaker", "speaker_0"))
-            raw_conf = getattr(seg, "confidence", 1.0)
-            seg_conf = float(raw_conf) if raw_conf is not None else 1.0
-            words = getattr(seg, "words", []) or []
-            text = str(getattr(seg, "text", ""))
-
-        if words:
-            for w in words:
-                if isinstance(w, dict):
-                    w_text = str(w.get("word", "")).strip()
-                    w_start = float(w.get("start", seg_start))
-                    w_end = float(w.get("end", seg_end))
-                    w_conf = float(w["confidence"]) if w.get("confidence") is not None else seg_conf
-                else:
-                    w_text = str(getattr(w, "word", "")).strip()
-                    w_start = float(getattr(w, "start", seg_start))
-                    w_end = float(getattr(w, "end", seg_end))
-                    raw_w_conf = getattr(w, "confidence", seg_conf)
-                    w_conf = float(raw_w_conf) if raw_w_conf is not None else seg_conf
-
-                if not w_text:
-                    continue
-
-                flattened.append(
-                    WordTimestamp(
-                        word=w_text,
-                        start=w_start,
-                        end=w_end,
-                        confidence=w_conf,
-                        source_segment_id=seg_id,
-                        speaker=speaker,
-                    )
-                )
-        else:
-            # Fallback when word-level timestamps are not present in segment
-            raw_words = text.strip().split()
-            if not raw_words:
+            if not w_text:
                 continue
+
+            segment_words.append(
+                WordTimestamp(
+                    word=w_text,
+                    start=w_start,
+                    end=w_end,
+                    confidence=w_conf,
+                    source_segment_id=seg_id,
+                    speaker=speaker,
+                )
+            )
+    else:
+        # Fallback when word-level timestamps are not present in segment
+        raw_words = text.strip().split()
+        if raw_words:
             duration = max(0.0, seg_end - seg_start)
             step = duration / len(raw_words) if len(raw_words) > 0 else 0.0
             for idx, rw in enumerate(raw_words):
                 w_start = round(seg_start + idx * step, 2)
                 w_end = round(seg_start + (idx + 1) * step, 2)
-                flattened.append(
+                segment_words.append(
                     WordTimestamp(
                         word=rw,
                         start=w_start,
@@ -107,6 +99,19 @@ def flatten_transcript_words(
                     )
                 )
 
+    return segment_words
+
+
+def flatten_transcript_words(
+    transcript: Union[str, Path, dict[str, Any], list[Any], Any],
+) -> list[WordTimestamp]:
+    """
+    Flattens all segments' word lists into a single ordered list for the whole transcript.
+    """
+    segments = _parse_segments(transcript)
+    flattened: list[WordTimestamp] = []
+    for idx, seg in enumerate(segments, start=1):
+        flattened.extend(extract_segment_words(seg, default_segment_id=idx))
     return flattened
 
 
@@ -115,12 +120,12 @@ def split_words_by_pause(
     pause_threshold: float = PAUSE_SPLIT_THRESHOLD_SECONDS,
 ) -> list[list[WordTimestamp]]:
     """
-    Splits the flattened word list into groups. A new group starts when any of the following is true:
+    Splits a word list into sub-groups. A new group starts when any of the following is true:
     - the gap between current word's end and next word's start is strictly greater than pause_threshold
     - the current word ends with terminal punctuation (., !, ?)
-    - the next word has a different speaker than the current word (forced split)
+    - the next word has a different speaker than the current word (forced split / defensive check)
 
-    Boundary rule: gap == pause_threshold does NOT split (only strictly greater does).
+    Boundary rule: gap == pause_threshold does NOT split (only strictly greater > does).
     Non-positive gaps (negative/zero/overlapping) never trigger a pause split.
     """
     if not words:
@@ -194,31 +199,61 @@ def build_comparable_unit(
     )
 
 
+def _parse_segments(
+    transcript: Union[str, Path, dict[str, Any], list[Any], Any],
+) -> list[Any]:
+    if isinstance(transcript, (str, Path)):
+        path = Path(transcript)
+        if not path.exists():
+            raise FileNotFoundError(f"Transcript file not found: {path}")
+        raw_data = json.loads(path.read_text(encoding="utf-8"))
+    elif isinstance(transcript, (dict, list)):
+        raw_data = transcript
+    elif hasattr(transcript, "segments"):
+        raw_data = {"segments": [s.model_dump() if hasattr(s, "model_dump") else s for s in transcript.segments]}
+    else:
+        raise ValueError(f"Unsupported transcript source type: {type(transcript)}")
+
+    if isinstance(raw_data, dict):
+        return list(raw_data.get("segments", []))
+    elif isinstance(raw_data, list):
+        return list(raw_data)
+    else:
+        raise ValueError("Invalid transcript JSON format.")
+
+
 def split_transcript_into_units(
     transcript: Union[str, Path, dict[str, Any], list[Any], Any],
     pause_threshold: float = PAUSE_SPLIT_THRESHOLD_SECONDS,
     config: object = default_config,
 ) -> list[ComparableUnit]:
     """
-    End-to-end flow: flatten -> split by pause / punctuation / speaker -> build ComparableUnits.
+    Splits a transcript into ComparableUnits while strictly preserving ASR segment boundaries.
+
+    Flow:
+    1. Outer loop iterates over each raw ASR segment from the transcriber.
+    2. Pause-based sub-splitting is applied ONLY within the words of that single segment.
+    3. Segments are NEVER merged across boundaries.
+    4. Each unit is tagged with its parent source_segment_id.
     """
-    words = flatten_transcript_words(transcript)
-    if not words:
+    segments = _parse_segments(transcript)
+    if not segments:
         return []
 
     min_tokens = getattr(config, "min_tokens", default_config.min_tokens)
-    word_groups = split_words_by_pause(words, pause_threshold=pause_threshold)
+    all_units: list[ComparableUnit] = []
 
-    units: list[ComparableUnit] = []
-    seg_counters: dict[int, int] = {}
+    for seg_idx, segment in enumerate(segments, start=1):
+        seg_words = extract_segment_words(segment, default_segment_id=seg_idx)
+        if not seg_words:
+            continue
 
-    for group in word_groups:
-        seg_id = group[0].source_segment_id
-        sub_idx = seg_counters.get(seg_id, 0)
-        seg_counters[seg_id] = sub_idx + 1
-        unit_id = f"{seg_id}:{sub_idx}"
+        parent_seg_id = seg_words[0].source_segment_id
+        word_groups = split_words_by_pause(seg_words, pause_threshold=pause_threshold)
 
-        unit = build_comparable_unit(group, unit_id=unit_id, min_tokens=min_tokens)
-        units.append(unit)
+        for sub_idx, group in enumerate(word_groups):
+            unit_id = f"{parent_seg_id}:{sub_idx}"
+            unit = build_comparable_unit(group, unit_id=unit_id, min_tokens=min_tokens)
+            all_units.append(unit)
 
-    return units
+    return all_units

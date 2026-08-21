@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 
-PAUSE_SPLIT_THRESHOLD_SECONDS: float = 0.8
+PAUSE_SPLIT_THRESHOLD_SECONDS: float = 0.7
 
 LEXICAL_WEIGHTS = {
     "sequence": 0.30,
