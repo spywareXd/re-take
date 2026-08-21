@@ -16,27 +16,73 @@ except ImportError:
     Transcript = None  # type: ignore
 
 
-CONTRACTIONS = {
-    "can't": "cannot",
-    "won't": "will not",
-    "n't": " not",
-    "'re": " are",
-    "'s": " is",
-    "'d": " would",
-    "'ll": " will",
-    "'ve": " have",
-    "'m": " am",
-}
-
-PUNCTUATION_RE = re.compile(r"[^\w\s']")
+APOSTROPHE_VARIANTS_RE = re.compile(r"[\u2018\u2019\u201A\u201B\u2032\u00B4`‘´]")
+PUNCTUATION_RE = re.compile(r"[^\w\s]")
 WHITESPACE_RE = re.compile(r"\s+")
 SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
 
+# Compiled regex patterns for comprehensive contraction and spoken reduction expansions
+CONTRACTION_PATTERNS = [
+    # Specific irregular contractions
+    (re.compile(r"\bcan't\b", re.IGNORECASE), "cannot"),
+    (re.compile(r"\bwon't\b", re.IGNORECASE), "will not"),
+    (re.compile(r"\bshan't\b", re.IGNORECASE), "shall not"),
+    (re.compile(r"\bain't\b", re.IGNORECASE), "is not"),
+    (re.compile(r"\blet's\b", re.IGNORECASE), "let us"),
+    (re.compile(r"\by'all\b", re.IGNORECASE), "you all"),
+    (re.compile(r"\bc'mon\b", re.IGNORECASE), "come on"),
+    (re.compile(r"\bo'clock\b", re.IGNORECASE), "o clock"),
+    (re.compile(r"\bma'am\b", re.IGNORECASE), "madam"),
+
+    # Spoken reductions and informal variants
+    (re.compile(r"\bgonna\b", re.IGNORECASE), "going to"),
+    (re.compile(r"\bwanna\b", re.IGNORECASE), "want to"),
+    (re.compile(r"\bgotta\b", re.IGNORECASE), "got to"),
+    (re.compile(r"\bkinda\b", re.IGNORECASE), "kind of"),
+    (re.compile(r"\bsorta\b", re.IGNORECASE), "sort of"),
+    (re.compile(r"\blemme\b", re.IGNORECASE), "let me"),
+    (re.compile(r"\bgimme\b", re.IGNORECASE), "give me"),
+    (re.compile(r"\bdunno\b", re.IGNORECASE), "do not know"),
+    (re.compile(r"\b(i'mma|imma)\b", re.IGNORECASE), "i am going to"),
+    (re.compile(r"\b('cause|cuz)\b", re.IGNORECASE), "because"),
+    (re.compile(r"\balright\b", re.IGNORECASE), "all right"),
+
+    # Pronoun / Noun + 're -> are
+    (re.compile(r"\b(you|we|they|who|what|where|how|there|these|those)'re\b", re.IGNORECASE), r"\1 are"),
+
+    # Pronoun / Noun + 's -> is
+    (re.compile(r"\b(it|that|what|there|here|who|how|where|when|why|he|she)'s\b", re.IGNORECASE), r"\1 is"),
+
+    # Pronoun + 'm -> am
+    (re.compile(r"\bi'm\b", re.IGNORECASE), "i am"),
+
+    # Pronoun / Modal + 've -> have
+    (re.compile(r"\b(i|you|we|they|who|what|would|should|could|must|might|may)'ve\b", re.IGNORECASE), r"\1 have"),
+
+    # Pronoun / Noun + 'll -> will
+    (re.compile(r"\b(i|you|he|she|it|we|they|that|what|who|there)'ll\b", re.IGNORECASE), r"\1 will"),
+
+    # Pronoun / Modal + 'd -> would
+    (re.compile(r"\b(i|you|he|she|it|we|they|that|who|what|how|where|why|would|should|could)'d\b", re.IGNORECASE), r"\1 would"),
+
+    # Negative verbs (n't -> not)
+    (re.compile(r"\b(do|does|did|is|are|was|were|have|has|had|would|should|could|must|need|dare)n't\b", re.IGNORECASE), r"\1 not"),
+
+    # General fallbacks for remaining contractions
+    (re.compile(r"(\w+?)n't\b", re.IGNORECASE), r"\1 not"),
+    (re.compile(r"(\w+)'re\b", re.IGNORECASE), r"\1 are"),
+    (re.compile(r"(\w+)'ve\b", re.IGNORECASE), r"\1 have"),
+    (re.compile(r"(\w+)'ll\b", re.IGNORECASE), r"\1 will"),
+    (re.compile(r"(\w+)'d\b", re.IGNORECASE), r"\1 would"),
+    (re.compile(r"(\w+)'m\b", re.IGNORECASE), r"\1 am"),
+]
+
 
 def _expand_contractions(text: str) -> str:
-    expanded = text
-    for needle, replacement in CONTRACTIONS.items():
-        expanded = re.sub(re.escape(needle), replacement, expanded, flags=re.IGNORECASE)
+    # Unify all apostrophe variants to standard ASCII single quote
+    expanded = APOSTROPHE_VARIANTS_RE.sub("'", text)
+    for pattern, replacement in CONTRACTION_PATTERNS:
+        expanded = pattern.sub(replacement, expanded)
     return expanded
 
 

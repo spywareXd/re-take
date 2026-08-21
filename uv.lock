@@ -1213,9 +1213,9 @@ name = "pydantic-settings"
 version = "2.15.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "pydantic", marker = "python_full_version >= '3.14'" },
-    { name = "python-dotenv", marker = "python_full_version >= '3.14'" },
-    { name = "typing-inspection", marker = "python_full_version >= '3.14'" },
+    { name = "pydantic" },
+    { name = "python-dotenv" },
+    { name = "typing-inspection" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/68/ca/31c57507b13119d7d3cfa1576dad2911a4861e3be07b579395f4e9d393f9/pydantic_settings-2.15.0.tar.gz", hash = "sha256:694b793e84f766ba76a90ebdefc01d0a9a045dab0382bee70393da93712ad117", size = 261253, upload-time = "2026-08-07T09:24:57.419Z" }
 wheels = [
@@ -1392,6 +1392,7 @@ dependencies = [
     { name = "nvidia-cublas-cu12" },
     { name = "nvidia-cudnn-cu12" },
     { name = "pydantic" },
+    { name = "pydantic-settings" },
     { name = "pytest" },
     { name = "requests" },
 ]
@@ -1409,6 +1410,7 @@ requires-dist = [
     { name = "nvidia-cublas-cu12", specifier = ">=12.9.2.10" },
     { name = "nvidia-cudnn-cu12", specifier = ">=9.24.0.43" },
     { name = "pydantic", specifier = ">=2.0.0" },
+    { name = "pydantic-settings", specifier = ">=2.15.0" },
     { name = "pytest", specifier = ">=8.0.0" },
     { name = "requests", specifier = ">=2.0.0" },
 ]

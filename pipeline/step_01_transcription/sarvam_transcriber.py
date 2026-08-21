@@ -5,16 +5,8 @@ from pathlib import Path
 from typing import Optional, List
 from models.transcript import Transcript
 from models.segment import Segment, Word
+from app.core.config import get_settings, settings
 from .audio_extractor import AudioExtractor
-
-try:
-    from dotenv import load_dotenv
-    load_dotenv()
-    load_dotenv(Path(__file__).parent / ".env")
-    load_dotenv(Path(__file__).resolve().parents[2] / ".env")
-    load_dotenv(Path(__file__).resolve().parents[2] / "notebooks" / ".env")
-except ImportError:
-    pass
 
 try:
     from .base import BaseTranscriber  # type: ignore
@@ -38,12 +30,7 @@ class SarvamAITranscriber(BaseTranscriber):
         **kwargs,
     ):
         super().__init__(api_key=api_key, model=model, language_code=language_code, **kwargs)
-        self.api_key = (
-            api_key
-            or os.getenv("SARVAM_API_KEY")
-            or os.getenv("SARVAMAI_API_KEY")
-            or os.getenv("SARVAM_AI_API_KEY")
-        )
+        self.api_key = api_key or get_settings().sarvam_api_key
         self.model = model
         self.language_code = language_code
 
@@ -55,7 +42,7 @@ class SarvamAITranscriber(BaseTranscriber):
         model: Optional[str] = None,
         **kwargs,
     ) -> Transcript:
-        api_key = self.api_key or os.getenv("SARVAM_API_KEY") or os.getenv("SARVAMAI_API_KEY")
+        api_key = self.api_key or get_settings().sarvam_api_key
         if not api_key:
             raise ValueError(
                 "Sarvam AI API key is required. Set SARVAM_API_KEY in your .env file or pass api_key."

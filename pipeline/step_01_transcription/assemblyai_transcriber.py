@@ -1,16 +1,8 @@
 import os
-from pathlib import Path
 from typing import Optional
 from models.transcript import Transcript
 from models.segment import Segment, Word
-
-try:
-    from dotenv import load_dotenv
-    # Load .env from module dir or project root
-    load_dotenv()
-    load_dotenv(Path(__file__).parent / ".env")
-except ImportError:
-    pass
+from app.core.config import get_settings, settings
 
 try:
     from .base import BaseTranscriber  # type: ignore
@@ -27,10 +19,10 @@ class AssemblyAITranscriber(BaseTranscriber):
 
     def __init__(self, api_key: Optional[str] = None, **kwargs):
         super().__init__(api_key=api_key, **kwargs)
-        self.api_key = api_key or os.getenv("ASSEMBLYAI_API_KEY")
+        self.api_key = api_key or get_settings().assemblyai_api_key
 
     def transcribe(self, audio_path: str, source_name: Optional[str] = None, **kwargs) -> Transcript:
-        api_key = self.api_key or os.getenv("ASSEMBLYAI_API_KEY")
+        api_key = self.api_key or get_settings().assemblyai_api_key
         if not api_key:
             raise ValueError(
                 "AssemblyAI API key is required. Set ASSEMBLYAI_API_KEY in your .env file, environment, or pass api_key."

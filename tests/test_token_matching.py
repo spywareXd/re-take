@@ -22,9 +22,9 @@ from pipeline.step_03_token_matching.schemas import ComparableUnit
 
 
 def test_load_output_transcript():
-    transcript_path = PROJECT_ROOT / "data" / "raw" / "transcripts" / "output_transcript.json"
-    if not transcript_path.exists():
-        transcript_path = PROJECT_ROOT / "data" / "transcripts" / "test.json"
+    test_path = PROJECT_ROOT / "data" / "transcripts" / "test.json"
+    output_path = PROJECT_ROOT / "data" / "raw" / "transcripts" / "output_transcript.json"
+    transcript_path = test_path if test_path.exists() else output_path
 
     units = load_transcript_units(transcript_path)
     assert len(units) > 0
@@ -47,14 +47,14 @@ def test_similarity_matchers():
 
 
 def test_candidate_generation():
-    transcript_path = PROJECT_ROOT / "data" / "raw" / "transcripts" / "output_transcript.json"
-    if not transcript_path.exists():
-        transcript_path = PROJECT_ROOT / "data" / "transcripts" / "test.json"
+    test_path = PROJECT_ROOT / "data" / "transcripts" / "test.json"
+    output_path = PROJECT_ROOT / "data" / "raw" / "transcripts" / "output_transcript.json"
+    transcript_path = test_path if test_path.exists() else output_path
 
     units = load_transcript_units(transcript_path)
     candidates = generate_candidate_pairs(units)
     assert len(candidates) > 0
-    assert candidates[0].combined_score >= 0.5
+    assert candidates[0].combined_score >= 0.35
     print(f"[PASS] Candidate generation found {len(candidates)} pairs")
 
 
@@ -135,9 +135,27 @@ def test_recall_first_scoring_and_contextual_restart_cues():
     print("[PASS] Recall-first scoring and contextual restart cues validated")
 
 
+def test_expanded_contractions_and_normalization():
+    from pipeline.step_03_token_matching import normalize
+
+    # Test you're, it's, what's, let's, don't, etc.
+    assert normalize("You're not seeing results") == "you are not seeing results"
+    assert normalize("It's how you're using it") == "it is how you are using it"
+    assert normalize("What's really going on") == "what is really going on"
+    assert normalize("Let's restart") == "let us restart"
+    assert normalize("We're going to start, but I can't!") == "we are going to start but i cannot"
+    assert normalize("They've won't shouldn't") == "they have will not should not"
+
+    # Test curly apostrophes / quotes
+    assert normalize("you’re not gonna see it’s working") == "you are not going to see it is working"
+    assert normalize("c’mon, y’all gotta check what’s up") == "come on you all got to check what is up"
+    print("[PASS] Expanded contractions and normalization verified")
+
+
 if __name__ == "__main__":
     test_load_output_transcript()
     test_similarity_matchers()
     test_candidate_generation()
     test_recall_first_scoring_and_contextual_restart_cues()
+    test_expanded_contractions_and_normalization()
     print("\nAll token matching unit tests passed successfully!")

@@ -11,6 +11,7 @@ dependencies = [
     "nvidia-cublas-cu12>=12.9.2.10",
     "nvidia-cudnn-cu12>=9.24.0.43",
     "pydantic>=2.0.0",
+    "pydantic-settings>=2.15.0",
     "pytest>=8.0.0",
     "requests>=2.0.0",
 ]
@@ -19,3 +20,7 @@ dependencies = [
 dev = [
     "ipykernel>=7.3.0",
 ]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
