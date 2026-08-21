@@ -28,6 +28,16 @@ class TranscriptSegment:
 
 
 @dataclass(slots=True)
+class WordTimestamp:
+    word: str
+    start: float
+    end: float
+    confidence: float | None = 1.0
+    source_segment_id: int = 1
+    speaker: str = "speaker_0"
+
+
+@dataclass(slots=True)
 class ComparableUnit:
     unit_id: str
     source_segment_id: int

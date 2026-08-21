@@ -5,7 +5,7 @@ import re
 from pathlib import Path
 from typing import Any, Union
 
-from .config import default_config
+from .config import PAUSE_SPLIT_THRESHOLD_SECONDS, default_config
 from .schemas import ComparableUnit, TranscriptSegment
 
 try:
@@ -160,31 +160,17 @@ def split_into_units(
 def load_transcript_units(
     source: Union[str, Path, dict[str, Any], Any],
     config: object = default_config,
+    pause_threshold: float = PAUSE_SPLIT_THRESHOLD_SECONDS,
 ) -> list[ComparableUnit]:
     """
-    Loads a transcript from a JSON file path, dict, or Transcript model and returns comparable units.
-    Supports both wrapped format {"segments": [...]} and raw segment list [...].
+    Loads a transcript from a JSON file path, dict, or Transcript model and returns comparable units
+    derived from word timestamp pause splitting, punctuation boundaries, and speaker changes.
     """
-    if isinstance(source, (str, Path)):
-        path = Path(source)
-        if not path.exists():
-            raise FileNotFoundError(f"Transcript file not found: {path}")
-        raw_data = json.loads(path.read_text(encoding="utf-8"))
-    elif isinstance(source, dict):
-        raw_data = source
-    elif hasattr(source, "segments"):
-        raw_data = {"segments": [s.model_dump() if hasattr(s, "model_dump") else s for s in source.segments]}
-    else:
-        raise ValueError(f"Unsupported transcript source type: {type(source)}")
+    from .unit_splitter import split_transcript_into_units
 
-    if isinstance(raw_data, dict):
-        raw_segments = raw_data.get("segments", [])
-    elif isinstance(raw_data, list):
-        raw_segments = raw_data
-    else:
-        raise ValueError("Invalid transcript JSON format.")
-
-    units: list[ComparableUnit] = []
-    for raw_seg in raw_segments:
-        units.extend(split_into_units(raw_seg, config=config))
-    return units
+    threshold = (
+        pause_threshold
+        if pause_threshold is not None
+        else getattr(config, "pause_split_threshold_seconds", PAUSE_SPLIT_THRESHOLD_SECONDS)
+    )
+    return split_transcript_into_units(source, pause_threshold=threshold, config=config)
