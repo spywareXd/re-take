@@ -1,5 +1,21 @@
 import os
+import sys
+import types
 from typing import Optional
+
+# Safeguard against SpeechBrain's hardcoded POSIX '/inspect.py' check on Windows
+try:
+    import speechbrain.utils.importutils as sb_importutils
+    _orig_ensure = sb_importutils.LazyModule.ensure_module
+    def _safe_ensure_module(self, stacklevel=1):
+        try:
+            return _orig_ensure(self, stacklevel=stacklevel)
+        except Exception:
+            raise AttributeError()
+    sb_importutils.LazyModule.ensure_module = _safe_ensure_module
+except Exception:
+    pass
+
 from models.transcript import Transcript
 from models.segment import Segment, Word
 
@@ -16,6 +32,8 @@ class WhisperXTranscriber(BaseTranscriber):
     """
 
     def __init__(self, model_name: str = "base", device: str = "cpu", compute_type: str = "float32", **kwargs):
+        if "model_size" in kwargs:
+            model_name = kwargs.pop("model_size")
         super().__init__(model_name=model_name, device=device, compute_type=compute_type, **kwargs)
         self.model_name = model_name
         self.device = device

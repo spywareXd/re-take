@@ -22,34 +22,37 @@ def _wt(word: str, start: float, end: float, speaker: str = "speaker_0", confide
 
 
 def test_gap_under_threshold_does_not_split():
-    # Gap is 0.3s (under 0.8 threshold)
+    # Gap is strictly under threshold
+    threshold = PAUSE_SPLIT_THRESHOLD_SECONDS
     words = [
         _wt("hello", 0.0, 1.0),
-        _wt("world", 1.3, 2.0),
+        _wt("world", 1.0 + threshold * 0.5, 2.0),
     ]
-    groups = split_words_by_pause(words, pause_threshold=PAUSE_SPLIT_THRESHOLD_SECONDS)
+    groups = split_words_by_pause(words, pause_threshold=threshold)
     assert len(groups) == 1
     assert len(groups[0]) == 2
 
 
 def test_gap_exactly_equal_to_threshold_does_not_split():
-    # Gap is exactly 0.8s
+    # Gap is exactly equal to threshold
+    threshold = PAUSE_SPLIT_THRESHOLD_SECONDS
     words = [
         _wt("first", 0.0, 1.0),
-        _wt("second", 1.8, 2.8),
+        _wt("second", 1.0 + threshold, 2.8),
     ]
-    groups = split_words_by_pause(words, pause_threshold=PAUSE_SPLIT_THRESHOLD_SECONDS)
+    groups = split_words_by_pause(words, pause_threshold=threshold)
     assert len(groups) == 1
     assert len(groups[0]) == 2
 
 
 def test_gap_strictly_greater_than_threshold_splits():
-    # Gap is 0.81s (strictly greater than 0.8 threshold)
+    # Gap is strictly greater than threshold (+0.01s)
+    threshold = PAUSE_SPLIT_THRESHOLD_SECONDS
     words = [
         _wt("first", 0.0, 1.0),
-        _wt("second", 1.81, 2.8),
+        _wt("second", round(1.0 + threshold + 0.01, 4), 2.8),
     ]
-    groups = split_words_by_pause(words, pause_threshold=PAUSE_SPLIT_THRESHOLD_SECONDS)
+    groups = split_words_by_pause(words, pause_threshold=threshold)
     assert len(groups) == 2
     assert [w.word for w in groups[0]] == ["first"]
     assert [w.word for w in groups[1]] == ["second"]
