@@ -7,7 +7,7 @@ from .ngram_match import ngram_overlap_score
 from .normalize import load_transcript_units, normalize, split_into_units, tokenize
 from .restart_phrase import restart_phrase_score
 from .schemas import CandidatePair, CandidateScores, CandidateUnitRef, ComparableUnit, TranscriptSegment, WordTimestamp
-from .storage import load_comparable_units, save_comparable_units
+from .storage import load_comparable_units, load_semantic_candidates, save_comparable_units, save_semantic_candidates
 from .unit_splitter import (
     build_comparable_unit,
     extract_segment_words,
@@ -37,6 +37,7 @@ __all__ = [
     "get_candidates_in_window",
     "jaccard_score",
     "load_comparable_units",
+    "load_semantic_candidates",
     "load_transcript_units",
     "near_exact_match_score",
     "ngram_overlap_score",
@@ -44,6 +45,7 @@ __all__ = [
     "rank_similar_sentence_ids",
     "restart_phrase_score",
     "save_comparable_units",
+    "save_semantic_candidates",
     "sequence_similarity_score",
     "split_into_units",
     "split_transcript_into_units",
