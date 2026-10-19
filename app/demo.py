@@ -155,9 +155,14 @@ def inject_styles():
         padding: 1.25rem;
         border-radius: 12px;
         margin: 0.75rem 0;
-        border-left: 4px solid #ef4444;
         border: 1px solid rgba(255, 255, 255, 0.06);
+        border-left: 4px solid #a78bfa;
+    }
+    .retake-card.discarded {
         border-left: 4px solid #ef4444;
+    }
+    .retake-card.kept {
+        border-left: 4px solid #22c55e;
     }
     .retake-card .keep-badge {
         background: rgba(34, 197, 94, 0.15);
@@ -174,6 +179,15 @@ def inject_styles():
         border-radius: 20px;
         font-size: 0.75rem;
         font-weight: 600;
+    }
+    .transcript-quote {
+        font-style: italic;
+        color: rgba(255, 255, 255, 0.85);
+        background: rgba(0, 0, 0, 0.2);
+        padding: 0.5rem 0.75rem;
+        border-radius: 6px;
+        margin-top: 0.5rem;
+        font-size: 0.85rem;
     }
 
     /* Legend */
@@ -216,7 +230,7 @@ def render_hero():
     st.markdown("""
     <div class="hero-header">
         <h1>✂️ Retake Detection</h1>
-        <p>Automatically detect and remove verbal retakes from your videos</p>
+        <p>Automatically detect and remove verbal retakes from your videos using Multi-Stage AI & LLM Adjudication</p>
     </div>
     """, unsafe_allow_html=True)
 
@@ -227,8 +241,8 @@ def render_stats(result):
         (f"{result.source_duration:.1f}s", "Original"),
         (f"{result.output_duration:.1f}s", "Cleaned"),
         (f"{result.time_saved:.1f}s", "Time Saved"),
-        (str(result.retake_groups_count), "Retakes Found"),
-        (f"{result.likely_retakes}", "Confirmed Cuts"),
+        (str(result.retake_groups_count), "Retakes Removed"),
+        (f"{result.likely_retakes + result.ambiguous}", "Candidates Scored"),
     ]
     for col, (value, label) in zip(cols, stats):
         with col:
@@ -297,55 +311,56 @@ def render_retake_groups(cutlist_dict: dict):
         st.info("No retake groups detected.")
         return
 
-    st.markdown("### 🔍 Retake Groups")
+    st.markdown("### 🔍 Retake Groups & Decisions")
 
     for group in groups:
         take_a = group["take_a_span"]
         take_b = group["take_b_span"]
         kept = group["kept_take"]
         reason = group.get("reason", "")
+        disc_text = group.get("discarded_text", "")
+        kept_text = group.get("kept_text", "")
+
+        discard_duration = take_a["end"] - take_a["start"]
 
         with st.expander(
             f"Group {group['group_id']} — "
-            f"{group['pair_count']} pair(s) · "
-            f"Discarded {take_a['end'] - take_a['start']:.1f}s",
-            expanded=False,
+            f"Removed {discard_duration:.2f}s",
+            expanded=True,
         ):
             col1, col2 = st.columns(2)
             with col1:
-                badge = "keep-badge" if kept == "a" else "discard-badge"
-                badge_text = "✓ KEPT" if kept == "a" else "✗ DISCARDED"
                 st.markdown(f"""
-                <div class="retake-card">
+                <div class="retake-card discarded">
                     <div style="display:flex; justify-content:space-between; align-items:center;">
-                        <strong>Take A</strong>
-                        <span class="{badge}">{badge_text}</span>
+                        <strong>Discarded Take</strong>
+                        <span class="discard-badge">✗ REMOVED</span>
                     </div>
                     <p style="color:rgba(255,255,255,0.5); font-size:0.8rem; margin:0.5rem 0 0;">
                         {take_a['start']:.2f}s → {take_a['end']:.2f}s
-                        ({take_a['end'] - take_a['start']:.1f}s)
+                        ({discard_duration:.2f}s)
                     </p>
+                    {f'<div class="transcript-quote">“{disc_text}”</div>' if disc_text else ''}
                 </div>
                 """, unsafe_allow_html=True)
 
             with col2:
-                badge = "keep-badge" if kept == "b" else "discard-badge"
-                badge_text = "✓ KEPT" if kept == "b" else "✗ DISCARDED"
                 st.markdown(f"""
-                <div class="retake-card">
+                <div class="retake-card kept">
                     <div style="display:flex; justify-content:space-between; align-items:center;">
-                        <strong>Take B</strong>
-                        <span class="{badge}">{badge_text}</span>
+                        <strong>Final Keeper Take</strong>
+                        <span class="keep-badge">✓ KEPT</span>
                     </div>
                     <p style="color:rgba(255,255,255,0.5); font-size:0.8rem; margin:0.5rem 0 0;">
                         {take_b['start']:.2f}s → {take_b['end']:.2f}s
-                        ({take_b['end'] - take_b['start']:.1f}s)
+                        ({take_b['end'] - take_b['start']:.2f}s)
                     </p>
+                    {f'<div class="transcript-quote">“{kept_text}”</div>' if kept_text else ''}
                 </div>
                 """, unsafe_allow_html=True)
 
             if reason:
-                st.caption(f"💡 {reason}")
+                st.caption(f"💡 **Decision Rationale:** {reason}")
 
 
 # ---------------------------------------------------------------------------
@@ -389,7 +404,7 @@ def render_sidebar() -> tuple[Path | None, dict]:
         st.markdown("---")
 
         # Pipeline config
-        st.markdown("#### 🎛️ Configuration")
+        st.markdown("#### 🎛️ Transcription (Step 01)")
         config = {}
 
         config["provider"] = st.selectbox(
@@ -410,13 +425,18 @@ def render_sidebar() -> tuple[Path | None, dict]:
             index=0,
         )
 
-        config["take_strategy"] = st.selectbox(
-            "Take Selection",
-            ["keep_later", "keep_earlier", "keep_higher_confidence"],
+        st.markdown("#### 🤖 LLM Adjudication (Step 06)")
+        config["llm_provider"] = st.selectbox(
+            "LLM Provider",
+            ["gemini", "openai", "mock"],
             index=0,
-            help="Which take to keep when a retake is detected",
+        )
+        config["llm_model"] = st.text_input(
+            "LLM Model",
+            value="gemini-2.5-flash",
         )
 
+        st.markdown("#### 🎬 Video Output")
         config["copy_mode"] = st.checkbox(
             "Fast mode (stream copy)",
             value=False,
@@ -451,37 +471,64 @@ def main():
         )
         return
 
-    # Show selected video info
-    st.markdown(f"**Selected:** `{input_video.name}` ({input_video.stat().st_size / 1024 / 1024:.1f} MB)")
+    from pipeline.run_pipeline import get_video_pipeline_paths, load_pipeline_result
 
-    # Run pipeline button
-    if st.button("🚀 Run Pipeline", type="primary", use_container_width=True):
-        _run_pipeline_with_ui(input_video, config)
+    paths = get_video_pipeline_paths(input_video)
+    video_key = f"pipeline_result_{input_video.resolve()}"
 
-    # Check for existing results
-    elif "pipeline_result" in st.session_state:
-        _display_results(st.session_state["pipeline_result"], input_video)
+    # Show selected video info with assigned video_id
+    st.markdown(f"**Selected:** `{input_video.name}` ({input_video.stat().st_size / 1024 / 1024:.1f} MB) — **ID:** `{paths.video_id}`")
+
+    # Check if this video has a result in session_state, or persisted on disk
+    cached_result = st.session_state.get(video_key)
+    if cached_result is None and paths.pipeline_result.exists():
+        cached_result = load_pipeline_result(input_video)
+        if cached_result is not None:
+            st.session_state[video_key] = cached_result
+
+    if cached_result is not None and cached_result.success:
+        try:
+            rel_dir = paths.video_dir.relative_to(_project_root)
+        except ValueError:
+            rel_dir = paths.video_dir
+        st.info(f"📂 Loaded persisted results for `{paths.video_id}` from `{rel_dir}`")
+        col_btn1, col_btn2 = st.columns([1, 1])
+        with col_btn1:
+            re_run = st.button("🔄 Re-run Pipeline", type="primary", use_container_width=True)
+        with col_btn2:
+            st.button("✓ Showing Saved Results", disabled=True, use_container_width=True)
+
+        if re_run:
+            _run_pipeline_with_ui(input_video, config)
+        else:
+            _display_results(cached_result, input_video)
+    else:
+        # Run pipeline button
+        if st.button("🚀 Run Pipeline", type="primary", use_container_width=True):
+            _run_pipeline_with_ui(input_video, config)
 
 
 def _run_pipeline_with_ui(input_video: Path, config: dict):
     """Run the pipeline with Streamlit progress indicators."""
     from pipeline.run_pipeline import run_full_pipeline
 
+    video_key = f"pipeline_result_{input_video.resolve()}"
     status_container = st.container()
     progress_bar = st.progress(0, text="Initializing pipeline...")
 
     stages = [
         ("Transcription", 0.15),
-        ("Token Matching", 0.35),
-        ("Semantic Matching", 0.60),
-        ("Cutlist Generation", 0.75),
+        ("Token Matching", 0.30),
+        ("Semantic Matching", 0.45),
+        ("Span Aggregation", 0.60),
+        ("LLM Adjudication", 0.75),
+        ("Cutlist Generation", 0.85),
         ("Video Editing", 0.95),
     ]
     stage_map = {name: frac for name, frac in stages}
 
     def progress_callback(stage_name: str, stage_frac: float):
         base_frac = stage_map.get(stage_name, 0.0)
-        # Interpolate within the stage's portion
         progress_bar.progress(
             min(base_frac + 0.05, 1.0),
             text=f"⏳ {stage_name}...",
@@ -494,7 +541,8 @@ def _run_pipeline_with_ui(input_video: Path, config: dict):
         provider=config.get("provider", "whisperx"),
         model_name=config.get("model_name", "base"),
         device=config.get("device", "cuda"),
-        take_strategy=config.get("take_strategy", "keep_later"),
+        llm_provider=config.get("llm_provider", "gemini"),
+        llm_model=config.get("llm_model", "gemini-2.5-flash"),
         copy_mode=config.get("copy_mode", False),
         progress_callback=progress_callback,
     )
@@ -503,7 +551,7 @@ def _run_pipeline_with_ui(input_video: Path, config: dict):
     progress_bar.progress(1.0, text="✅ Pipeline complete!")
 
     if result.success:
-        st.session_state["pipeline_result"] = result
+        st.session_state[video_key] = result
         st.toast(f"Pipeline completed in {elapsed:.1f}s!", icon="🎉")
         _display_results(result, input_video)
     else:
@@ -535,12 +583,12 @@ def _display_results(result, input_video: Path):
     col_orig, col_clean = st.columns(2)
 
     with col_orig:
-        st.markdown("**Original**")
+        st.markdown("**Original Video**")
         if input_video.exists():
             st.video(str(input_video))
 
     with col_clean:
-        st.markdown("**Cleaned**")
+        st.markdown("**Cleaned Video**")
         output_path = Path(result.output_video)
         if output_path.exists():
             st.video(str(output_path))
