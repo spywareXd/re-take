@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import logging
+import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -150,6 +151,14 @@ def get_or_create_video_id(
     processed_root = project_root / "data" / "processed"
     registry_path = processed_root / "video_registry.json"
     registry = _load_video_registry(registry_path)
+
+    # Prune stale registry entries if their video directories were deleted on disk
+    if processed_root.exists():
+        stale_keys = [k for k in list(registry.keys()) if k.startswith("video_") and not (processed_root / k).exists()]
+        if stale_keys:
+            for k in stale_keys:
+                del registry[k]
+            _save_video_registry(registry_path, registry)
 
     existing_nums: set[int] = set()
     for k in registry.keys():
@@ -633,3 +642,54 @@ def _find_project_root(reference_path: Path) -> Path:
 
     # Fallback: assume the CWD is the project root
     return Path.cwd()
+
+
+def main():
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Run the end-to-end retake detection and video editing pipeline.")
+    parser.add_argument("input_video", nargs="?", default="data/videos/sample_e.mp4", help="Path to input video (default: data/videos/sample_e.mp4)")
+    parser.add_argument("--output", "-o", default=None, help="Custom output video path")
+    parser.add_argument("--provider", default="whisperx", choices=["whisperx", "whisper", "assemblyai"], help="ASR provider")
+    parser.add_argument("--model", default="base", help="ASR model size")
+    parser.add_argument("--device", default="cuda", choices=["cuda", "cpu"], help="Compute device")
+    parser.add_argument("--llm-provider", default="gemini", choices=["gemini", "openai", "mock"], help="LLM provider")
+    parser.add_argument("--llm-model", default="gemini-2.5-flash", help="LLM model name")
+    parser.add_argument("--copy-mode", action="store_true", help="Fast FFmpeg stream-copy mode")
+    parser.add_argument("--force-new-id", action="store_true", help="Force assigning next video_id even if previously registered")
+
+    args = parser.parse_args()
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+
+    print(f"\n=======================================================")
+    print(f" Starting Retake Pipeline on: {args.input_video}")
+    print(f"=======================================================\n")
+
+    result = run_full_pipeline(
+        input_video=args.input_video,
+        output_video=args.output,
+        provider=args.provider,
+        model_name=args.model,
+        device=args.device,
+        llm_provider=args.llm_provider,
+        llm_model=args.llm_model,
+        copy_mode=args.copy_mode,
+        force_new_id=args.force_new_id,
+    )
+
+    if result.success:
+        print(f"\n[OK] Pipeline completed successfully!")
+        print(f"Video ID:            {result.video_id}")
+        print(f"Output Video:        {result.output_video}")
+        print(f"Original Duration:   {result.source_duration:.2f}s")
+        print(f"Cleaned Duration:    {result.output_duration:.2f}s")
+        print(f"Time Saved:          {result.time_saved:.2f}s")
+        print(f"Retake Groups Cut:   {result.retake_groups_count}")
+        print(f"Persisted Folder:    data/processed/{result.video_id}/\n")
+    else:
+        print(f"\n[ERROR] Pipeline failed: {result.error}\n")
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()

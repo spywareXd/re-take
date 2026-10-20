@@ -40,6 +40,32 @@ def test_video_id_auto_increment(tmp_path: Path):
     assert id3 == "video_3"
 
 
+def test_video_id_resets_when_directories_deleted(tmp_path: Path):
+    """If all video folders are deleted, numbering resets cleanly from video_1."""
+    import shutil
+
+    video1 = tmp_path / "vid1.mp4"
+    video2 = tmp_path / "vid2.mp4"
+    video1.touch()
+    video2.touch()
+
+    assert get_or_create_video_id(video1, project_root=tmp_path) == "video_1"
+    assert get_or_create_video_id(video2, project_root=tmp_path) == "video_2"
+
+    # Delete all video directories (simulating user clearing data/processed/video_*)
+    processed_dir = tmp_path / "data" / "processed"
+    shutil.rmtree(processed_dir / "video_1")
+    shutil.rmtree(processed_dir / "video_2")
+
+    # Retry using the pipeline with video1 -> should start from video_1 again
+    new_id = get_or_create_video_id(video1, project_root=tmp_path)
+    assert new_id == "video_1"
+
+    # Next video -> video_2
+    new_id2 = get_or_create_video_id(video2, project_root=tmp_path)
+    assert new_id2 == "video_2"
+
+
 def test_get_video_pipeline_paths_schema(tmp_path: Path):
     video_path = tmp_path / "videos" / "interview_take1.mp4"
     video_path.parent.mkdir(parents=True)

@@ -161,6 +161,8 @@ ENV/
 env.bak/  
 venv.bak/  
   
+
+
 # Spyder project settings  
 .spyderproject  
 .spyproject  
@@ -218,3 +220,8 @@ __marimo__/
   
 # Streamlit  
 .streamlit/secrets.toml
+
+# Training dataset directories
+data/training/videos/
+data/training/processed/
+data/training/backups/
