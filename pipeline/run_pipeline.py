@@ -330,7 +330,7 @@ def run_full_pipeline(
     input_video: str | Path,
     output_video: str | Path | None = None,
     provider: str = "whisperx",
-    model_name: str = "base",
+    model_name: str = "large-v2",
     device: str = "cuda",
     compute_type: str = "float16",
     llm_provider: str = "gemini",
@@ -350,7 +350,7 @@ def run_full_pipeline(
         input_video: Path to the input video file.
         output_video: Path for the cleaned output video. Defaults to data/processed/<video_id>/outputs/<stem>_cleaned.mp4.
         provider: Transcription provider ('whisperx', 'whisper', 'assemblyai').
-        model_name: ASR model size ('base', 'small', 'medium', 'large-v3').
+        model_name: ASR model size ('base', 'small', 'medium', 'large-v2', 'large-v3').
         device: Compute device ('cuda', 'cpu').
         compute_type: Precision ('float16', 'int8', 'float32').
         llm_provider: LLM provider for Stage 6 ('gemini', 'openai', 'mock').
@@ -651,7 +651,7 @@ def main():
     parser.add_argument("input_video", nargs="?", default="data/videos/sample_e.mp4", help="Path to input video (default: data/videos/sample_e.mp4)")
     parser.add_argument("--output", "-o", default=None, help="Custom output video path")
     parser.add_argument("--provider", default="whisperx", choices=["whisperx", "whisper", "assemblyai"], help="ASR provider")
-    parser.add_argument("--model", default="base", help="ASR model size")
+    parser.add_argument("--model", default="large-v2", help="ASR model size")
     parser.add_argument("--device", default="cuda", choices=["cuda", "cpu"], help="Compute device")
     parser.add_argument("--llm-provider", default="gemini", choices=["gemini", "openai", "mock"], help="LLM provider")
     parser.add_argument("--llm-model", default="gemini-2.5-flash", help="LLM model name")

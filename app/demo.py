@@ -415,7 +415,7 @@ def render_sidebar() -> tuple[Path | None, dict]:
 
         config["model_name"] = st.selectbox(
             "Model Size",
-            ["base", "small", "medium", "large-v3"],
+            ["large-v2", "base", "small", "medium", "large-v3"],
             index=0,
         )
 
@@ -539,7 +539,7 @@ def _run_pipeline_with_ui(input_video: Path, config: dict):
     result = run_full_pipeline(
         input_video=input_video,
         provider=config.get("provider", "whisperx"),
-        model_name=config.get("model_name", "base"),
+        model_name=config.get("model_name", "large-v2"),
         device=config.get("device", "cuda"),
         llm_provider=config.get("llm_provider", "gemini"),
         llm_model=config.get("llm_model", "gemini-2.5-flash"),

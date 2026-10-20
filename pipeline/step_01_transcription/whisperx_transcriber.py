@@ -31,7 +31,7 @@ class WhisperXTranscriber(BaseTranscriber):
     Uses Whisper for base transcription + wav2vec2 forced alignment for microsecond word boundaries.
     """
 
-    def __init__(self, model_name: str = "base", device: str = "cpu", compute_type: str = "float32", **kwargs):
+    def __init__(self, model_name: str = "large-v2", device: str = "cpu", compute_type: str = "float32", **kwargs):
         if "model_size" in kwargs:
             model_name = kwargs.pop("model_size")
         super().__init__(model_name=model_name, device=device, compute_type=compute_type, **kwargs)
@@ -46,7 +46,10 @@ class WhisperXTranscriber(BaseTranscriber):
                 import whisperx
             except ImportError:
                 raise ImportError("whisperx is not installed. Install it with: pip install whisperx")
-            self._model = whisperx.load_model(self.model_name, self.device, compute_type=self.compute_type)
+            compute_type = self.compute_type
+            if self.device == "cuda" and compute_type == "float32":
+                compute_type = "float16"
+            self._model = whisperx.load_model(self.model_name, self.device, compute_type=compute_type)
         return self._model
 
     def transcribe(self, audio_path: str, source_name: Optional[str] = None, **kwargs) -> Transcript:

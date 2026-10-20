@@ -54,6 +54,7 @@ def test_whisper_vad_parameters_are_forwarded():
 
     fake_model = FakeWhisperModel()
     transcriber = WhisperTranscriber()
+    assert transcriber.model_size == "large-v2"
     transcriber._model = fake_model
     transcriber.transcribe("dummy_audio.wav", vad_parameters={"min_silence_duration_ms": 500})
 
@@ -61,6 +62,17 @@ def test_whisper_vad_parameters_are_forwarded():
     assert fake_model.transcribe_kwargs["vad_parameters"] == {"min_silence_duration_ms": 500}
     assert fake_model.transcribe_kwargs["word_timestamps"] is True
     print("[PASS] Whisper VAD parameters are forwarded")
+
+
+def test_default_model_is_large_v2():
+    from pipeline.step_01_transcription.whisperx_transcriber import WhisperXTranscriber
+
+    whisper = WhisperTranscriber()
+    assert whisper.model_size == "large-v2"
+
+    whisperx = WhisperXTranscriber()
+    assert whisperx.model_name == "large-v2"
+    print("[PASS] Both Whisper and WhisperX default to large-v2")
 
 
 if __name__ == "__main__":

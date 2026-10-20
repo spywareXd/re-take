@@ -440,7 +440,7 @@ def run_pipeline_for_video(
     window_seconds: float = DEFAULT_WINDOW_SECONDS,
     reuse_transcript: bool = False,
     whisper_provider: str = "whisperx",
-    whisper_model: str = "base",
+    whisper_model: str = "large-v2",
     whisper_device: str | None = None,
     dry_run: bool = False,
 ) -> tuple[Any, list[Any], list[dict[str, Any]]]:
@@ -478,10 +478,12 @@ def run_pipeline_for_video(
         else:
             device = whisper_device
 
+        compute_type = "float16" if device == "cuda" else "float32"
         generator = TimestampGenerator(
             provider=whisper_provider,
             model_name=whisper_model,
             device=device,
+            compute_type=compute_type,
         )
 
         if dry_run:
@@ -1308,6 +1310,7 @@ def process_videos(
     min_lexical: float = DEFAULT_MIN_LEXICAL,
     window_seconds: float = DEFAULT_WINDOW_SECONDS,
     source_type: str | None = None,
+    whisper_model: str = "large-v2",
     refresh_video_id: str | None = None,
     dry_run: bool = False,
 ) -> int:
@@ -1359,6 +1362,7 @@ def process_videos(
             min_lexical=min_lexical,
             window_seconds=window_seconds,
             reuse_transcript=True,
+            whisper_model=whisper_model,
             dry_run=dry_run,
         )
 
@@ -1534,6 +1538,7 @@ def process_videos(
             min_lexical=min_lexical,
             window_seconds=window_seconds,
             reuse_transcript=False,
+            whisper_model=whisper_model,
             dry_run=dry_run,
         )
 
@@ -1639,6 +1644,12 @@ def main():
         help="Recompute feature columns for an already-processed video",
     )
     parser.add_argument(
+        "--whisper-model",
+        type=str,
+        default="large-v2",
+        help="Whisper model size (default: large-v2)",
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="Print what would be added without writing to disk",
@@ -1706,6 +1717,7 @@ def main():
         min_lexical=args.min_lexical,
         window_seconds=args.window_seconds,
         source_type=args.source_type,
+        whisper_model=args.whisper_model,
         refresh_video_id=args.refresh,
         dry_run=args.dry_run,
     )

@@ -29,7 +29,7 @@ class WhisperTranscriber(BaseTranscriber):
     Provides fast, local execution on CPU or NVIDIA GPU (CUDA) with word-level timestamps and VAD.
     """
 
-    def __init__(self, model_size: str = "base", device: str = "auto", compute_type: str = "default", **kwargs):
+    def __init__(self, model_size: str = "large-v2", device: str = "auto", compute_type: str = "default", **kwargs):
         super().__init__(model_size=model_size, device=device, compute_type=compute_type, **kwargs)
         self.model_size = model_size
         self.device = device
