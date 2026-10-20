@@ -160,8 +160,6 @@ venv/
 ENV/  
 env.bak/  
 venv.bak/  
-  
-data/videos
 
 # Spyder project settings  
 .spyderproject  
@@ -225,3 +223,27 @@ __marimo__/
 data/training/videos/
 data/training/processed/
 data/training/backups/
+
+# Media files (video & audio binaries)
+*.mp4
+*.mov
+*.avi
+*.mkv
+*.wmv
+*.flv
+*.webm
+*.m4v
+*.wav
+*.mp3
+*.m4a
+*.aac
+*.flac
+*.ogg
+*.wma
+
+# Data and pipeline media directories
+data/videos/
+data/processed/
+data/raw/videos/
+data/raw/audio/
+data/**/extracted_audio/
