@@ -1082,3 +1082,23 @@ def test_eval_keepers_accuracy_and_empty(tmp_path: Path, capsys):
     # Keep Earlier: 0/2 (0.0%)
     assert "0/2 (0.0%)" in captured.out
 
+
+def test_candidate_to_csv_row_disagreement_calculation():
+    """Verify that candidate_to_csv_row computes disagreement as |lexical_score - semantic_score|."""
+    cand = {
+        "unit_a": {"unit_id": "11:0", "raw_text": "text A", "start": 10.0, "end": 12.0},
+        "unit_b": {"unit_id": "15:0", "raw_text": "text B", "start": 20.0, "end": 22.0},
+        "scores": {"sequence": 0.9, "jaccard": 0.9, "containment": 0.9, "bigram": 0.9},
+        "lexical_score": 0.926,
+        "semantic_score": 0.990,
+        "combined_score": 0.275,
+        "recency_weight": 0.297,
+        "restart_phrase_detected": False,
+        "lexical_semantic_disagreement": 0.064,
+        "classification": "ambiguous",
+    }
+    row = candidate_to_csv_row(cand, "speaker_a_3", "youtube")
+    assert row["lexical_score"] == 0.926
+    assert row["semantic_score"] == 0.990
+    assert row["disagreement"] == 0.064
+

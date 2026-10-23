@@ -368,7 +368,7 @@ def candidate_to_csv_row(
     sem_score = float(candidate.get("semantic_score", 0.0))
     rec_weight = float(candidate.get("recency_weight", 0.0))
     restart_flag = 1 if candidate.get("restart_phrase_detected") else 0
-    disagreement = float(candidate.get("lexical_semantic_disagreement", 0.0))
+    disagreement = abs(lex_score - sem_score) if ("lexical_score" in candidate or "semantic_score" in candidate) else float(candidate.get("lexical_semantic_disagreement", 0.0))
 
     # passes_stage1_default calculation based on pipeline defaults
     default_lex_thresh = float(default_token_config.candidate_threshold)

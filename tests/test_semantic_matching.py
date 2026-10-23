@@ -195,3 +195,27 @@ def test_run_stage2_end_to_end():
     assert r["stage2_score"] >= 0.99
     assert r["classification"] == "likely_retake"
     assert r["high_disagreement_flag"] is False
+
+
+def test_disagreement_uses_lexical_not_time_decayed_combined():
+    """
+    Verify that lexical_semantic_disagreement computes |lexical_score - semantic_score|
+    rather than using time-decayed combined_score.
+    Example: lexical=0.926, combined=0.275 (recency=0.297), semantic=0.990.
+    Disagreement must be ~0.064 (not |0.275 - 0.990| = 0.715).
+    """
+    emb_same = np.array([1.0, 0.0, 0.0], dtype=np.float32)
+    embeddings = {"u1": emb_same, "u2": emb_same}
+
+    candidate = {
+        "unit_a": {"unit_id": "u1"},
+        "unit_b": {"unit_id": "u2"},
+        "scores": {"containment": 0.9},
+        "lexical_score": 0.926,
+        "combined_score": 0.275,
+    }
+
+    result = score_candidate(candidate, embeddings)
+    # Cosine sim is 1.0; disagreement is |0.926 - 1.0| = 0.074, NOT |0.275 - 1.0| = 0.725
+    assert result["lexical_semantic_disagreement"] == 0.074
+    assert result["high_disagreement_flag"] is False

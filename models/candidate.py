@@ -27,6 +27,7 @@ class CandidatePair(BaseModel):
     unit_b: CandidateUnitRef
     scores: CandidateScores
     combined_score: float
+    lexical_score: float = 0.0
     restart_phrase_detected: bool = False
     containment_direction: Optional[str] = None
     recency_weight: float = 1.0

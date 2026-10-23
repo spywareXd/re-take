@@ -139,7 +139,8 @@ def score_candidate(
         + w_cont * containment
     )
 
-    disagreement = abs(combined_score - semantic_score)
+    lexical_score = float(_get_candidate_field(candidate, "lexical_score", combined_score))
+    disagreement = abs(lexical_score - semantic_score)
     high_disagreement = disagreement > disagreement_threshold
 
     if stage2_score >= retake_threshold and not high_disagreement:
