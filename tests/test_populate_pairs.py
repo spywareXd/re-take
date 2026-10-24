@@ -26,11 +26,13 @@ from training.config import (
     CSV_COLUMNS,
     FEATURE_VERSION,
     GROUPS_CSV_COLUMNS,
+    GROUPS_CSV_COLUMNS_LEGACY,
     REFRESH_FEATURE_COLUMNS,
 )
 from training.populate_pairs import (
     _GroupsUnionFind,
     _compute_group_heuristics,
+    _unit_ids_from_pair_id,
     atomic_write_groups_csv,
     atomic_write_manifest,
     atomic_write_pairs_csv,
@@ -692,6 +694,48 @@ def _create_pair_row(
     }
 
 
+def _create_group_row(
+    group_id: str = "vid1__g1",
+    video_id: str = "vid1",
+    n_units: int = 2,
+    unit_ids: str = "1:0|1:1",
+    texts: str = "[1] Text 1:0 || [2] Text 1:1",
+    starts: str = "1.0|3.0",
+    ends: str = "2.0|4.0",
+    keeper_unit_ids: str = "",
+    keep_none: str = "",
+    notes: str = "",
+    pipeline_keeper_unit_id: str = "",
+    heuristic_later: str = "",
+    heuristic_earlier: str = "",
+    heuristic_confidence: str = "",
+    pair_ids: str = "",
+    n_pos_pairs: int = 1,
+    n_exempt_pairs: int = 0,
+    feature_version: str = FEATURE_VERSION,
+) -> dict[str, Any]:
+    return {
+        "group_id": group_id,
+        "video_id": video_id,
+        "n_units": n_units,
+        "unit_ids": unit_ids,
+        "texts": texts,
+        "starts": starts,
+        "ends": ends,
+        "keeper_unit_ids": keeper_unit_ids,
+        "keep_none": keep_none,
+        "notes": notes,
+        "pipeline_keeper_unit_id": pipeline_keeper_unit_id,
+        "heuristic_later": heuristic_later,
+        "heuristic_earlier": heuristic_earlier,
+        "heuristic_confidence": heuristic_confidence,
+        "pair_ids": pair_ids,
+        "n_pos_pairs": n_pos_pairs,
+        "n_exempt_pairs": n_exempt_pairs,
+        "feature_version": feature_version,
+    }
+
+
 def test_groups_connected_components_label1_only(tmp_path: Path):
     """Connected components of label=1 pairs only; 0, -1, and blank never join units."""
     proc_dir = tmp_path / "processed"
@@ -731,18 +775,23 @@ def test_groups_connected_components_label1_only(tmp_path: Path):
     assert g1["group_id"] == "vid1__g1"
     assert g1["n_units"] == "3"
     assert g1["unit_ids"] == "1:0|1:1|2:0"
-    assert "[1] Take one || [2] Take two || [3] Take three" in g1["texts"]
+    assert "[1] Text 1:0 || [2] Text 1:1 || [3] Text 2:0" in g1["texts"]
     assert g1["starts"] == "1.0|3.0|5.0"
     assert g1["ends"] == "2.0|4.0|6.0"
-    assert g1["keeper_unit_id"] == ""
+    assert g1["keeper_unit_ids"] == ""
     assert g1["keep_none"] == ""
     assert "vid1__1-0__1-1|vid1__1-1__2-0" in g1["pair_ids"]
+    assert g1["n_pos_pairs"] == "2"
+    assert g1["n_exempt_pairs"] == "0"
 
     # Group 2 has 2 units
     g2 = rows[1]
     assert g2["group_id"] == "vid1__g2"
     assert g2["n_units"] == "2"
     assert g2["unit_ids"] == "6:0|7:0"
+    assert g2["keeper_unit_ids"] == ""
+    assert g2["n_pos_pairs"] == "1"
+    assert g2["n_exempt_pairs"] == "0"
 
 
 def test_group_stability_same_unit_set_preserves_hand_labels(tmp_path: Path):
@@ -766,7 +815,7 @@ def test_group_stability_same_unit_set_preserves_hand_labels(tmp_path: Path):
     # Hand-label the group
     header, rows = read_groups_csv(groups_csv)
     assert len(rows) == 1
-    rows[0]["keeper_unit_id"] = "1:1"
+    rows[0]["keeper_unit_ids"] = "1:1"
     rows[0]["notes"] = "editor pick"
     atomic_write_groups_csv(groups_csv, rows)
 
@@ -776,7 +825,7 @@ def test_group_stability_same_unit_set_preserves_hand_labels(tmp_path: Path):
     header, rows_after = read_groups_csv(groups_csv)
     assert len(rows_after) == 1
     assert rows_after[0]["group_id"] == "vid1__g1"
-    assert rows_after[0]["keeper_unit_id"] == "1:1"
+    assert rows_after[0]["keeper_unit_ids"] == "1:1"
     assert rows_after[0]["notes"] == "editor pick"
 
 
@@ -801,7 +850,7 @@ def test_group_stability_changed_unit_set_appends_and_marks_stale(tmp_path: Path
 
     # Hand-label the original group
     header, rows = read_groups_csv(groups_csv)
-    rows[0]["keeper_unit_id"] = "1:0"
+    rows[0]["keeper_unit_ids"] = "1:0"
     rows[0]["notes"] = "initial pick"
     atomic_write_groups_csv(groups_csv, rows)
 
@@ -818,16 +867,16 @@ def test_group_stability_changed_unit_set_appends_and_marks_stale(tmp_path: Path
     old_row = rows_after[0]
     assert old_row["group_id"] == "vid1__g1"
     assert "STALE: unit set no longer matches pair labels" in old_row["notes"]
-    assert old_row["keeper_unit_id"] == "1:0"
+    assert old_row["keeper_unit_ids"] == "1:0"
 
     new_row = rows_after[1]
     assert new_row["group_id"] == "vid1__g2"
     assert new_row["unit_ids"] == "1:0|1:1|2:0"
-    assert new_row["keeper_unit_id"] == ""
+    assert new_row["keeper_unit_ids"] == ""
 
 
 def test_group_stability_keeper_not_in_unit_ids_flagged(tmp_path: Path):
-    """If keeper_unit_id is no longer in unit_ids, it is marked STALE."""
+    """If keeper_unit_ids contains an id no longer in unit_ids, it is marked STALE."""
     proc_dir = tmp_path / "processed"
     _setup_mock_units(proc_dir, "vid1", [
         ("1:0", 1.0, 2.0, "Take one", 0.8),
@@ -846,62 +895,84 @@ def test_group_stability_keeper_not_in_unit_ids_flagged(tmp_path: Path):
 
     # Set invalid keeper
     header, rows = read_groups_csv(groups_csv)
-    rows[0]["keeper_unit_id"] = "9:9"
+    rows[0]["keeper_unit_ids"] = "9:9"
     atomic_write_groups_csv(groups_csv, rows)
 
     build_groups(pairs_csv, groups_csv, proc_dir, backups_dir)
     header, rows_after = read_groups_csv(groups_csv)
-    assert "STALE: keeper_unit_id '9:9' not in unit_ids" in rows_after[0]["notes"]
+    assert "STALE: keeper not in unit_ids" in rows_after[0]["notes"]
 
 
-def test_check_groups_validations(tmp_path: Path):
+def test_check_groups_validations(tmp_path: Path, capsys):
     """check_groups flags contradictory zero pairs, missing keepers, conflicts, and stale rows."""
     pairs_csv = tmp_path / "pairs_v1.csv"
     groups_csv = tmp_path / "groups_v1.csv"
 
-    # 1. Contradictory pair labeled 0 inside group
+    # 1. Contradictory pair labeled 0 inside group (not same_take)
     pairs = [
         _create_pair_row("vid1", "1:0", "1:1", 1.0, 2.0, 3.0, 4.0, label="1"),
         _create_pair_row("vid1", "1:1", "2:0", 3.0, 4.0, 5.0, 6.0, label="1"),
-        _create_pair_row("vid1", "1:0", "2:0", 1.0, 2.0, 5.0, 6.0, label="0"), # contradictory!
+        _create_pair_row("vid1", "1:0", "2:0", 1.0, 2.0, 5.0, 6.0, label="0"),  # contradictory!
     ]
     atomic_write_pairs_csv(pairs_csv, pairs)
 
     groups = [
-        {
-            "group_id": "vid1__g1",
-            "video_id": "vid1",
-            "n_units": 3,
-            "unit_ids": "1:0|1:1|2:0",
-            "texts": "text",
-            "starts": "1.0|3.0|5.0",
-            "ends": "2.0|4.0|6.0",
-            "keeper_unit_id": "1:1",
-            "keep_none": "",
-            "notes": "",
-            "pipeline_keeper_unit_id": "1:1",
-            "heuristic_later": "2:0",
-            "heuristic_earlier": "1:0",
-            "heuristic_confidence": "1:1",
-            "pair_ids": "vid1__1-0__1-1|vid1__1-1__2-0",
-            "feature_version": FEATURE_VERSION,
-        }
+        _create_group_row(
+            group_id="vid1__g1",
+            video_id="vid1",
+            n_units=3,
+            unit_ids="1:0|1:1|2:0",
+            texts="[1] T1 || [2] T2 || [3] T3",
+            starts="1.0|3.0|5.0",
+            ends="2.0|4.0|6.0",
+            keeper_unit_ids="1:1",
+            pipeline_keeper_unit_id="1:1",
+            heuristic_later="2:0",
+            heuristic_earlier="1:0",
+            heuristic_confidence="1:1",
+            pair_ids="vid1__1-0__1-1|vid1__1-1__2-0",
+            n_pos_pairs=2,
+            n_exempt_pairs=0,
+        )
     ]
     atomic_write_groups_csv(groups_csv, groups)
 
     code = check_groups(groups_csv, pairs_csv)
-    assert code == 1
+    assert code == 0
+    captured = capsys.readouterr()
+    assert "real contradiction" in captured.out
+    assert "Label-1 chain:" in captured.out
 
-    # 2. Both keeper_unit_id and keep_none = 1
+    # 2. Both keeper_unit_ids and keep_none = 1
     groups[0]["keep_none"] = "1"
     atomic_write_groups_csv(groups_csv, groups)
-    assert check_groups(groups_csv, pairs_csv) == 1
+    check_groups(groups_csv, pairs_csv)
+    captured = capsys.readouterr()
+    assert "both keeper_unit_ids and keep_none=1" in captured.out
 
     # 3. Keeper outside unit_ids
     groups[0]["keep_none"] = ""
-    groups[0]["keeper_unit_id"] = "unknown:0"
+    groups[0]["keeper_unit_ids"] = "unknown:0"
     atomic_write_groups_csv(groups_csv, groups)
-    assert check_groups(groups_csv, pairs_csv) == 1
+    check_groups(groups_csv, pairs_csv)
+    captured = capsys.readouterr()
+    assert "not in unit_ids" in captured.out
+
+    # 4. Duplicate in keeper_unit_ids
+    groups[0]["keeper_unit_ids"] = "1:0|1:0"
+    atomic_write_groups_csv(groups_csv, groups)
+    check_groups(groups_csv, pairs_csv)
+    captured = capsys.readouterr()
+    assert "duplicate ids in keeper_unit_ids" in captured.out
+
+    # 5. Large group (> 8 units)
+    groups[0]["keeper_unit_ids"] = "1:0"
+    groups[0]["unit_ids"] = "|".join(f"{i}:0" for i in range(10))
+    groups[0]["n_units"] = 10
+    atomic_write_groups_csv(groups_csv, groups)
+    check_groups(groups_csv, pairs_csv)
+    captured = capsys.readouterr()
+    assert "has 10 units (> 8)" in captured.out
 
 
 def test_pipeline_heuristics_called_and_none_leaves_blank(tmp_path: Path):
@@ -1011,63 +1082,66 @@ def test_eval_keepers_accuracy_and_empty(tmp_path: Path, capsys):
 
     # Fixture with 3 groups:
     # Group 1 (size 2): keeper "1:1", pipeline "1:1", later "1:1", earlier "1:0", conf "1:1"
-    # Group 2 (size 3): keeper "2:0", pipeline "2:0", later "2:0", earlier "1:0", conf "1:0"
+    # Group 2 (size 3): keeper "1:1|2:0" (multi-unit keeper!), pipeline "2:0" (in set -> correct!), later "2:0", earlier "1:0", conf "1:0"
     # Group 3 (size 2): keep_none=1 (excluded from accuracy)
     rows = [
-        {
-            "group_id": "vid__g1",
-            "video_id": "vid",
-            "n_units": 2,
-            "unit_ids": "1:0|1:1",
-            "texts": "[1] A || [2] B",
-            "starts": "1.0|3.0",
-            "ends": "2.0|4.0",
-            "keeper_unit_id": "1:1",
-            "keep_none": "",
-            "notes": "",
-            "pipeline_keeper_unit_id": "1:1",
-            "heuristic_later": "1:1",
-            "heuristic_earlier": "1:0",
-            "heuristic_confidence": "1:1",
-            "pair_ids": "p1",
-            "feature_version": FEATURE_VERSION,
-        },
-        {
-            "group_id": "vid__g2",
-            "video_id": "vid",
-            "n_units": 3,
-            "unit_ids": "1:0|1:1|2:0",
-            "texts": "[1] A || [2] B || [3] C",
-            "starts": "1.0|3.0|5.0",
-            "ends": "2.0|4.0|6.0",
-            "keeper_unit_id": "2:0",
-            "keep_none": "",
-            "notes": "",
-            "pipeline_keeper_unit_id": "2:0",
-            "heuristic_later": "2:0",
-            "heuristic_earlier": "1:0",
-            "heuristic_confidence": "1:0",
-            "pair_ids": "p2",
-            "feature_version": FEATURE_VERSION,
-        },
-        {
-            "group_id": "vid__g3",
-            "video_id": "vid",
-            "n_units": 2,
-            "unit_ids": "3:0|4:0",
-            "texts": "[1] X || [2] Y",
-            "starts": "7.0|9.0",
-            "ends": "8.0|10.0",
-            "keeper_unit_id": "",
-            "keep_none": "1",
-            "notes": "",
-            "pipeline_keeper_unit_id": "4:0",
-            "heuristic_later": "4:0",
-            "heuristic_earlier": "3:0",
-            "heuristic_confidence": "4:0",
-            "pair_ids": "p3",
-            "feature_version": FEATURE_VERSION,
-        },
+        _create_group_row(
+            group_id="vid__g1",
+            video_id="vid",
+            n_units=2,
+            unit_ids="1:0|1:1",
+            texts="[1] A || [2] B",
+            starts="1.0|3.0",
+            ends="2.0|4.0",
+            keeper_unit_ids="1:1",
+            keep_none="",
+            notes="",
+            pipeline_keeper_unit_id="1:1",
+            heuristic_later="1:1",
+            heuristic_earlier="1:0",
+            heuristic_confidence="1:1",
+            pair_ids="p1",
+            n_pos_pairs=1,
+            n_exempt_pairs=0,
+        ),
+        _create_group_row(
+            group_id="vid__g2",
+            video_id="vid",
+            n_units=3,
+            unit_ids="1:0|1:1|2:0",
+            texts="[1] A || [2] B || [3] C",
+            starts="1.0|3.0|5.0",
+            ends="2.0|4.0|6.0",
+            keeper_unit_ids="1:1|2:0",
+            keep_none="",
+            notes="",
+            pipeline_keeper_unit_id="2:0",
+            heuristic_later="2:0",
+            heuristic_earlier="1:0",
+            heuristic_confidence="1:0",
+            pair_ids="p2",
+            n_pos_pairs=2,
+            n_exempt_pairs=0,
+        ),
+        _create_group_row(
+            group_id="vid__g3",
+            video_id="vid",
+            n_units=2,
+            unit_ids="3:0|4:0",
+            texts="[1] X || [2] Y",
+            starts="7.0|9.0",
+            ends="8.0|10.0",
+            keeper_unit_ids="",
+            keep_none="1",
+            notes="",
+            pipeline_keeper_unit_id="4:0",
+            heuristic_later="4:0",
+            heuristic_earlier="3:0",
+            heuristic_confidence="4:0",
+            pair_ids="p3",
+            n_pos_pairs=1,
+            n_exempt_pairs=0,
+        ),
     ]
     atomic_write_groups_csv(groups_csv, rows)
 
@@ -1081,6 +1155,170 @@ def test_eval_keepers_accuracy_and_empty(tmp_path: Path, capsys):
     assert "2/2 (100.0%)" in captured.out
     # Keep Earlier: 0/2 (0.0%)
     assert "0/2 (0.0%)" in captured.out
+    # Per-video counts printed
+    assert "vid: 2 group(s)" in captured.out
+
+
+def test_groups_only_natural_rows_exclude_synthetic_and_dummy(tmp_path: Path):
+    """Groups use only natural rows; synthetic and dummy rows never form groups."""
+    proc_dir = tmp_path / "processed"
+    _setup_mock_units(proc_dir, "vid_nat", [("1:0", 1.0, 2.0, "Nat 1", 0.9), ("1:1", 3.0, 4.0, "Nat 2", 0.9)])
+    _setup_mock_units(proc_dir, "synth_01", [("s1", 1.0, 2.0, "Synth 1", 0.9), ("s2", 3.0, 4.0, "Synth 2", 0.9)])
+    _setup_mock_units(proc_dir, "dummy_01", [("d1", 1.0, 2.0, "Dummy 1", 0.9), ("d2", 3.0, 4.0, "Dummy 2", 0.9)])
+
+    pairs = [
+        _create_pair_row("vid_nat", "1:0", "1:1", 1.0, 2.0, 3.0, 4.0, label="1"),
+        _create_pair_row("synth_01", "s1", "s2", 1.0, 2.0, 3.0, 4.0, label="1"),
+        _create_pair_row("dummy_01", "d1", "d2", 1.0, 2.0, 3.0, 4.0, label="1"),
+    ]
+    # Also add a row with is_synthetic="1" on natural vid
+    synth_row = _create_pair_row("vid_nat", "2:0", "2:1", 5.0, 6.0, 7.0, 8.0, label="1")
+    synth_row["is_synthetic"] = "1"
+    pairs.append(synth_row)
+
+    pairs_csv = tmp_path / "pairs_v1.csv"
+    groups_csv = tmp_path / "groups_v1.csv"
+    backups_dir = tmp_path / "backups"
+
+    atomic_write_pairs_csv(pairs_csv, pairs)
+    build_groups(pairs_csv, groups_csv, proc_dir, backups_dir)
+
+    header, rows = read_groups_csv(groups_csv)
+    # Only 1 group should be formed: vid_nat with 1:0|1:1
+    assert len(rows) == 1
+    assert rows[0]["video_id"] == "vid_nat"
+    assert rows[0]["unit_ids"] == "1:0|1:1"
+
+
+def test_unit_ids_derived_from_pair_id_when_corrupted_by_excel(tmp_path: Path, capsys):
+    """Unit ids come from pair_id when unit_a_id/unit_b_id are Excel corrupted (01:00 becomes 1:0)."""
+    proc_dir = tmp_path / "processed"
+    _setup_mock_units(proc_dir, "vid1", [("1:0", 1.0, 2.0, "Take 1", 0.9), ("2:0", 3.0, 4.0, "Take 2", 0.9)])
+
+    row = _create_pair_row("vid1", "1:0", "2:0", 1.0, 2.0, 3.0, 4.0, label="1")
+    # Simulate Excel corruption:
+    row["unit_a_id"] = "01:00"
+    row["unit_b_id"] = "02:00"
+    row["pair_id"] = "vid1__1-0__2-0"
+
+    pairs_csv = tmp_path / "pairs_v1.csv"
+    groups_csv = tmp_path / "groups_v1.csv"
+    backups_dir = tmp_path / "backups"
+
+    atomic_write_pairs_csv(pairs_csv, [row])
+    build_groups(pairs_csv, groups_csv, proc_dir, backups_dir)
+
+    captured = capsys.readouterr()
+    assert "Excel corruption" in captured.out or "differ from pair_id-derived values" in captured.out
+
+    header, rows = read_groups_csv(groups_csv)
+    assert len(rows) == 1
+    assert rows[0]["unit_ids"] == "1:0|2:0"
+
+
+def test_same_take_exempt_from_contradictions(tmp_path: Path, capsys):
+    """A same_take 0-pair inside a group is exempt from contradiction checks; without the note it is flagged."""
+    pairs_csv = tmp_path / "pairs_v1.csv"
+    groups_csv = tmp_path / "groups_v1.csv"
+
+    # Pairs linking 1:0 ~ 1:1 (label 1), 1:1 ~ 2:0 (label 1)
+    # And 1:0 ~ 2:0 is labeled 0 with note 'same_take, pause in speech'
+    pairs = [
+        _create_pair_row("vid1", "1:0", "1:1", 1.0, 2.0, 3.0, 4.0, label="1"),
+        _create_pair_row("vid1", "1:1", "2:0", 3.0, 4.0, 5.0, 6.0, label="1"),
+        _create_pair_row("vid1", "1:0", "2:0", 1.0, 2.0, 5.0, 6.0, label="0", notes="same_take: paused here"),
+    ]
+    atomic_write_pairs_csv(pairs_csv, pairs)
+
+    groups = [
+        _create_group_row(
+            group_id="vid1__g1",
+            video_id="vid1",
+            n_units=3,
+            unit_ids="1:0|1:1|2:0",
+            texts="[1] T1 || [2] T2 || [3] T3",
+            starts="1.0|3.0|5.0",
+            ends="2.0|4.0|6.0",
+            keeper_unit_ids="2:0",
+            pair_ids="vid1__1-0__1-1|vid1__1-1__2-0",
+            n_pos_pairs=2,
+            n_exempt_pairs=1,
+        )
+    ]
+    atomic_write_groups_csv(groups_csv, groups)
+
+    # 1. Exempt pair: 0 issues
+    code = check_groups(groups_csv, pairs_csv)
+    assert code == 0
+    captured = capsys.readouterr()
+    assert "No group validation issues found" in captured.out
+
+    # 2. Without 'same_take' note: real contradiction flagged
+    pairs[2]["notes"] = "different sentences"
+    atomic_write_pairs_csv(pairs_csv, pairs)
+    code = check_groups(groups_csv, pairs_csv)
+    assert code == 0
+    captured = capsys.readouterr()
+    assert "real contradiction" in captured.out
+    assert "Label-1 chain:" in captured.out
+
+
+def test_legacy_header_migration_preserves_hand_labels(tmp_path: Path):
+    """Migration from the old keeper_unit_id header keeps hand-filled values and adds new columns."""
+    groups_csv = tmp_path / "groups_v1.csv"
+    backups_dir = tmp_path / "backups"
+    proc_dir = tmp_path / "processed"
+    pairs_csv = tmp_path / "pairs_v1.csv"
+
+    # Write a legacy CSV with GROUPS_CSV_COLUMNS_LEGACY
+    legacy_row = {
+        "group_id": "vid1__g1",
+        "video_id": "vid1",
+        "n_units": "2",
+        "unit_ids": "1:0|1:1",
+        "texts": "[1] Take 1 || [2] Take 2",
+        "starts": "1.0|3.0",
+        "ends": "2.0|4.0",
+        "keeper_unit_id": "1:1",
+        "keep_none": "",
+        "notes": "my editor choice",
+        "pipeline_keeper_unit_id": "1:1",
+        "heuristic_later": "1:1",
+        "heuristic_earlier": "1:0",
+        "heuristic_confidence": "1:1",
+        "pair_ids": "vid1__1-0__1-1",
+        "feature_version": FEATURE_VERSION,
+    }
+    with open(groups_csv, "w", encoding="utf-8-sig", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=GROUPS_CSV_COLUMNS_LEGACY)
+        writer.writeheader()
+        writer.writerow(legacy_row)
+
+    # 1. read_groups_csv should detect legacy header and migrate in memory
+    hdr, rows = read_groups_csv(groups_csv)
+    assert hdr == GROUPS_CSV_COLUMNS
+    assert len(rows) == 1
+    assert rows[0]["keeper_unit_ids"] == "1:1"
+    assert "keeper_unit_id" not in rows[0]
+
+    # 2. build_groups should back up and migrate on disk
+    _setup_mock_units(proc_dir, "vid1", [("1:0", 1.0, 2.0, "Take 1", 0.9), ("1:1", 3.0, 4.0, "Take 2", 0.9)])
+    pairs = [_create_pair_row("vid1", "1:0", "1:1", 1.0, 2.0, 3.0, 4.0, label="1")]
+    atomic_write_pairs_csv(pairs_csv, pairs)
+
+    build_groups(pairs_csv, groups_csv, proc_dir, backups_dir)
+
+    # Verify migrated file on disk has new header and preserved hand label
+    with open(groups_csv, "r", encoding="utf-8-sig", newline="") as f:
+        reader = csv.reader(f)
+        on_disk_hdr = next(reader)
+        assert on_disk_hdr == GROUPS_CSV_COLUMNS
+
+    _, final_rows = read_groups_csv(groups_csv)
+    assert len(final_rows) == 1
+    assert final_rows[0]["keeper_unit_ids"] == "1:1"
+    assert final_rows[0]["notes"] == "my editor choice"
+    assert int(final_rows[0]["n_pos_pairs"]) == 1
 
 
 def test_candidate_to_csv_row_disagreement_calculation():
@@ -1101,4 +1339,39 @@ def test_candidate_to_csv_row_disagreement_calculation():
     assert row["lexical_score"] == 0.926
     assert row["semantic_score"] == 0.990
     assert row["disagreement"] == 0.064
+
+
+def test_keeper_excel_time_normalization(tmp_path: Path):
+    """Excel time corruptions like '04:00' in keeper_unit_ids are normalized to '4:0'."""
+    from training.populate_pairs import _normalize_keeper_unit_ids, _normalize_unit_id_str
+
+    assert _normalize_unit_id_str("04:00") == "4:0"
+    assert _normalize_unit_id_str("04:00:00") == "4:0"
+    assert _normalize_unit_id_str("4:0") == "4:0"
+    assert _normalize_unit_id_str("01:00") == "1:0"
+    assert _normalize_unit_id_str("12:00") == "12:0"
+    assert _normalize_unit_id_str("s01-1") == "s01-1"
+    assert _normalize_unit_id_str("") == ""
+
+    assert _normalize_keeper_unit_ids("04:00") == "4:0"
+    assert _normalize_keeper_unit_ids("01:00|02:01") == "1:0|2:1"
+
+    groups_csv = tmp_path / "groups_v1.csv"
+    groups = [
+        _create_group_row(
+            group_id="vid1__g1",
+            video_id="vid1",
+            n_units=2,
+            unit_ids="2:0|4:0",
+            texts="[1] A || [2] B",
+            starts="1.0|3.0",
+            ends="2.0|4.0",
+            keeper_unit_ids="04:00",  # Excel corruption
+        )
+    ]
+    atomic_write_groups_csv(groups_csv, groups)
+
+    _, loaded_rows = read_groups_csv(groups_csv)
+    assert loaded_rows[0]["keeper_unit_ids"] == "4:0"
+
 

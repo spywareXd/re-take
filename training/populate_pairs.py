@@ -13,6 +13,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import shutil
 import sys
 import uuid
@@ -254,6 +255,28 @@ def _unit_ids_from_pair_id(pair_id: str, video_id: str) -> tuple[str, str]:
     return _decode(raw_a), _decode(raw_b)
 
 
+def _normalize_unit_id_str(u: str) -> str:
+    """
+    Normalizes a unit id string, handling Excel time auto-formatting (e.g. '04:00' -> '4:0').
+    Preserves synthetic prefixes like 's01-1' or 'dummy'.
+    """
+    s = str(u).strip()
+    if not s or s.lower() == "nan":
+        return ""
+    m = re.match(r"^0*(\d+):0*(\d+)(?::0+)?$", s)
+    if m:
+        return f"{int(m.group(1))}:{int(m.group(2))}"
+    return s
+
+
+def _normalize_keeper_unit_ids(keeper_str: str) -> str:
+    """Normalizes pipe-delimited keeper_unit_ids, converting any Excel time corruptions."""
+    if not keeper_str or str(keeper_str).strip() == "" or str(keeper_str).strip().lower() == "nan":
+        return ""
+    parts = [str(k).strip() for k in str(keeper_str).split("|") if str(k).strip()]
+    return "|".join(_normalize_unit_id_str(k) for k in parts)
+
+
 def read_groups_csv(groups_csv_path: Path) -> tuple[list[str], list[dict[str, Any]]]:
     """
     Reads groups_v1.csv with utf-8-sig encoding.
@@ -284,7 +307,7 @@ def read_groups_csv(groups_csv_path: Path) -> tuple[list[str], list[dict[str, An
                         continue
                     d = dict(zip(GROUPS_CSV_COLUMNS_LEGACY, row))
                     # Rename keeper_unit_id -> keeper_unit_ids
-                    d["keeper_unit_ids"] = d.pop("keeper_unit_id", "")
+                    d["keeper_unit_ids"] = _normalize_keeper_unit_ids(d.pop("keeper_unit_id", ""))
                     d["n_pos_pairs"] = d.get("n_pos_pairs", "")
                     d["n_exempt_pairs"] = d.get("n_exempt_pairs", "")
                     rows.append(d)
@@ -300,7 +323,10 @@ def read_groups_csv(groups_csv_path: Path) -> tuple[list[str], list[dict[str, An
             for row in reader:
                 if not row:
                     continue
-                rows.append(dict(zip(header, row)))
+                d = dict(zip(header, row))
+                if d.get("keeper_unit_ids"):
+                    d["keeper_unit_ids"] = _normalize_keeper_unit_ids(d["keeper_unit_ids"])
+                rows.append(d)
             return header, rows
     except PermissionError:
         sys.stderr.write("close groups_v1.csv and rerun\n")
@@ -1125,18 +1151,27 @@ def build_groups(
                 ex_row["feature_version"] = FEATURE_VERSION
 
                 # Check if any keeper_unit_ids are no longer in unit_ids
-                keeper_ids_str = str(ex_row.get("keeper_unit_ids", "")).strip()
+                keeper_ids_str = _normalize_keeper_unit_ids(str(ex_row.get("keeper_unit_ids", "")).strip())
+                ex_row["keeper_unit_ids"] = keeper_ids_str
                 if keeper_ids_str:
                     unit_set = ng["unit_set"]
                     keeper_ids = [k.strip() for k in keeper_ids_str.split("|") if k.strip()]
                     bad_keepers = [k for k in keeper_ids if k not in unit_set]
+                    curr_notes = str(ex_row.get("notes", "")).strip()
                     if bad_keepers:
                         stale_msg = f"STALE: keeper not in unit_ids: {bad_keepers}"
-                        curr_notes = str(ex_row.get("notes", "")).strip()
                         if stale_msg not in curr_notes:
                             ex_row["notes"] = f"{curr_notes}; {stale_msg}" if curr_notes else stale_msg
                             print(f"Warning: Group {ex_row['group_id']}: {stale_msg}")
                             total_stale += 1
+                    else:
+                        # Clear false stale note if previously added due to unnormalized time format
+                        if "STALE: keeper not in unit_ids" in curr_notes:
+                            cleaned_notes = "; ".join(
+                                p.strip() for p in curr_notes.split(";")
+                                if "STALE: keeper not in unit_ids" not in p
+                            )
+                            ex_row["notes"] = cleaned_notes
 
                 video_final_rows.append(ex_row)
                 total_updated += 1
@@ -1309,6 +1344,7 @@ def check_groups(
             issues.append(f"Group '{gid}': has fewer than 2 units ({len(uids)} found).")
 
         # 2. keeper_unit_ids validation
+        keeper_ids_str = _normalize_keeper_unit_ids(keeper_ids_str)
         if keeper_ids_str:
             keeper_ids = [k.strip() for k in keeper_ids_str.split("|") if k.strip()]
             # Duplicates
@@ -1328,6 +1364,7 @@ def check_groups(
         # 4. STALE row
         if "STALE:" in notes or notes.startswith("STALE"):
             issues.append(f"Group '{gid}' is STALE: {notes}")
+            continue
 
         # 5. Large groups
         if len(uids) > 8:
@@ -1426,7 +1463,7 @@ def eval_keepers(groups_csv_path: Path = DEFAULT_GROUPS_CSV_PATH) -> int:
         return 0
 
     def _keeper_set(g: dict[str, Any]) -> set[str]:
-        return {k.strip() for k in str(g.get("keeper_unit_ids", "")).split("|") if k.strip()}
+        return {_normalize_unit_id_str(k) for k in str(g.get("keeper_unit_ids", "")).split("|") if k.strip()}
 
     def _is_correct(strategy_col: str, g: dict[str, Any]) -> bool:
         chosen = str(g.get(strategy_col, "")).strip()
