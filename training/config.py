@@ -60,8 +60,30 @@ REFRESH_FEATURE_COLUMNS: list[str] = [
     "feature_version",
 ]
 
-# Groups CSV column specification (16 columns)
+# Groups CSV column specification (18 columns)
 GROUPS_CSV_COLUMNS: list[str] = [
+    "group_id",
+    "video_id",
+    "n_units",
+    "unit_ids",
+    "texts",
+    "starts",
+    "ends",
+    "keeper_unit_ids",
+    "keep_none",
+    "notes",
+    "pipeline_keeper_unit_id",
+    "heuristic_later",
+    "heuristic_earlier",
+    "heuristic_confidence",
+    "pair_ids",
+    "n_pos_pairs",
+    "n_exempt_pairs",
+    "feature_version",
+]
+
+# Old groups header (pre-migration) — used to detect and migrate legacy files
+GROUPS_CSV_COLUMNS_LEGACY: list[str] = [
     "group_id",
     "video_id",
     "n_units",

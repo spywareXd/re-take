@@ -49,6 +49,7 @@ from training.config import (
     DEFAULT_WINDOW_SECONDS,
     FEATURE_VERSION,
     GROUPS_CSV_COLUMNS,
+    GROUPS_CSV_COLUMNS_LEGACY,
     REFRESH_FEATURE_COLUMNS,
 )
 
@@ -212,10 +213,52 @@ def atomic_write_pairs_csv(
                 pass
 
 
+def _is_synthetic_video(video_id: str) -> bool:
+    """Returns True if a video_id is synthetic or dummy and should be excluded from groups."""
+    vid = str(video_id)
+    return vid.startswith("dummy_") or vid.startswith("synth_")
+
+
+def _unit_ids_from_pair_id(pair_id: str, video_id: str) -> tuple[str, str]:
+    """
+    Derives unit_a_id and unit_b_id from pair_id.
+    pair_id format: {video_id}__{A}__{B} where ':' in A and B is replaced by '-'.
+    E.g. 'speaker_a_3__11-0__15-0' -> ('11:0', '15:0')
+    """
+    prefix = video_id + "__"
+    if pair_id.startswith(prefix):
+        rest = pair_id[len(prefix):]
+    else:
+        # Fallback: split on __ and take last two parts
+        parts = pair_id.split("__")
+        if len(parts) >= 3:
+            rest = "__".join(parts[1:])
+        else:
+            rest = pair_id
+
+    # Split on last __ to get A and B
+    double_idx = rest.rfind("__")
+    if double_idx == -1:
+        return rest.replace("-", ":", 1), ""
+    raw_a = rest[:double_idx]
+    raw_b = rest[double_idx + 2:]
+
+    def _decode(s: str) -> str:
+        # Only replace dashes that look like segment:sub separators (digit-digit)
+        # e.g. '11-0' -> '11:0', '7-1' -> '7:1'
+        # Preserve alpha prefixes: e.g. 'synth-01' stays as-is since these won't have a pure digit:digit pattern
+        import re
+        # Replace patterns like 'N-M' where N and M are digits with 'N:M'
+        return re.sub(r'^(\d+)-(\d+)$', r'\1:\2', s)
+
+    return _decode(raw_a), _decode(raw_b)
+
+
 def read_groups_csv(groups_csv_path: Path) -> tuple[list[str], list[dict[str, Any]]]:
     """
     Reads groups_v1.csv with utf-8-sig encoding.
-    Verifies that the header matches GROUPS_CSV_COLUMNS exactly.
+    Detects and migrates legacy headers (keeper_unit_id -> keeper_unit_ids, adds n_pos_pairs/n_exempt_pairs).
+    Verifies that the header matches GROUPS_CSV_COLUMNS exactly after migration.
     Catches PermissionError (e.g. locked in Excel) and exits non-zero.
     """
     if not groups_csv_path.exists():
@@ -227,13 +270,33 @@ def read_groups_csv(groups_csv_path: Path) -> tuple[list[str], list[dict[str, An
             header = next(reader, None)
             if header is None:
                 return list(GROUPS_CSV_COLUMNS), []
+
+            # Detect legacy header and migrate
+            if header == GROUPS_CSV_COLUMNS_LEGACY:
+                print(
+                    f"[Migration] {groups_csv_path.name}: legacy header detected. "
+                    "Migrating keeper_unit_id -> keeper_unit_ids and adding n_pos_pairs/n_exempt_pairs."
+                )
+                raw_rows = list(reader)
+                rows: list[dict[str, Any]] = []
+                for row in raw_rows:
+                    if not row:
+                        continue
+                    d = dict(zip(GROUPS_CSV_COLUMNS_LEGACY, row))
+                    # Rename keeper_unit_id -> keeper_unit_ids
+                    d["keeper_unit_ids"] = d.pop("keeper_unit_id", "")
+                    d["n_pos_pairs"] = d.get("n_pos_pairs", "")
+                    d["n_exempt_pairs"] = d.get("n_exempt_pairs", "")
+                    rows.append(d)
+                return list(GROUPS_CSV_COLUMNS), rows
+
             if header != GROUPS_CSV_COLUMNS:
                 raise ValueError(
                     f"Header mismatch in {groups_csv_path}.\n"
                     f"Expected: {GROUPS_CSV_COLUMNS}\n"
                     f"Found:    {header}"
                 )
-            rows: list[dict[str, Any]] = []
+            rows = []
             for row in reader:
                 if not row:
                     continue
@@ -605,7 +668,8 @@ def print_stats(
         return
 
     groups_header, group_rows = read_groups_csv(groups_csv_path)
-    valid_groups = [r for r in group_rows if not str(r.get("video_id", "")).startswith("dummy_")]
+    # Exclude synthetic and dummy rows
+    valid_groups = [r for r in group_rows if not _is_synthetic_video(str(r.get("video_id", "")))]
     if not valid_groups:
         print(f"No groups found in {groups_csv_path.name}.")
         print("=" * 88 + "\n")
@@ -617,8 +681,8 @@ def print_stats(
         by_video_groups.setdefault(vid, []).append(r)
 
     print(
-        f"{'Video ID':<18} {'Groups':<8} {'Keeper Labeled':<16} {'Keep None':<11} "
-        f"{'Unlabeled':<11} {'Size 2':<8} {'Size 3':<8} {'Size 4+'}"
+        f"{'Video ID':<18} {'Groups':<8} {'Keeper':<10} {'Keep None':<11} "
+        f"{'Unlabeled':<11} {'Sz2':<5} {'Sz3':<5} {'Sz4-6':<7} {'Sz7+'}"
     )
     print("-" * 88)
 
@@ -628,42 +692,57 @@ def print_stats(
     tot_unlabeled = 0
     tot_s2 = 0
     tot_s3 = 0
-    tot_s4p = 0
+    tot_s46 = 0
+    tot_s7p = 0
+    tot_exempt = 0
 
     for vid in sorted(by_video_groups.keys()):
         v_rows = by_video_groups[vid]
         cnt = len(v_rows)
-        keeper = sum(1 for r in v_rows if str(r.get("keeper_unit_id", "")).strip() != "")
+        keeper = sum(1 for r in v_rows if str(r.get("keeper_unit_ids", "")).strip() != "")
         none_cnt = sum(1 for r in v_rows if str(r.get("keep_none", "")).strip() == "1")
         unlabeled = sum(
             1 for r in v_rows
-            if str(r.get("keeper_unit_id", "")).strip() == "" and str(r.get("keep_none", "")).strip() != "1"
+            if str(r.get("keeper_unit_ids", "")).strip() == "" and str(r.get("keep_none", "")).strip() != "1"
         )
-        s2 = sum(1 for r in v_rows if int(r.get("n_units", len(str(r.get("unit_ids", "")).split("|")))) == 2)
-        s3 = sum(1 for r in v_rows if int(r.get("n_units", len(str(r.get("unit_ids", "")).split("|")))) == 3)
-        s4p = sum(1 for r in v_rows if int(r.get("n_units", len(str(r.get("unit_ids", "")).split("|")))) >= 4)
+        def _n(r: dict[str, Any]) -> int:
+            try:
+                return int(r.get("n_units", len(str(r.get("unit_ids", "")).split("|"))  ))
+            except (ValueError, TypeError):
+                return len(str(r.get("unit_ids", "")).split("|"))
+        s2 = sum(1 for r in v_rows if _n(r) == 2)
+        s3 = sum(1 for r in v_rows if _n(r) == 3)
+        s46 = sum(1 for r in v_rows if 4 <= _n(r) <= 6)
+        s7p = sum(1 for r in v_rows if _n(r) >= 7)
+        exempt = sum(
+            int(r.get("n_exempt_pairs", 0) or 0) for r in v_rows
+        )
 
         tot_keeper += keeper
         tot_none += none_cnt
         tot_unlabeled += unlabeled
         tot_s2 += s2
         tot_s3 += s3
-        tot_s4p += s4p
+        tot_s46 += s46
+        tot_s7p += s7p
+        tot_exempt += exempt
 
         print(
-            f"{vid:<18} {cnt:<8} {keeper:<16} {none_cnt:<11} "
-            f"{unlabeled:<11} {s2:<8} {s3:<8} {s4p}"
+            f"{vid:<18} {cnt:<8} {keeper:<10} {none_cnt:<11} "
+            f"{unlabeled:<11} {s2:<5} {s3:<5} {s46:<7} {s7p}"
         )
 
     print("-" * 88)
-    print("Summary Group Totals (excluding dummy rows):")
+    print("Summary Group Totals (excluding synthetic/dummy rows):")
     print(f"  Total groups:            {tot_groups}")
     print(f"  Keeper labeled:          {tot_keeper}")
     print(f"  Keep none:               {tot_none}")
     print(f"  Unlabeled groups:        {tot_unlabeled}")
     print(f"  Groups of size 2:        {tot_s2}")
     print(f"  Groups of size 3:        {tot_s3}")
-    print(f"  Groups of size 4+:       {tot_s4p}")
+    print(f"  Groups of size 4-6:      {tot_s46}")
+    print(f"  Groups of size 7+:       {tot_s7p}")
+    print(f"  Total same_take exempt pairs: {tot_exempt}")
     print("=" * 88 + "\n")
 
 
@@ -770,16 +849,40 @@ def build_groups(
 ) -> int:
     """
     Builds or updates data/training/groups_v1.csv from labeled pairs in pairs_v1.csv.
+    Groups are only built for natural (non-synthetic) rows.
+    Unit IDs are always derived from pair_id to avoid Excel corruption of unit_a_id/unit_b_id.
     Identifies retake groups via connected components of label=1 pairs (union-find).
     Maintains group stability:
     - Same unit set: preserves hand labels, updates pipeline guesses.
     - Changed/split/merged unit set: appends new row, marks old row STALE in notes.
     - Never changes existing group_ids.
+    If groups_v1.csv has the legacy header, backs it up and migrates it first.
     """
     header, existing_pairs = read_pairs_csv(pairs_csv_path)
 
-    # Exclude dummy_ rows
-    valid_pairs = [r for r in existing_pairs if not str(r.get("video_id", "")).startswith("dummy_")]
+    # Exclude synthetic (is_synthetic==1, synth_, dummy_) rows — groups are for natural data only
+    def _is_natural(r: dict[str, Any]) -> bool:
+        vid = str(r.get("video_id", ""))
+        synth = str(r.get("is_synthetic", "0")).strip()
+        return synth != "1" and not _is_synthetic_video(vid)
+
+    valid_pairs = [r for r in existing_pairs if _is_natural(r)]
+
+    # Detect and warn if unit_a_id/unit_b_id differ from pair_id-derived values
+    mismatch_count = 0
+    for p in valid_pairs:
+        vid = str(p.get("video_id", "")).strip()
+        pid = str(p.get("pair_id", "")).strip()
+        derived_a, derived_b = _unit_ids_from_pair_id(pid, vid)
+        raw_a = str(p.get("unit_a_id", "")).strip()
+        raw_b = str(p.get("unit_b_id", "")).strip()
+        if (derived_a and raw_a and raw_a != derived_a) or (derived_b and raw_b and raw_b != derived_b):
+            mismatch_count += 1
+    if mismatch_count:
+        print(
+            f"Warning: {mismatch_count} pair(s) have unit_a_id/unit_b_id that differ from pair_id-derived values "
+            "(likely Excel corruption). Using pair_id as the source of truth."
+        )
 
     # Group pairs by video_id
     pairs_by_video: dict[str, list[dict[str, Any]]] = {}
@@ -790,8 +893,17 @@ def build_groups(
 
     target_videos = [video_id] if video_id else sorted(pairs_by_video.keys())
 
-    # Read existing groups
+    # Read existing groups (migrates legacy header if needed)
     groups_header, existing_groups = read_groups_csv(groups_csv_path)
+
+    # If a migration happened (header was updated in memory), write it back now before proceeding
+    if groups_csv_path.exists() and existing_groups:
+        with open(groups_csv_path, "r", encoding="utf-8-sig", newline="") as _f:
+            _raw_hdr = next(csv.reader(_f), None)
+        if _raw_hdr and _raw_hdr == GROUPS_CSV_COLUMNS_LEGACY:
+            backup_groups_csv(groups_csv_path, backups_dir)
+            atomic_write_groups_csv(groups_csv_path, existing_groups, fieldnames=GROUPS_CSV_COLUMNS)
+            print("[Migration] Legacy groups_v1.csv backed up and migrated to new schema.")
 
     # Video existing groups map
     current_video_existing = {
@@ -829,20 +941,35 @@ def build_groups(
             except Exception:
                 pass
 
-        # Build union-find on label=1 pairs
+        # Build union-find on label=1 pairs, using unit ids derived from pair_id
         uf = _GroupsUnionFind()
-        label1_pairs: list[dict[str, Any]] = []
+        label1_pairs: list[dict[str, Any]] = []  # pairs with label==1
         for p in video_pairs:
+            pid = str(p.get("pair_id", "")).strip()
             if str(p.get("label", "")).strip() == "1":
-                u_a = str(p.get("unit_a_id", "")).strip()
-                u_b = str(p.get("unit_b_id", "")).strip()
+                u_a, u_b = _unit_ids_from_pair_id(pid, vid)
                 if u_a and u_b:
                     uf.union(u_a, u_b)
-                    label1_pairs.append(p)
+                    # Store derived ids alongside pair for downstream use
+                    p_copy = dict(p)
+                    p_copy["_derived_a"] = u_a
+                    p_copy["_derived_b"] = u_b
+                    label1_pairs.append(p_copy)
 
         components = uf.get_components()
         # Singletons are not groups
         group_components = [c for c in components if len(c) >= 2]
+
+        # Count exempt pairs (label=0, notes contain 'same_take') per component
+        exempt_pairs_by_comp: dict[frozenset, int] = {}
+        for p in video_pairs:
+            if str(p.get("label", "")).strip() == "0" and "same_take" in str(p.get("notes", "")).lower():
+                pid = str(p.get("pair_id", "")).strip()
+                u_a, u_b = _unit_ids_from_pair_id(pid, vid)
+                for comp in group_components:
+                    if u_a in comp and u_b in comp:
+                        key = frozenset(comp)
+                        exempt_pairs_by_comp[key] = exempt_pairs_by_comp.get(key, 0) + 1
 
         # Prepare new group representations
         new_groups: list[dict[str, Any]] = []
@@ -866,8 +993,23 @@ def build_groups(
             sorted_uids = [u["unit_id"] for u in sorted_units]
             n_units = len(sorted_uids)
             unit_ids_str = "|".join(sorted_uids)
+
+            # Build texts from pair rows (text_a/text_b) — no cache needed
+            text_lookup: dict[str, str] = {}
+            for p in video_pairs:
+                pid = str(p.get("pair_id", "")).strip()
+                u_a, u_b = _unit_ids_from_pair_id(pid, vid)
+                if u_a in comp:
+                    text_lookup.setdefault(u_a, str(p.get("text_a", "")))
+                if u_b in comp:
+                    text_lookup.setdefault(u_b, str(p.get("text_b", "")))
+            # Fallback to unit_map raw_text
+            for uid in sorted_uids:
+                if uid not in text_lookup:
+                    text_lookup[uid] = unit_map.get(uid, {}).get("raw_text", "")
+
             texts_str = " || ".join(
-                f"[{i}] {unit_map.get(uid, {}).get('raw_text', '')}"
+                f"[{i}] {text_lookup.get(uid, '')}"
                 for i, uid in enumerate(sorted_uids, 1)
             )
             starts_str = "|".join(
@@ -879,13 +1021,15 @@ def build_groups(
                 for uid in sorted_uids
             )
 
-            # Relevant label=1 pair_ids
+            # Relevant label=1 pair_ids (use derived ids for matching)
             comp_pair_ids = sorted(
                 str(p.get("pair_id"))
                 for p in label1_pairs
-                if str(p.get("unit_a_id")) in comp and str(p.get("unit_b_id")) in comp
+                if p.get("_derived_a") in comp and p.get("_derived_b") in comp
             )
+            n_pos_pairs = len(comp_pair_ids)
             pair_ids_str = "|".join(comp_pair_ids)
+            n_exempt = exempt_pairs_by_comp.get(frozenset(comp), 0)
 
             # Find matching candidate objects from candidates_data or video_pairs
             group_pairs: list[dict[str, Any]] = []
@@ -898,8 +1042,8 @@ def build_groups(
 
             if not group_pairs:
                 for p in video_pairs:
-                    p_a = p.get("unit_a_id")
-                    p_b = p.get("unit_b_id")
+                    pid = str(p.get("pair_id", "")).strip()
+                    p_a, p_b = _unit_ids_from_pair_id(pid, vid)
                     if p_a in comp_set and p_b in comp_set:
                         group_pairs.append({
                             "unit_a": unit_map.get(
@@ -933,6 +1077,8 @@ def build_groups(
                 "starts": starts_str,
                 "ends": ends_str,
                 "pair_ids": pair_ids_str,
+                "n_pos_pairs": n_pos_pairs,
+                "n_exempt_pairs": n_exempt,
                 "pipeline_keeper_unit_id": pk,
                 "heuristic_later": hl,
                 "heuristic_earlier": he,
@@ -974,17 +1120,23 @@ def build_groups(
                 ex_row["heuristic_earlier"] = ng["heuristic_earlier"]
                 ex_row["heuristic_confidence"] = ng["heuristic_confidence"]
                 ex_row["pair_ids"] = ng["pair_ids"]
+                ex_row["n_pos_pairs"] = ng["n_pos_pairs"]
+                ex_row["n_exempt_pairs"] = ng["n_exempt_pairs"]
                 ex_row["feature_version"] = FEATURE_VERSION
 
-                # Check if keeper_unit_id is no longer in unit_ids
-                keeper = str(ex_row.get("keeper_unit_id", "")).strip()
-                if keeper and keeper not in ng["unit_set"]:
-                    stale_msg = f"STALE: keeper_unit_id '{keeper}' not in unit_ids"
-                    curr_notes = str(ex_row.get("notes", "")).strip()
-                    if stale_msg not in curr_notes:
-                        ex_row["notes"] = f"{curr_notes}; {stale_msg}" if curr_notes else stale_msg
-                        print(f"Warning: Group {ex_row['group_id']}: {stale_msg}")
-                        total_stale += 1
+                # Check if any keeper_unit_ids are no longer in unit_ids
+                keeper_ids_str = str(ex_row.get("keeper_unit_ids", "")).strip()
+                if keeper_ids_str:
+                    unit_set = ng["unit_set"]
+                    keeper_ids = [k.strip() for k in keeper_ids_str.split("|") if k.strip()]
+                    bad_keepers = [k for k in keeper_ids if k not in unit_set]
+                    if bad_keepers:
+                        stale_msg = f"STALE: keeper not in unit_ids: {bad_keepers}"
+                        curr_notes = str(ex_row.get("notes", "")).strip()
+                        if stale_msg not in curr_notes:
+                            ex_row["notes"] = f"{curr_notes}; {stale_msg}" if curr_notes else stale_msg
+                            print(f"Warning: Group {ex_row['group_id']}: {stale_msg}")
+                            total_stale += 1
 
                 video_final_rows.append(ex_row)
                 total_updated += 1
@@ -1017,7 +1169,7 @@ def build_groups(
                 "texts": ng["texts"],
                 "starts": ng["starts"],
                 "ends": ng["ends"],
-                "keeper_unit_id": "",
+                "keeper_unit_ids": "",
                 "keep_none": "",
                 "notes": "",
                 "pipeline_keeper_unit_id": ng["pipeline_keeper_unit_id"],
@@ -1025,6 +1177,8 @@ def build_groups(
                 "heuristic_earlier": ng["heuristic_earlier"],
                 "heuristic_confidence": ng["heuristic_confidence"],
                 "pair_ids": ng["pair_ids"],
+                "n_pos_pairs": ng["n_pos_pairs"],
+                "n_exempt_pairs": ng["n_exempt_pairs"],
                 "feature_version": FEATURE_VERSION,
             }
             video_final_rows.append(new_row)
@@ -1068,22 +1222,47 @@ def build_groups(
     return 0
 
 
+def _bfs_chain(
+    unit_a: str,
+    unit_b: str,
+    label1_adjacency: dict[str, list[tuple[str, str]]],
+) -> list[str] | None:
+    """Returns the shortest label-1 chain (list of pair_ids) linking unit_a to unit_b, or None."""
+    from collections import deque
+    if unit_a == unit_b:
+        return []
+    visited: set[str] = {unit_a}
+    queue: deque[tuple[str, list[str]]] = deque([(unit_a, [])])
+    while queue:
+        node, path = queue.popleft()
+        for neighbor, pair_id in label1_adjacency.get(node, []):
+            if neighbor not in visited:
+                new_path = path + [pair_id]
+                if neighbor == unit_b:
+                    return new_path
+                visited.add(neighbor)
+                queue.append((neighbor, new_path))
+    return None
+
+
 def check_groups(
     groups_csv_path: Path = DEFAULT_GROUPS_CSV_PATH,
     pairs_csv_path: Path = DEFAULT_CSV_PATH,
 ) -> int:
     """
     Validates hand labels and consistency in groups_v1.csv (read-only):
-    - keeper_unit_id not in unit_ids
-    - both keeper_unit_id and keep_none = 1, or neither set on a row the user started
-    - group with fewer than 2 units
-    - pairs inside a group labeled 0 (contradictory pair labels)
-    - unlabeled pairs (blank label) involving units in a group
+    - Real contradictions: label=0 pairs inside a group whose notes do NOT contain 'same_take'
+      (shows the BFS chain linking them). -1 and same_take 0-pairs are never flagged.
+    - keeper_unit_ids containing ids not in unit_ids, or duplicates
+    - both keeper_unit_ids and keep_none = 1
     - STALE rows
+    - unlabeled pairs (blank label) between two units of the same group
+    - groups with more than 8 units
+    Exits 0 even if issues found; prints total at end.
     """
     if not groups_csv_path.exists():
         print(f"Error: {groups_csv_path} does not exist. Run --build-groups first.")
-        return 1
+        return 0
 
     header, groups = read_groups_csv(groups_csv_path)
     if not groups:
@@ -1091,12 +1270,28 @@ def check_groups(
         return 0
 
     _, pairs = read_pairs_csv(pairs_csv_path)
-    valid_pairs = [p for p in pairs if not str(p.get("video_id", "")).startswith("dummy_")]
+    # Only natural rows
+    valid_pairs = [p for p in pairs if not _is_synthetic_video(str(p.get("video_id", ""))) and str(p.get("is_synthetic", "0")).strip() != "1"]
+
+    # Build per-video pair lookups
     pairs_by_video: dict[str, list[dict[str, Any]]] = {}
     for p in valid_pairs:
         vid = str(p.get("video_id", "")).strip()
         if vid:
             pairs_by_video.setdefault(vid, []).append(p)
+
+    # Build adjacency for BFS (label=1 edges)
+    label1_adj_by_video: dict[str, dict[str, list[tuple[str, str]]]] = {}
+    for vid, vp in pairs_by_video.items():
+        adj: dict[str, list[tuple[str, str]]] = {}
+        for p in vp:
+            if str(p.get("label", "")).strip() == "1":
+                pid = str(p.get("pair_id", "")).strip()
+                u_a, u_b = _unit_ids_from_pair_id(pid, vid)
+                if u_a and u_b:
+                    adj.setdefault(u_a, []).append((u_b, pid))
+                    adj.setdefault(u_b, []).append((u_a, pid))
+        label1_adj_by_video[vid] = adj
 
     issues: list[str] = []
 
@@ -1105,109 +1300,110 @@ def check_groups(
         vid = str(g.get("video_id", "")).strip()
         uids = [u.strip() for u in str(g.get("unit_ids", "")).split("|") if u.strip()]
         u_set = set(uids)
-        keeper = str(g.get("keeper_unit_id", "")).strip()
+        keeper_ids_str = str(g.get("keeper_unit_ids", "")).strip()
         keep_none = str(g.get("keep_none", "")).strip()
         notes = str(g.get("notes", "")).strip()
 
         # 1. Group with fewer than 2 units
         if len(uids) < 2:
-            issues.append(f"Group '{gid}': group has fewer than 2 units ({len(uids)} found).")
+            issues.append(f"Group '{gid}': has fewer than 2 units ({len(uids)} found).")
 
-        # 2. keeper_unit_id not in unit_ids
-        if keeper and keeper not in u_set:
-            issues.append(f"Group '{gid}': keeper_unit_id '{keeper}' is not in unit_ids: {uids}")
+        # 2. keeper_unit_ids validation
+        if keeper_ids_str:
+            keeper_ids = [k.strip() for k in keeper_ids_str.split("|") if k.strip()]
+            # Duplicates
+            seen_k: set[str] = set()
+            dups = [k for k in keeper_ids if k in seen_k or seen_k.add(k)]
+            if dups:
+                issues.append(f"Group '{gid}': duplicate ids in keeper_unit_ids: {dups}")
+            # Unknown ids
+            bad = [k for k in keeper_ids if k not in u_set]
+            if bad:
+                issues.append(f"Group '{gid}': keeper_unit_ids {bad} not in unit_ids: {uids}")
 
-        # 3. Both keeper_unit_id and keep_none = 1
-        if keeper and keep_none == "1":
-            issues.append(f"Group '{gid}': both keeper_unit_id ('{keeper}') and keep_none=1 are set.")
+        # 3. Both keeper_unit_ids and keep_none = 1
+        if keeper_ids_str and keep_none == "1":
+            issues.append(f"Group '{gid}': both keeper_unit_ids and keep_none=1 are set.")
 
-        # 4. Neither set on a row the user appears to have started
-        # Row has user notes (not just STALE warnings) or keep_none set, but no keeper
-        non_stale_notes = "; ".join(
-            part.strip() for part in notes.split(";") if not part.strip().startswith("STALE:")
-        ).strip()
-        has_started = bool(non_stale_notes) or (keep_none != "" and keep_none != "0")
-        if has_started and not keeper and keep_none != "1":
-            issues.append(
-                f"Group '{gid}': row appears to have been started (notes='{notes}', keep_none='{keep_none}'), "
-                f"but neither keeper_unit_id nor keep_none=1 is set."
-            )
-
-        # 5. STALE row
+        # 4. STALE row
         if "STALE:" in notes or notes.startswith("STALE"):
             issues.append(f"Group '{gid}' is STALE: {notes}")
 
+        # 5. Large groups
+        if len(uids) > 8:
+            texts_short = str(g.get("texts", ""))[:80]
+            issues.append(f"Group '{gid}': has {len(uids)} units (> 8): {texts_short}...")
+
         # 6. Check against pairs in this video
         vid_pairs = pairs_by_video.get(vid, [])
+        adj = label1_adj_by_video.get(vid, {})
         for p in vid_pairs:
             p_label = str(p.get("label", "")).strip()
-            p_a = str(p.get("unit_a_id", "")).strip()
-            p_b = str(p.get("unit_b_id", "")).strip()
+            p_notes = str(p.get("notes", "")).lower()
             pid = str(p.get("pair_id", "")).strip()
+            u_a, u_b = _unit_ids_from_pair_id(pid, vid)
 
-            # Pair inside group labeled 0 (contradictory)
-            if p_label == "0" and p_a in u_set and p_b in u_set:
+            # Skip -1 pairs entirely
+            if p_label == "-1":
+                continue
+
+            # Real contradiction: label=0, both units in group, notes do NOT contain 'same_take'
+            if p_label == "0" and u_a in u_set and u_b in u_set:
+                if "same_take" not in p_notes:
+                    chain = _bfs_chain(u_a, u_b, adj)
+                    chain_str = " -> ".join(chain) if chain else "no direct chain found"
+                    text_a = str(p.get("text_a", ""))[:60]
+                    text_b = str(p.get("text_b", ""))[:60]
+                    issues.append(
+                        f"Group '{gid}': real contradiction '{pid}' (label=0, not same_take) "
+                        f"between '{text_a}' and '{text_b}'. "
+                        f"Label-1 chain: [{chain_str}]"
+                    )
+
+            # Unlabeled pair (blank) between two group units
+            if p_label == "" and u_a in u_set and u_b in u_set:
                 issues.append(
-                    f"Group '{gid}': contradictory pair '{pid}' ({p_a} ~ {p_b}) is labeled 0, "
-                    f"but both units belong to the same group."
+                    f"Group '{gid}': unlabeled internal pair '{pid}' ({u_a} ~ {u_b})."
                 )
 
-            # Unlabeled pair involving units in group
-            if p_label == "":
-                if p_a in u_set and p_b in u_set:
-                    issues.append(
-                        f"Group '{gid}': internal pair '{pid}' ({p_a} ~ {p_b}) is unlabeled."
-                    )
-                elif p_a in u_set or p_b in u_set:
-                    in_u = p_a if p_a in u_set else p_b
-                    out_u = p_b if p_a in u_set else p_a
-                    issues.append(
-                        f"Group '{gid}': unlabeled pair '{pid}' involves group unit '{in_u}' (paired with '{out_u}')."
-                    )
-
+    total = len(issues)
     if issues:
         print("\nGroup Validation Issues (--check-groups):")
         print("=" * 88)
         for issue in issues:
             print(f"  [!] {issue}")
         print("=" * 88)
-        print(f"Total issues found: {len(issues)}\n")
-        return 1
-
-    print("No group validation issues found. All groups are valid.")
+    else:
+        print("No group validation issues found. All groups are valid.")
+    print(f"Total issues found: {total}\n")
     return 0
 
 
 def eval_keepers(groups_csv_path: Path = DEFAULT_GROUPS_CSV_PATH) -> int:
     """
-    Evaluates keeper heuristics against hand labels (read-only):
-    - Over all groups with keeper_unit_id or keep_none=1.
-    - Excludes keep_none=1 groups from strategy accuracy but reports their count.
-    - Evaluates:
-      1. pipeline_keeper_unit_id: Step 05 heuristic (counts decided groups, reports deferred)
-      2. heuristic_later
-      3. heuristic_earlier
-      4. heuristic_confidence
-    - Breaks down by: All, Size 2, Size 3+.
+    Evaluates keeper heuristics against hand labels (read-only).
+    A strategy is correct if its chosen unit is IN the keeper_unit_ids set.
+    Breaks down by: All, Size 2, Size 3+. Prints per-video counts.
+    Excludes keep_none=1 groups and synthetic/dummy rows.
     """
     if not groups_csv_path.exists():
         print(f"No groups file found at {groups_csv_path}. Run --build-groups first.")
         return 0
 
     header, groups = read_groups_csv(groups_csv_path)
-    # Exclude dummy_ rows if any
-    valid_groups = [g for g in groups if not str(g.get("video_id", "")).startswith("dummy_")]
+    # Exclude synthetic and dummy rows
+    valid_groups = [g for g in groups if not _is_synthetic_video(str(g.get("video_id", "")))]
 
     labeled_groups = [
         g
         for g in valid_groups
-        if str(g.get("keeper_unit_id", "")).strip() != "" or str(g.get("keep_none", "")).strip() == "1"
+        if str(g.get("keeper_unit_ids", "")).strip() != "" or str(g.get("keep_none", "")).strip() == "1"
     ]
 
     if not labeled_groups:
         print(
             "No labeled groups found in groups_v1.csv. "
-            "Label keeper_unit_id or keep_none in data/training/groups_v1.csv first."
+            "Label keeper_unit_ids or keep_none in data/training/groups_v1.csv first."
         )
         return 0
 
@@ -1215,7 +1411,7 @@ def eval_keepers(groups_csv_path: Path = DEFAULT_GROUPS_CSV_PATH) -> int:
     eval_groups = [
         g
         for g in labeled_groups
-        if str(g.get("keep_none", "")).strip() != "1" and str(g.get("keeper_unit_id", "")).strip() != ""
+        if str(g.get("keep_none", "")).strip() != "1" and str(g.get("keeper_unit_ids", "")).strip() != ""
     ]
 
     print("\nKeeper Heuristics Evaluation (--eval-keepers)")
@@ -1228,6 +1424,13 @@ def eval_keepers(groups_csv_path: Path = DEFAULT_GROUPS_CSV_PATH) -> int:
         print("All labeled groups have keep_none=1; no keeper units to evaluate strategy accuracy.")
         print("=" * 88 + "\n")
         return 0
+
+    def _keeper_set(g: dict[str, Any]) -> set[str]:
+        return {k.strip() for k in str(g.get("keeper_unit_ids", "")).split("|") if k.strip()}
+
+    def _is_correct(strategy_col: str, g: dict[str, Any]) -> bool:
+        chosen = str(g.get(strategy_col, "")).strip()
+        return bool(chosen) and chosen in _keeper_set(g)
 
     # Partition by size
     size_2 = [
@@ -1276,23 +1479,31 @@ def eval_keepers(groups_csv_path: Path = DEFAULT_GROUPS_CSV_PATH) -> int:
                 if not decided:
                     row_str += f" | {f'0/{len(subset)} (0.0%) [def {deferred}]':<18}"
                 else:
-                    correct = sum(
-                        1
-                        for g in decided
-                        if g.get("pipeline_keeper_unit_id") == g.get("keeper_unit_id")
-                    )
+                    correct = sum(1 for g in decided if _is_correct(col_key, g))
                     acc = (correct / len(decided)) * 100.0
                     row_str += f" | {f'{correct}/{len(decided)} ({acc:.1f}%) [def {deferred}]':<18}"
             else:
-                correct = sum(1 for g in subset if g.get(col_key) == g.get("keeper_unit_id"))
+                correct = sum(1 for g in subset if _is_correct(col_key, g))
                 acc = (correct / len(subset)) * 100.0
                 row_str += f" | {f'{correct}/{len(subset)} ({acc:.1f}%)':<18}"
         print(row_str)
 
     print("=" * 88)
+
+    # Per-video breakdown
+    by_vid: dict[str, list[dict[str, Any]]] = {}
+    for g in eval_groups:
+        vid = str(g.get("video_id", ""))
+        by_vid.setdefault(vid, []).append(g)
+    if by_vid:
+        print("\nPer-video labeled groups:")
+        for vid in sorted(by_vid):
+            vg = by_vid[vid]
+            print(f"  {vid}: {len(vg)} group(s)")
+
     if keep_none_groups:
         print(
-            f"Note: {len(keep_none_groups)} group(s) with keep_none=1 were excluded from strategy accuracy."
+            f"\nNote: {len(keep_none_groups)} group(s) with keep_none=1 were excluded from strategy accuracy."
         )
     print(
         "Pipeline Step 05 heuristic reports accuracy only on groups where it decided; [def X] shows deferred groups.\n"
