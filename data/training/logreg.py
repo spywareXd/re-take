@@ -1,0 +1,257 @@
+"""Nested, speaker-grouped logistic regression on pair sub-scores, compared to the baselines.
+
+Outer loop: test fold k (real rows), train on the other folds.
+Inner loop: GroupKFold by video_id on the training rows only picks C by mean PR-AUC
+(scored on REAL validation rows only). StandardScaler is fit on training rows only.
+Synthetic rows are training-only and are never scored.
+
+Runs (B and C use fewer features than A, so only B1 vs B2 and C1 vs C2 are comparable
+to each other, not to A):
+  A  (logreg_flat): 7 features, real only         <- main model, compared to Stage 2
+  B1: 4 lexical features, real only
+  B2: same 4 features, real + synthetic training
+  C1: 4 lexical + semantic_score, real only
+  C2: same 5 features, real + synthetic training (semantic_score computed for synthetic rows)
+
+Run from anywhere. Writes results/logreg*.{csv,md}, results/synthetic_semantic.csv.
+Input files are never modified.
+"""
+import json
+import sys
+import warnings
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import average_precision_score, precision_recall_curve, roc_auc_score
+from sklearn.model_selection import GroupKFold
+from sklearn.pipeline import make_pipeline
+from sklearn.preprocessing import StandardScaler
+
+warnings.filterwarnings("ignore")
+HERE = Path(__file__).resolve().parent
+OUT = HERE / "results"
+OUT.mkdir(exist_ok=True)
+sys.path.insert(0, str(HERE.parents[1]))        # repo root, to reuse the pipeline's embedding code
+
+C_GRID = [0.01, 0.1, 1, 10, 100]
+N_BOOT, SEED, INNER_SPLITS = 1000, 0, 5
+LEX4 = ["sequence", "jaccard", "containment", "bigram"]
+ALL7 = LEX4 + ["semantic_score", "recency_weight", "restart_phrase"]
+RUNS = {  # name: (features, use_synthetic)
+    "logreg_flat": (ALL7, False),
+    "B1": (LEX4, False), "B2": (LEX4, True),
+    "C1": (LEX4 + ["semantic_score"], False), "C2": (LEX4 + ["semantic_score"], True),
+}
+
+# ---------------- load ----------------
+df = pd.read_csv(HERE / "pairs_v1.csv", dtype=str, keep_default_na=False)
+folds = json.loads((HERE / "folds.json").read_text())["folds"]
+df = df[df.label != "-1"].copy()
+real = df[df.is_synthetic == "0"].copy()
+syn = df[df.is_synthetic == "1"].copy()
+
+# real rows must have every feature without NaN
+for c in ALL7:
+    real[c] = pd.to_numeric(real[c], errors="raise")
+    assert real[c].notna().all(), f"NaN in real feature {c}"
+real["label"] = real.label.astype(int)
+real["fold"] = real.video_id.map(folds).astype(int)
+real = real.reset_index(drop=True)
+
+# synthetic rows: only the 4 lexical features exist; compute semantic_score with the
+# pipeline's own embedding model and cosine->[0,1] function
+for c in LEX4:
+    syn[c] = pd.to_numeric(syn[c], errors="raise")
+    assert syn[c].notna().all()
+syn["label"] = syn.label.astype(int)
+from pipeline.step_04_semantic_matching.semantic_matching import get_model, semantic_similarity_score  # noqa: E402
+
+model = get_model()
+ea = model.encode(syn.text_a.tolist(), batch_size=32, show_progress_bar=False)
+eb = model.encode(syn.text_b.tolist(), batch_size=32, show_progress_bar=False)
+syn["semantic_score"] = [semantic_similarity_score(a, b) for a, b in zip(ea, eb)]
+syn[["pair_id", "semantic_score"]].to_csv(OUT / "synthetic_semantic.csv", index=False)
+syn = syn.reset_index(drop=True)
+
+
+# ---------------- helpers ----------------
+def make_model(C):
+    return make_pipeline(StandardScaler(), LogisticRegression(C=C, penalty="l2", class_weight="balanced", max_iter=2000))
+
+
+def choose_C(train, feats):
+    """Inner GroupKFold by video_id; mean PR-AUC on the REAL validation rows. Training rows only."""
+    gkf = GroupKFold(n_splits=INNER_SPLITS)
+    scores = {C: [] for C in C_GRID}
+    for tr_idx, va_idx in gkf.split(train, train.label, train.video_id):
+        tr, va = train.iloc[tr_idx], train.iloc[va_idx]
+        va = va[va.is_synthetic == "0"]
+        if va.label.sum() == 0:
+            continue
+        for C in C_GRID:
+            m = make_model(C).fit(tr[feats], tr.label)
+            scores[C].append(average_precision_score(va.label, m.predict_proba(va[feats])[:, 1]))
+    means = {C: np.mean(v) for C, v in scores.items()}
+    return max(C_GRID, key=lambda C: (means[C], -C))        # ties -> smaller C (stronger regularisation)
+
+
+def recall_at_precision(y, s, p):
+    prec, rec, _ = precision_recall_curve(y, s)
+    ok = prec >= p
+    return float(rec[ok].max()) if ok.any() else 0.0
+
+
+def rank_metrics(y, s):
+    return {"pr_auc": average_precision_score(y, s), "roc_auc": roc_auc_score(y, s),
+            "recall_at_p90": recall_at_precision(y, s, 0.90), "recall_at_p80": recall_at_precision(y, s, 0.80)}
+
+
+# ---------------- nested CV ----------------
+real["is_synthetic"] = "0"
+syn["is_synthetic"] = "1"
+oof = {r: np.zeros(len(real)) for r in RUNS}
+coef_rows = []
+for k in sorted(real.fold.unique()):
+    test_mask = (real.fold == k).values
+    for name, (feats, use_syn) in RUNS.items():
+        # features for the shared frame: synthetic rows only exist for runs whose features they have
+        train = real[~test_mask]
+        if use_syn:
+            train = pd.concat([train, syn.assign(fold=0)], ignore_index=True)
+        train = train.reset_index(drop=True)
+        C = choose_C(train, feats)
+        m = make_model(C).fit(train[feats], train.label)
+        oof[name][test_mask] = m.predict_proba(real.loc[test_mask, feats])[:, 1]
+        for f, c in zip(feats, m[-1].coef_[0]):                       # coefficients on standardized features
+            coef_rows.append({"run": name, "fold": int(k), "feature": f, "coef": c, "C": C})
+        print(f"fold {k} {name}: C={C}")
+
+coefs = pd.DataFrame(coef_rows)
+coefs.to_csv(OUT / "logreg_coefs.csv", index=False)
+scores = real[["pair_id", "video_id", "fold", "label"]].copy()
+for name in RUNS:
+    scores["prob_" + name] = oof[name]
+scores.rename(columns={"prob_logreg_flat": "prob"}).to_csv(OUT / "logreg_scores.csv", index=False)
+
+# ---------------- Stage 2 reference, same rows ----------------
+base = pd.read_csv(HERE / "results" / "baseline_scores.csv", dtype={"pair_id": str, "video_id": str})
+assert set(base.pair_id) == set(real.pair_id) and len(base) == len(real), "row sets differ from baselines"
+real["stage2"] = real.pair_id.map(base.set_index("pair_id").current_stage2)
+MODELS = {"current_stage2": real.stage2.values}
+MODELS.update({n: oof[n] for n in RUNS})
+for n in MODELS:
+    real["s_" + n] = MODELS[n]
+
+# ---------------- metrics ----------------
+rows = []
+for scope, g in [("pooled", real)] + [(f"fold{k}", real[real.fold == k]) for k in sorted(real.fold.unique())]:
+    for n in MODELS:
+        for mname, v in rank_metrics(g.label, g["s_" + n]).items():
+            rows.append({"model": n, "scope": scope, "metric": mname, "value": v})
+
+# paired video-level bootstrap: identical video draws for every model
+rng = np.random.default_rng(SEED)
+vids = real.video_id.unique()
+by_vid = {v: g for v, g in real.groupby("video_id")}
+boot = {n: [] for n in MODELS}
+for _ in range(N_BOOT):
+    samp = pd.concat([by_vid[v] for v in rng.choice(vids, len(vids), replace=True)])
+    if samp.label.sum() == 0:
+        for n in MODELS:
+            boot[n].append(np.nan)
+        continue
+    for n in MODELS:
+        boot[n].append(average_precision_score(samp.label, samp["s_" + n]))
+boot = {n: np.array(v) for n, v in boot.items()}
+for n in MODELS:
+    lo, hi = np.nanpercentile(boot[n], [2.5, 97.5])
+    rows += [{"model": n, "scope": "pooled", "metric": "pr_auc_ci_low", "value": lo},
+             {"model": n, "scope": "pooled", "metric": "pr_auc_ci_high", "value": hi}]
+
+PAIRS = [("logreg_flat", "current_stage2"), ("B2", "B1"), ("C2", "C1")]
+diffs = []
+for a, b in PAIRS:
+    d = boot[a] - boot[b]
+    lo, hi = np.nanpercentile(d, [2.5, 97.5])
+    point = rank_metrics(real.label, real["s_" + a])["pr_auc"] - rank_metrics(real.label, real["s_" + b])["pr_auc"]
+    diffs.append({"a": a, "b": b, "diff": point, "ci_low": lo, "ci_high": hi, "ci_excludes_0": bool(lo > 0 or hi < 0)})
+    rows.append({"model": f"{a}_minus_{b}", "scope": "pooled", "metric": "pr_auc_diff", "value": point})
+    rows.append({"model": f"{a}_minus_{b}", "scope": "pooled", "metric": "pr_auc_diff_ci_low", "value": lo})
+    rows.append({"model": f"{a}_minus_{b}", "scope": "pooled", "metric": "pr_auc_diff_ci_high", "value": hi})
+res = pd.DataFrame(rows)
+res.to_csv(OUT / "logreg.csv", index=False)
+diffs = pd.DataFrame(diffs)
+
+# ---------------- full-data fit (interpretation only, not used for scoring) ----------------
+featsA = ALL7
+C_full = choose_C(real, featsA)
+mfull = make_model(C_full).fit(real[featsA], real.label)
+std_coef = mfull[-1].coef_[0]
+raw_coef = std_coef / mfull[0].scale_
+hand = {"semantic_score": 0.50, "containment": 0.20}
+full_tbl = pd.DataFrame({"feature": featsA, "std_coef": std_coef, "raw_unit_coef": raw_coef,
+                         "hand_weight": [hand.get(f, np.nan) for f in featsA]})
+
+# ---------------- report ----------------
+def val(n, s, m):
+    x = res[(res.model == n) & (res.scope == s) & (res.metric == m)].value
+    return float(x.iloc[0])
+
+
+scopes = ["pooled", "fold1", "fold2", "fold3", "fold4"]
+order = ["current_stage2", "logreg_flat", "B1", "B2", "C1", "C2"]
+md = ["# Logistic regression results", "",
+      f"Real rows, label -1 excluded: {len(real)} rows, {int(real.label.sum())} positives. Nested speaker-grouped CV; "
+      f"C from {C_GRID} by inner GroupKFold({INNER_SPLITS}) on training videos only; scaler fit on training rows only; "
+      f"synthetic rows ({len(syn)}) are training-only. Out-of-fold probabilities for every real row.", "",
+      "**Runs:** logreg_flat = A (7 features, real only). B1/B2 = 4 lexical features (sequence, jaccard, containment, "
+      "bigram), real only / real + synthetic. C1/C2 = those 4 + semantic_score, real only / real + synthetic "
+      "(semantic_score for synthetic rows computed with the pipeline's all-MiniLM-L6-v2 and cosine mapping). "
+      "**B and C use fewer features than A, so only B1 vs B2 and C1 vs C2 are comparable to each other, not to A.**", ""]
+for title, m in [("PR-AUC", "pr_auc"), ("ROC-AUC", "roc_auc"), ("Recall at 90% precision", "recall_at_p90"),
+                 ("Recall at 80% precision", "recall_at_p80")]:
+    md += [f"### {title}", "", "| model | " + " | ".join(scopes) + " |", "|---|" + "---|" * len(scopes)]
+    md += [f"| {n} | " + " | ".join(f"{val(n, s, m):.3f}" for s in scopes) + " |" for n in order]
+    md.append("")
+md += ["Pooled PR-AUC 95% CI (1000 video-level bootstrap resamples, seed 0): " + "; ".join(
+    f"{n} [{val(n, 'pooled', 'pr_auc_ci_low'):.3f}, {val(n, 'pooled', 'pr_auc_ci_high'):.3f}]" for n in order), ""]
+md += ["### Paired difference in pooled PR-AUC (same video resamples)", "",
+       "| a minus b | diff | 95% CI | CI excludes 0 |", "|---|---|---|---|"]
+md += [f"| {r.a} - {r.b} | {r['diff']:+.3f} | [{r.ci_low:+.3f}, {r.ci_high:+.3f}] | {r.ci_excludes_0} |"
+       for _, r in diffs.iterrows()]
+md.append("")
+
+md += ["### Standardized coefficients across outer folds (mean / std, sign flips flagged)", ""]
+for name, (feats, _) in RUNS.items():
+    c = coefs[coefs.run == name]
+    md += [f"**{name}** (chosen C per fold: {', '.join(str(x) for x in c.drop_duplicates('fold').C)})", "",
+           "| feature | mean | std | " + " | ".join(f"fold{k}" for k in (1, 2, 3, 4)) + " | sign flip |",
+           "|---|---|---|---|---|---|---|---|"]
+    for f in feats:
+        v = c[c.feature == f].sort_values("fold").coef.values
+        flip = "YES" if (v > 0).any() and (v < 0).any() else "no"
+        md.append(f"| {f} | {v.mean():+.3f} | {v.std():.3f} | " + " | ".join(f"{x:+.3f}" for x in v) + f" | {flip} |")
+    md.append("")
+
+md += [f"### Full-data fit of the 7-feature model (interpretation only, not used for scoring; C={C_full} by GroupKFold on all real data)", "",
+       "| feature | standardized coef | raw-unit coef | old hand weight |", "|---|---|---|---|"]
+md += [f"| {r.feature} | {r.std_coef:+.3f} | {r.raw_unit_coef:+.3f} | "
+       + ("-" if np.isnan(r.hand_weight) else f"{r.hand_weight:.2f}") + " |" for r in full_tbl.itertuples()]
+md += ["", "Old hand weights: 0.50 semantic, 0.20 containment, 0.30 on lexical_score (a blend of sequence/jaccard/bigram, "
+       "not a separate feature here). Logistic coefficients are log-odds, so compare signs and relative size, not magnitudes.", ""]
+
+A = diffs.iloc[0]
+B = diffs.iloc[1]
+C = diffs.iloc[2]
+verdict = lambda r: "outside the noise (CI excludes 0)" if r.ci_excludes_0 else "inside the noise (CI includes 0)"
+summ = [f"A (logreg_flat, 7 features) pooled PR-AUC {val('logreg_flat', 'pooled', 'pr_auc'):.3f} vs Stage 2 "
+        f"{val('current_stage2', 'pooled', 'pr_auc'):.3f}: diff {A['diff']:+.3f}, 95% CI [{A.ci_low:+.3f}, {A.ci_high:+.3f}], {verdict(A)}.",
+        f"Synthetic effect: B2-B1 {B['diff']:+.3f} [{B.ci_low:+.3f}, {B.ci_high:+.3f}], {verdict(B)}; "
+        f"C2-C1 {C['diff']:+.3f} [{C.ci_low:+.3f}, {C.ci_high:+.3f}], {verdict(C)}.",
+        "B and C use fewer features than A: only B1 vs B2 and C1 vs C2 are comparable to each other, not to A; "
+        "small per-fold differences should not be over-read."]
+md += ["## Summary", ""] + [f"{i + 1}. {s}" for i, s in enumerate(summ)]
+(OUT / "logreg.md").write_text("\n".join(md), encoding="utf-8")
+print("\n".join(md))
