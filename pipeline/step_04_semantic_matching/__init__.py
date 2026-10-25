@@ -7,6 +7,7 @@ from .config import (
     SemanticMatchingConfig,
     default_semantic_config,
 )
+from .final_stage4 import get_final_scorer, run_stage4, scorer_envelope
 from .semantic_matching import (
     embed_candidate_units,
     get_model,
@@ -28,10 +29,13 @@ __all__ = [
     "SemanticMatchingConfig",
     "default_semantic_config",
     "embed_candidate_units",
+    "get_final_scorer",
     "get_model",
     "load_semantic_candidates",
     "run_stage2",
+    "run_stage4",
     "save_semantic_candidates",
+    "scorer_envelope",
     "score_candidate",
     "semantic_similarity_score",
 ]

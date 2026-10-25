@@ -35,13 +35,11 @@ def _extract_span_dict(span: Any) -> dict[str, Any]:
 
 def parse_adjudication_response(raw_response: dict[str, Any] | str, span: dict[str, Any]) -> dict[str, Any]:
     """
-    Validates the LLM response against the span it was asked about:
-    - keeper_unit_id (if not null) must be one of span.unit_ids
+    Validates the LLM response against the span it was asked about (the span is already a confirmed retake group):
+    - keeper_unit_id must be present and one of span.unit_ids
     - units_to_remove must all be members of span.unit_ids
     - keeper_unit_id must never appear in units_to_remove
-    - if is_genuine_retake_group is False, keeper_unit_id must be null and
-      units_to_remove must be empty — reject/retry if the model contradicts itself here.
-    Raises ValueError on validation failure.
+    Raises ValueError on validation failure. is_genuine_retake_group is always True in the result.
     """
     if isinstance(raw_response, str):
         try:
@@ -53,18 +51,9 @@ def parse_adjudication_response(raw_response: dict[str, Any] | str, span: dict[s
     else:
         raise TypeError(f"Expected dict or JSON string, got {type(raw_response)}")
 
-    # Check required fields
-    if "is_genuine_retake_group" not in data:
-        raise ValueError("Missing required field 'is_genuine_retake_group' in LLM response")
-
-    is_genuine = data["is_genuine_retake_group"]
-    if not isinstance(is_genuine, bool):
-        if str(is_genuine).lower() in {"true", "1"}:
-            is_genuine = True
-        elif str(is_genuine).lower() in {"false", "0"}:
-            is_genuine = False
-        else:
-            raise ValueError(f"Invalid boolean value for 'is_genuine_retake_group': {is_genuine}")
+    # Every span reaching Stage 6 is already a confirmed retake group, so the model's own verdict (if it sends one) is ignored and
+    # is_genuine_retake_group is always True. The consistency checks below are unchanged.
+    is_genuine = True
 
     keeper_unit_id = data.get("keeper_unit_id")
     if keeper_unit_id is not None:
@@ -79,40 +68,22 @@ def parse_adjudication_response(raw_response: dict[str, Any] | str, span: dict[s
 
     span_unit_ids = [str(uid) for uid in span.get("unit_ids", [])]
 
-    # Validate based on genuine retake flag
-    if not is_genuine:
-        # Self-contradiction checks
-        if keeper_unit_id is not None:
-            raise ValueError(
-                f"Self-contradictory LLM response: is_genuine_retake_group is False, but keeper_unit_id is '{keeper_unit_id}' (must be null)"
-            )
-        if len(units_to_remove) > 0:
-            raise ValueError(
-                f"Self-contradictory LLM response: is_genuine_retake_group is False, but units_to_remove is {units_to_remove} (must be empty [])"
-            )
-    else:
-        # Must select a keeper
-        if keeper_unit_id is None:
-            raise ValueError("is_genuine_retake_group is True, but keeper_unit_id is null/missing")
+    # Must select a keeper
+    if keeper_unit_id is None:
+        raise ValueError("keeper_unit_id is null/missing")
 
-        # Keeper must belong to span
-        if keeper_unit_id not in span_unit_ids:
-            raise ValueError(
-                f"Hallucinated keeper_unit_id '{keeper_unit_id}' is not in span unit_ids {span_unit_ids}"
-            )
+    # Keeper must belong to span
+    if keeper_unit_id not in span_unit_ids:
+        raise ValueError(f"Hallucinated keeper_unit_id '{keeper_unit_id}' is not in span unit_ids {span_unit_ids}")
 
-        # Removed units must belong to span
-        invalid_removed = [uid for uid in units_to_remove if uid not in span_unit_ids]
-        if invalid_removed:
-            raise ValueError(
-                f"Hallucinated units_to_remove {invalid_removed} are not in span unit_ids {span_unit_ids}"
-            )
+    # Removed units must belong to span
+    invalid_removed = [uid for uid in units_to_remove if uid not in span_unit_ids]
+    if invalid_removed:
+        raise ValueError(f"Hallucinated units_to_remove {invalid_removed} are not in span unit_ids {span_unit_ids}")
 
-        # Keeper must not be in removal list
-        if keeper_unit_id in units_to_remove:
-            raise ValueError(
-                f"Self-contradictory response: keeper_unit_id '{keeper_unit_id}' is also listed in units_to_remove {units_to_remove}"
-            )
+    # Keeper must not be in removal list
+    if keeper_unit_id in units_to_remove:
+        raise ValueError(f"Self-contradictory response: keeper_unit_id '{keeper_unit_id}' is also listed in units_to_remove {units_to_remove}")
 
     confidence = str(data.get("confidence", "high")).strip().lower()
     if confidence not in {"high", "medium", "low"}:
@@ -173,13 +144,26 @@ def adjudicate_single_span(
     )
     return {
         "adjudication_status": "failed",
-        "is_genuine_retake_group": None,
+        "is_genuine_retake_group": True,
         "keeper_unit_id": None,
         "units_to_remove": None,
         "confidence": None,
         "reasoning": None,
         "adjudication_error": f"Exhausted {max_attempts} attempts: {last_error}",
     }
+
+
+def _api_key_available(cfg: AdjudicationConfig) -> bool:
+    """True if the configured provider can authenticate (mock needs no key). Keys are read, never printed."""
+    import os
+    provider = (cfg.provider or "").lower()
+    if provider == "mock":
+        return True
+    if cfg.api_key:
+        return True
+    if provider in {"openai", "groq"}:
+        return bool(os.environ.get("OPENAI_API_KEY") or os.environ.get("GROQ_API_KEY"))
+    return bool(os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY"))
 
 
 def run_stage6(
@@ -189,52 +173,38 @@ def run_stage6(
     llm_client: LLMClient | None = None,
 ) -> list[dict[str, Any]]:
     """
-    Pipeline entry point for Step 06 (LLM Adjudication):
-    - For spans where needs_adjudication == False:
-      Pass through untouched with adjudication_status = "not_required", normalizing
-      likely_final_unit_id into keeper_unit_id and computing units_to_remove.
-    - For spans where needs_adjudication == True:
-      Call LLM adjudication, validate response, and attach resolved verdict or failed status.
+    Pipeline entry point for Step 06 (keeper selection).
+
+    Every span reaching this step is already a CONFIRMED retake group (Stage 4 decided each pair, Stage 5 clustered them), so every span
+    goes to the LLM, and the LLM only chooses the keeper unit and the units to remove. There is no pass-through path.
+    A span the LLM cannot resolve (no API key, API failure, invalid answer after the retries) gets adjudication_status "failed", is recorded
+    in the output and is NOT cut; a clear log line says so and no exception is raised.
 
     Args:
-        spans: Sequence of Step 05 RetakeSpan objects or dicts.
+        spans: Step 05 RetakeSpan objects or dicts.
         all_units_by_id: Mapping from unit_id to ComparableUnit, or sequence of units.
-        config: AdjudicationConfig instance.
+        config: AdjudicationConfig instance (provider and model come from config / environment variables).
         llm_client: Optional explicit LLMClient instance (e.g. MockLLMClient for testing).
 
     Returns:
-        List of adjudicated span dictionaries adhering to the unified Step 06 output contract.
+        List of span dictionaries with the Step 06 output contract (resolved or failed).
     """
     cfg = config or default_adjudication_config
     results: list[dict[str, Any]] = []
+    key_ok = llm_client is not None or _api_key_available(cfg)
+    if not key_ok:
+        logger.warning("[Stage 6] no API key available for provider '%s': all %d spans stay UNRESOLVED and will not be cut", cfg.provider, len(spans))
 
     for item in spans:
         span_dict = _extract_span_dict(item)
-        needs_adj = span_dict.get("needs_adjudication", False)
-
-        if not needs_adj:
-            # Pass-through path: already resolved in Step 05
-            likely_final = span_dict.get("likely_final_unit_id")
-            unit_ids = span_dict.get("unit_ids", [])
-            units_to_remove = [uid for uid in unit_ids if uid != likely_final] if likely_final else []
-
-            out_span = dict(span_dict)
-            out_span["adjudication_status"] = "not_required"
-            out_span["keeper_unit_id"] = likely_final
-            out_span["units_to_remove"] = units_to_remove
-            out_span["is_genuine_retake_group"] = True if likely_final else False
-            results.append(out_span)
+        if key_ok:
+            adj_result = adjudicate_single_span(span_dict, all_units_by_id=all_units_by_id, config=cfg, client=llm_client)
         else:
-            # Ambiguous path: execute LLM adjudication
-            adj_result = adjudicate_single_span(
-                span_dict,
-                all_units_by_id=all_units_by_id,
-                config=cfg,
-                client=llm_client,
-            )
-
-            out_span = dict(span_dict)
-            out_span.update(adj_result)
-            results.append(out_span)
-
+            adj_result = {"adjudication_status": "failed", "is_genuine_retake_group": True, "keeper_unit_id": None, "units_to_remove": None,
+                          "confidence": None, "reasoning": None, "adjudication_error": f"no API key available for provider '{cfg.provider}'"}
+        if adj_result["adjudication_status"] != "resolved":
+            logger.warning("[Stage 6] span %s unresolved (%s): skipped, nothing is cut", span_dict.get("span_id"), adj_result.get("adjudication_error"))
+        out_span = dict(span_dict)
+        out_span.update(adj_result)
+        results.append(out_span)
     return results

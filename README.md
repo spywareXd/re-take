@@ -17,8 +17,8 @@ The system is designed around a modular, 8-stage pipeline:
 1. **Transcription (`step_01_transcription`)**: Extracting audio and generating base transcripts with timestamps.
 2. **Preprocessing (`step_02_preprocessing`)**: Cleaning, tokenizing, and chunking the raw text.
 3. **Token Matching (`step_03_token_matching`)**: Finding exact or near-exact word repetitions using n-grams and edit distance.
-4. **Semantic Matching (`step_04_semantic_matching`)**: Discovering conceptually similar retakes using embeddings and vector search (FAISS).
-5. **Span Aggregation (`step_05_span_aggregation`)**: Merging and clustering candidate spans into consolidated retake windows.
-6. **LLM Adjudication (`step_06_llm_adjudication`)**: Utilizing a language model to make the final cut/keep decisions with associated confidence scores.
+4. **Scoring (`step_04_semantic_matching`)**: Every candidate pair is scored by the *final scorer*: a logistic-regression **stacker** over the plain Stage 2 score (`0.50*semantic + 0.30*lexical + 0.20*containment`, built from the pair's own fields) and the logit of a fine-tuned **cross-encoder** (3-seed average). Pairs with stacker probability `>= high` are retakes, `< low` are not, and the pairs in between are resolved by the cross-encoder (`>= t_amb` is a retake). Every pair ends as `retake` or `not_retake`. The old recency-adjusted score and class are kept only as `legacy_stage2_score` / `legacy_class`. See [docs/scorer.md](docs/scorer.md).
+5. **Span Aggregation (`step_05_span_aggregation`)**: Clustering ONLY the pairs decided `retake` (union-find) into spans. Every span is already confirmed (`needs_adjudication = False`) and needs a keeper (`needs_keeper = True`); each records its unit count and weakest stacker probability, and spans of more than 4 units are logged.
+6. **Keeper selection (`step_06_llm_adjudication`)**: Every span goes to the LLM, which is told the span is already a confirmed retake group and only chooses the unit to keep and the units to remove. A span the LLM cannot resolve (no API key, API error, invalid answer) is marked `failed` and is **not cut**.
 7. **Review (`step_07_review`)**: Exporting reports and structured JSON for human review or debugging.
 8. **Video Edit (`step_08_video_edit`)**: Translating the finalized cuts into FFmpeg commands to produce the final, polished media.

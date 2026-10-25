@@ -130,7 +130,10 @@ def generate_cuts_from_adjudicated_spans(
         keeper_id = span.get("keeper_unit_id")
         bad_uids = span.get("units_to_remove", [])
 
-        # Confirmed retake group if genuine retake is not explicitly False and there are units to cut
+        # Only spans the LLM RESOLVED (status "resolved", a keeper and a non-empty removal list) are cut. Unresolved spans are skipped with a log line.
+        if span.get("adjudication_status") != "resolved":
+            logger.warning("[Cutlist] span %s skipped: adjudication status %r (unresolved), nothing is cut", span.get("span_id"), span.get("adjudication_status"))
+            continue
         if is_retake is not False and bad_uids:
             keeper_unit = unit_map.get(str(keeper_id)) if keeper_id else None
             keeper_span = (

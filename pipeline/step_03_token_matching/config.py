@@ -16,9 +16,12 @@ LEXICAL_WEIGHTS = {
 @dataclass(slots=True)
 class TokenMatchingConfig:
     min_tokens: int = 3
-    window_seconds: float = 120.0
+    # Aligned with the settings used to export pairs_v1 / pairs_v2 (training/config.py: DEFAULT_WINDOW_SECONDS = 300.0, DEFAULT_MIN_LEXICAL = 0.10),
+    # because the final scorer was fitted and evaluated on candidates generated this way. OLD default: 120.0. Still configurable per run.
+    window_seconds: float = 300.0
     recency_decay_seconds: float = 45.0
-    candidate_threshold: float = 0.35
+    # OLD default: 0.35 (it dropped low-overlap paraphrased retakes before Stage 4). Now 0.10, same as the export. Still configurable per run.
+    candidate_threshold: float = 0.10
     pause_split_threshold_seconds: float = PAUSE_SPLIT_THRESHOLD_SECONDS
     lexical_weights: dict[str, float] = field(default_factory=lambda: dict(LEXICAL_WEIGHTS))
     restart_phrase_lexicon: tuple[str, ...] = (

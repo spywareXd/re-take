@@ -1,0 +1,77 @@
+{
+  "created": "2026-10-25",
+  "stacker": {
+    "features": [
+      "stage2_score",
+      "logit(cross_encoder_prob)"
+    ],
+    "logit_clip_eps": 1e-06,
+    "scaler_mean": [
+      0.46112108366086463,
+      -7.444358802605105
+    ],
+    "scaler_scale": [
+      0.13721845013088244,
+      6.393587403764145
+    ],
+    "coef_standardized": [
+      1.8082901367545752,
+      1.3801580125528627
+    ],
+    "intercept": -3.1616429717903975,
+    "C": 0.1,
+    "penalty": "l2",
+    "class_weight": "balanced",
+    "fit_rows": 3562
+  },
+  "thresholds": {
+    "high": 0.8656658495640148,
+    "low": 0.1713380932395014,
+    "rule": "high = lowest t with precision(p>=t)>=0.95; low = highest t with recall(p>=t)>=0.98, both on out-of-fold stacker probabilities",
+    "tiers": "retake: p>=high; ambiguous: low<=p<high; unlikely: p<low",
+    "t_amb": 0.96933407,
+    "t_amb_rule": "ambiguous pairs (low <= stacker p < high) are resolved by the cross-encoder: retake if prob_mean >= t_amb; t_amb maximises F1 among the out-of-fold pairs whose out-of-fold stacker probability lies in that band",
+    "t_amb_fit_pairs": 376,
+    "t_amb_fit_retakes": 36
+  },
+  "fallback": {
+    "high": 0.65,
+    "low": 0.35,
+    "note": "Stage 2 formula 0.5*semantic+0.3*lexical+0.2*containment with the old rules, used when model files are missing"
+  },
+  "models": {
+    "cross_encoder_base": "cross-encoder/ms-marco-MiniLM-L-6-v2",
+    "cross_encoder_weights": [
+      "ce_seed0",
+      "ce_seed1",
+      "ce_seed2"
+    ],
+    "seed_averaging": "mean of sigmoid(logit) over the 3 seeds (prob_mean), then logit(clip(prob_mean))",
+    "cross_encoder_hyperparameters": {
+      "max_length": 128,
+      "lr": 2e-05,
+      "batch_size": 16,
+      "epochs": 3,
+      "warmup": 0.1,
+      "weight_decay": 0.01,
+      "loss": "BCE with pos_weight=#neg/#pos",
+      "input": "(text_a, text_b) raw text, earlier unit first"
+    },
+    "embedding_model": "all-MiniLM-L6-v2",
+    "stage2_formula": "0.50*semantic_score + 0.30*lexical_score + 0.20*containment"
+  },
+  "feature_version": "v1",
+  "label_file": {
+    "name": "pairs_v2.csv",
+    "sha256_12": "d34ece717418"
+  },
+  "folds_file": {
+    "name": "folds.json",
+    "sha256_12": "52d356464dd3"
+  },
+  "training_rows": 3562,
+  "retakes": 340,
+  "scorer_name": "stacker_cross_encoder",
+  "model_version": "final-ce-3seed-v2labels+stacker-v1",
+  "label_version": "pairs_v2 (sha256 d34ece717418)"
+}

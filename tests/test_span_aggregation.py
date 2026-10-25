@@ -25,6 +25,9 @@ def _make_candidate(
     classification: str = "likely_retake",
     containment_direction: str | None = None,
     stage2_score: float = 0.90,
+    decision: str = "retake",
+    resolved_by: str = "stacker",
+    stacker_p: float = 0.95,
 ) -> dict:
     return {
         "candidate_id": candidate_id,
@@ -45,10 +48,12 @@ def _make_candidate(
         "scores": {"containment": 1.0 if containment_direction else 0.0},
         "combined_score": 0.85,
         "semantic_score": 0.90,
-        "stage2_score": stage2_score,
+        "legacy_stage2_score": stage2_score,
         "containment_direction": containment_direction,
-        "classification": classification,
-        "high_disagreement_flag": classification == "ambiguous",
+        "legacy_class": classification,
+        "class": decision,                       # final decision from Stage 4: "retake" | "not_retake"
+        "resolved_by": resolved_by,              # "stacker" | "cross_encoder"
+        "stacker_p": stacker_p,
     }
 
 
@@ -102,7 +107,7 @@ def test_unlikely_retake_pairs_excluded_from_clustering():
     An unlikely_retake pair must NOT merge two otherwise-unrelated units into a span.
     """
     pair_valid = _make_candidate(1, "1:0", 1.0, 3.0, "Take 1", "1:1", 4.0, 6.0, "Take 2", classification="likely_retake")
-    pair_unlikely = _make_candidate(2, "1:1", 4.0, 6.0, "Take 2", "9:0", 50.0, 55.0, "Completely unrelated sentence", classification="unlikely_retake")
+    pair_unlikely = _make_candidate(2, "1:1", 4.0, 6.0, "Take 2", "9:0", 50.0, 55.0, "Completely unrelated sentence", classification="unlikely_retake", decision="not_retake", resolved_by="stacker", stacker_p=0.01)
 
     spans = build_retake_spans([pair_valid, pair_unlikely])
 
@@ -112,21 +117,41 @@ def test_unlikely_retake_pairs_excluded_from_clustering():
     assert "9:0" not in span.unit_ids
 
 
-def test_needs_adjudication_propagation():
+def test_spans_never_need_adjudication_and_record_who_decided():
     """
-    A span containing one ambiguous pair among otherwise likely_retake pairs
-    must have needs_adjudication = True.
+    Every span is already a confirmed retake: needs_adjudication is False and needs_keeper True, even when an edge was ambiguous before the
+    cross-encoder resolved it. The span records its unit count, its weakest edge and where its decisions came from.
     """
-    pair_likely = _make_candidate(1, "1:0", 1.0, 3.0, "Take 1", "1:1", 4.0, 6.0, "Take 2", classification="likely_retake")
-    pair_ambiguous = _make_candidate(2, "1:1", 4.0, 6.0, "Take 2", "2:0", 7.0, 9.0, "Paraphrase Take 3", classification="ambiguous")
+    pair_stacker = _make_candidate(1, "1:0", 1.0, 3.0, "Take 1", "1:1", 4.0, 6.0, "Take 2", stacker_p=0.95)
+    pair_ce = _make_candidate(2, "1:1", 4.0, 6.0, "Take 2", "2:0", 7.0, 9.0, "Paraphrase Take 3", classification="ambiguous",
+                              resolved_by="cross_encoder", stacker_p=0.50)
 
-    spans = build_retake_spans([pair_likely, pair_ambiguous])
+    spans = build_retake_spans([pair_stacker, pair_ce])
 
     assert len(spans) == 1
     span = spans[0]
     assert span.unit_ids == ["1:0", "1:1", "2:0"]
-    assert span.needs_adjudication is True
-    assert span.classification_summary == {"likely_retake": 1, "ambiguous": 1}
+    assert span.needs_adjudication is False and span.needs_keeper is True
+    assert span.n_units == 3 and span.min_stacker_p == 0.50 and span.decision_source == "mixed"
+    assert span.classification_summary == {"likely_retake": 2, "ambiguous": 0, "resolved_by_stacker": 1, "resolved_by_cross_encoder": 1}
+
+
+def test_span_with_more_than_four_units_logs_a_warning(caplog):
+    """A chain of 5 units is built (union-find unchanged) and a warning is logged."""
+    pairs = [_make_candidate(i, f"{i}:0", float(i), i + 0.5, f"T{i}", f"{i + 1}:0", i + 1.0, i + 1.5, f"T{i + 1}") for i in range(1, 5)]
+    with caplog.at_level("WARNING", logger="pipeline.step_05_span_aggregation.span_aggregation"):
+        spans = build_retake_spans(pairs)
+    assert len(spans) == 1 and spans[0].n_units == 5
+    assert any("5 units" in r.message for r in caplog.records)
+
+
+def test_pairs_decided_not_retake_are_never_unioned():
+    """A pair the scorer decided 'not_retake' must not bridge two real retake pairs into one span."""
+    a = _make_candidate(1, "1:0", 1.0, 3.0, "A1", "1:1", 4.0, 6.0, "A2")
+    b = _make_candidate(2, "5:0", 20.0, 22.0, "B1", "5:1", 23.0, 25.0, "B2")
+    bridge = _make_candidate(3, "1:1", 4.0, 6.0, "A2", "5:0", 20.0, 22.0, "B1", decision="not_retake", stacker_p=0.02)
+    spans = build_retake_spans([a, b, bridge])
+    assert len(spans) == 2
 
 
 def test_isolated_units_excluded_from_output():
@@ -134,23 +159,26 @@ def test_isolated_units_excluded_from_output():
     If all pairs for a unit are unlikely_retake (or if candidate list is empty),
     no spans are generated and isolated units do not appear.
     """
-    pair_unlikely = _make_candidate(1, "1:0", 1.0, 3.0, "Text A", "2:0", 10.0, 12.0, "Text B", classification="unlikely_retake")
+    pair_unlikely = _make_candidate(1, "1:0", 1.0, 3.0, "Text A", "2:0", 10.0, 12.0, "Text B", classification="unlikely_retake", decision="not_retake", stacker_p=0.01)
     spans = build_retake_spans([pair_unlikely])
     assert spans == []
 
 
-def test_likely_final_unit_id_none_when_fully_ambiguous():
+def test_likely_final_unit_id_heuristic_applies_to_cross_encoder_confirmed_spans():
     """
-    When a span is entirely ambiguous, likely_final_unit_id must be None.
+    A span whose only edge was ambiguous and was confirmed by the cross-encoder is a confirmed retake like any other: the (unchanged)
+    likely-final heuristic applies and picks the chronologically latest non-subset unit; no adjudication is needed.
     """
-    pair = _make_candidate(1, "2:1", 8.73, 10.81, "Now we're going to learn about tea time, guys.", "5:0", 17.71, 21.46, "Hey guys, let's talk about tea time.", classification="ambiguous")
+    pair = _make_candidate(1, "2:1", 8.73, 10.81, "Now we're going to learn about tea time, guys.", "5:0", 17.71, 21.46, "Hey guys, let's talk about tea time.",
+                           classification="ambiguous", resolved_by="cross_encoder", stacker_p=0.5)
 
     spans = build_retake_spans([pair])
 
     assert len(spans) == 1
     span = spans[0]
-    assert span.needs_adjudication is True
-    assert span.likely_final_unit_id is None
+    assert span.needs_adjudication is False and span.needs_keeper is True
+    assert span.decision_source == "cross_encoder"
+    assert span.likely_final_unit_id == "5:0"
 
 
 def test_multiple_independent_spans_sorted_chronologically():
@@ -251,7 +279,7 @@ def test_sibling_short_unit_attached_to_span():
     assert span.likely_final_unit_id == "6:0"
     # Adjudication and classification summary are unaffected
     assert span.needs_adjudication is False
-    assert span.classification_summary == {"likely_retake": 1, "ambiguous": 0}
+    assert span.classification_summary == {"likely_retake": 1, "ambiguous": 0, "resolved_by_stacker": 1, "resolved_by_cross_encoder": 0}
 
 
 def test_unrelated_short_unit_not_attached_when_sibling_not_in_span():

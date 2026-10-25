@@ -29,11 +29,16 @@ if str(REPO_ROOT) not in sys.path:
 from pipeline.step_03_token_matching.config import (
     PAUSE_SPLIT_THRESHOLD_SECONDS,
     TokenMatchingConfig,
-    default_config as default_token_config,
 )
 from pipeline.step_04_semantic_matching.config import (
     default_semantic_config,
 )
+
+# The `passes_stage1_default` column documents the PRE-ALIGNMENT pipeline: Stage 3 used min lexical 0.35 and a 120 s window before its defaults
+# were aligned with this export (0.10 / 300 s). The values are pinned here so the column keeps its meaning (and a refresh does not rewrite it)
+# even though the pipeline's own defaults changed.
+PASSES_STAGE1_MIN_LEXICAL = 0.35
+PASSES_STAGE1_WINDOW_S = 120
 from pipeline.step_05_cutlist.cutlist_builder import select_take
 from pipeline.step_05_span_aggregation.span_aggregation import (
     _determine_likely_final_unit_id,
@@ -459,11 +464,9 @@ def candidate_to_csv_row(
     restart_flag = 1 if candidate.get("restart_phrase_detected") else 0
     disagreement = abs(lex_score - sem_score) if ("lexical_score" in candidate or "semantic_score" in candidate) else float(candidate.get("lexical_semantic_disagreement", 0.0))
 
-    # passes_stage1_default calculation based on pipeline defaults
-    default_lex_thresh = float(default_token_config.candidate_threshold)
-    default_win = float(default_token_config.window_seconds)
+    # passes_stage1_default: would the pair have passed the pre-alignment Stage 3 defaults (pinned constants above, NOT the current pipeline defaults)
     time_gap = abs(start_b - start_a)
-    passes_s1 = 1 if (lex_score >= default_lex_thresh and time_gap <= default_win) else 0
+    passes_s1 = 1 if (lex_score >= PASSES_STAGE1_MIN_LEXICAL and time_gap <= PASSES_STAGE1_WINDOW_S) else 0
 
     pipeline_class = str(candidate.get("classification", ""))
 

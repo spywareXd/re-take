@@ -349,6 +349,9 @@ def run_full_pipeline(
     video_id: str | None = None,
     force_new_id: bool = False,
     detect_intra_unit: bool = False,
+    scorer_model_dir: str | Path | None = None,
+    scorer_device: str | None = None,
+    scorer_batch_size: int = 64,
 ) -> PipelineResult:
     """
     Run the complete retake detection and video editing pipeline.
@@ -369,6 +372,9 @@ def run_full_pipeline(
         reuse_existing_transcript: If True and transcript.json exists, reuses it without re-transcribing.
         video_id: Explicit video_id (e.g. 'video_1'). If None, automatically assigned.
         force_new_id: If True, always allocates the next available video_id.
+        scorer_model_dir: Directory with the final scorer (thresholds.json and ce_seed*/ weights). Default: models/final.
+        scorer_device: Device for the cross-encoder ('cuda' / 'cpu'). Default: GPU if present, else CPU.
+        scorer_batch_size: Cross-encoder batch size (default 64).
         detect_intra_unit: OPTIONAL, default off. If True, also suggest restarts inside single units and save
             them to <video dir>/candidates/intra_unit_candidates.json for the review UI. Suggestions never feed
             candidate generation, span aggregation, adjudication or the cutlist.
@@ -504,27 +510,31 @@ def run_full_pipeline(
         _progress("Token Matching", 1.0)
 
         # ======================================================================
-        # Stage 4: Semantic Matching (Step 04)
+        # Stage 4: Final scorer (Step 04): plain Stage 2 + cross-encoder -> stacker, thresholds, ambiguous pairs resolved by the cross-encoder
         # ======================================================================
-        _progress("Semantic Matching", 0.0)
+        _progress("Scoring", 0.0)
         t0 = time.time()
 
-        from pipeline.step_04_semantic_matching import run_stage2, save_semantic_candidates
+        from pipeline.step_04_semantic_matching import get_final_scorer, run_stage4, save_semantic_candidates, scorer_envelope
 
-        stage2_results = run_stage2(candidates)
+        scorer = get_final_scorer(
+            model_dir=str(scorer_model_dir) if scorer_model_dir else None, device=scorer_device, batch_size=scorer_batch_size
+        )
+        stage2_results = run_stage4(candidates, scorer=scorer)
 
         if save_intermediates:
             save_semantic_candidates(
                 stage2_results,
                 output_path=paths.semantic_candidates,
                 source_candidates=str(paths.token_candidates),
+                extra_envelope=scorer_envelope(scorer),
             )
 
         result.total_candidates = len(stage2_results)
-        result.likely_retakes = sum(1 for r in stage2_results if r["classification"] == "likely_retake")
-        result.ambiguous = sum(1 for r in stage2_results if r["classification"] == "ambiguous")
+        result.likely_retakes = sum(1 for r in stage2_results if r["class"] == "retake")          # pairs decided "retake"
+        result.ambiguous = sum(1 for r in stage2_results if r["resolved_by"] == "cross_encoder")   # pairs that were ambiguous and resolved by the cross-encoder
         result.stage_timings["semantic_matching"] = time.time() - t0
-        _progress("Semantic Matching", 1.0)
+        _progress("Scoring", 1.0)
 
         # ======================================================================
         # Stage 5: Span Aggregation (Step 05)
@@ -534,7 +544,7 @@ def run_full_pipeline(
 
         from pipeline.step_05_span_aggregation import build_retake_spans, save_retake_spans
 
-        retake_spans = build_retake_spans(stage2_results, units=units)
+        retake_spans = build_retake_spans(stage2_results, all_units=units)
 
         if save_intermediates:
             save_retake_spans(
@@ -563,7 +573,7 @@ def run_full_pipeline(
             provider=llm_provider,
             model=llm_model,
         )
-        adjudicated_spans = run_stage6(retake_spans, units=units, config=adj_config)
+        adjudicated_spans = run_stage6(retake_spans, all_units_by_id=units, config=adj_config)
 
         if save_intermediates:
             save_adjudicated_spans(
@@ -574,7 +584,7 @@ def run_full_pipeline(
             )
 
         result.adjudicated_count = sum(
-            1 for s in adjudicated_spans if getattr(s, "adjudication_status", "") == "resolved"
+            1 for s in adjudicated_spans if s.get("adjudication_status") == "resolved"       # run_stage6 returns dicts
         )
         result.stage_timings["llm_adjudication"] = time.time() - t0
         _progress("LLM Adjudication", 1.0)

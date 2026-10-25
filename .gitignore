@@ -247,3 +247,6 @@ data/processed/
 data/raw/videos/
 data/raw/audio/
 data/**/extracted_audio/
+
+# trained final cross-encoder weights (about 264 MB; publish via a release or the Hub, do not commit)
+models/final/ce_seed*/

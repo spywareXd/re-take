@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 from abc import ABC, abstractmethod
 from typing import Any, Callable
 
@@ -167,7 +168,16 @@ class MockLLMClient(LLMClient):
             return self.handler(prompt)
 
         if not self.responses:
-            # Default fallback mock response
+            # Default fallback mock response: keep the LAST member unit of the span and remove the others (valid under the keeper-only contract)
+            m = re.search(r"Member Unit IDs: (\[.*?\])", prompt)
+            if m:
+                try:
+                    ids = [str(u) for u in json.loads(m.group(1))]
+                    if ids:
+                        return {"keeper_unit_id": ids[-1], "units_to_remove": ids[:-1], "confidence": "high",
+                                "reasoning": "Mock fallback: keep the last unit."}
+                except ValueError:
+                    pass
             return {
                 "is_genuine_retake_group": True,
                 "keeper_unit_id": None,

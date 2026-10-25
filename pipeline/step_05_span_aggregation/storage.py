@@ -72,6 +72,10 @@ def load_retake_spans(
                 classification_summary=dict(item.get("classification_summary", {})),
                 needs_adjudication=bool(item.get("needs_adjudication", False)),
                 likely_final_unit_id=item.get("likely_final_unit_id"),
+                needs_keeper=bool(item.get("needs_keeper", True)),
+                n_units=int(item.get("n_units", len(item["unit_ids"]))),
+                min_stacker_p=item.get("min_stacker_p"),
+                decision_source=str(item.get("decision_source", "")),
             )
         )
 

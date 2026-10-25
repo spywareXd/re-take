@@ -117,6 +117,7 @@ def save_semantic_candidates(
     stage2_retake_threshold: float = 0.65,
     stage2_ambiguous_floor: float = 0.35,
     disagreement_flag_threshold: float = 0.35,
+    extra_envelope: dict[str, Any] | None = None,
 ) -> Path:
     """
     Saves Stage 2 Semantic Candidates to JSON metadata envelope.
@@ -142,6 +143,7 @@ def save_semantic_candidates(
         "stage2_ambiguous_floor": float(stage2_ambiguous_floor),
         "disagreement_flag_threshold": float(disagreement_flag_threshold),
         "candidate_count": len(serialized_candidates),
+        **(extra_envelope or {}),                 # Stage 4 scorer fields (scorer_name, thresholds_file, model_version, feature_version, label_version, thresholds)
         "candidates": serialized_candidates,
     }
 
@@ -171,6 +173,7 @@ def load_semantic_candidates(
         "stage2_ambiguous_floor": data.get("stage2_ambiguous_floor"),
         "disagreement_flag_threshold": data.get("disagreement_flag_threshold"),
         "candidate_count": data.get("candidate_count", len(candidates)),
+        **{k: data.get(k) for k in ("scorer_name", "thresholds_file", "model_version", "feature_version", "label_version", "thresholds") if k in data},
     }
 
     return candidates, metadata

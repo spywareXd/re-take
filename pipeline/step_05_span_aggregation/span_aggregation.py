@@ -1,9 +1,14 @@
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import asdict, dataclass, is_dataclass
 from pathlib import Path
 from typing import Any, Sequence
+
+logger = logging.getLogger(__name__)
+
+MAX_UNITS_BEFORE_WARNING = 4          # spans with more units than this are logged (long chains may merge separate retakes)
 
 
 @dataclass(slots=True)
@@ -19,6 +24,11 @@ class RetakeSpan:
     classification_summary: dict[str, int]
     needs_adjudication: bool
     likely_final_unit_id: str | None
+    # --- final-scorer fields (added at the end so positional construction keeps working) ---
+    needs_keeper: bool = True               # every span still needs the LLM to choose the keeper
+    n_units: int = 0                        # number of units in the span (after sibling attachment)
+    min_stacker_p: float | None = None      # weakest stacker probability among the span's edges
+    decision_source: str = ""               # "stacker", "cross_encoder" or "mixed": who confirmed the span's pairs as retakes
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -30,6 +40,10 @@ class RetakeSpan:
             "classification_summary": dict(self.classification_summary),
             "needs_adjudication": bool(self.needs_adjudication),
             "likely_final_unit_id": self.likely_final_unit_id,
+            "needs_keeper": bool(self.needs_keeper),
+            "n_units": int(self.n_units),
+            "min_stacker_p": None if self.min_stacker_p is None else round(float(self.min_stacker_p), 6),
+            "decision_source": self.decision_source,
         }
 
 
@@ -218,6 +232,9 @@ def build_retake_spans(
     """
     Clusters overlapping and transitively connected CandidatePairs into RetakeSpans.
 
+    Final-scorer behaviour: ONLY pairs whose final decision (`class`) is "retake" are used; pairs decided "not_retake" are never unioned.
+    Every span gets needs_adjudication=False (it is already confirmed as repeated attempts) and needs_keeper=True (the LLM only picks the keeper).
+
     Args:
         candidates: Sequence of Step 04 candidate pair dicts or objects.
         all_units: Optional sequence of all ComparableUnits from the transcript.
@@ -229,12 +246,11 @@ def build_retake_spans(
     if not candidates:
         return []
 
-    # 1. Filter: Only retain candidates classified as likely_retake or ambiguous
+    # 1. Filter: only pairs whose FINAL decision is "retake" (set by Stage 4 after the stacker / cross-encoder resolution)
     surviving_pairs: list[dict[str, Any]] = []
     for c in candidates:
         c_dict = _extract_candidate_dict(c)
-        classification = c_dict.get("classification", "")
-        if classification in {"likely_retake", "ambiguous"}:
+        if c_dict.get("class") == "retake":
             surviving_pairs.append(c_dict)
 
     if not surviving_pairs:
@@ -289,12 +305,15 @@ def build_retake_spans(
         span_start = min(unit_map[uid]["start"] for uid in sorted_uids)
         span_end = max(unit_map[uid]["end"] for uid in sorted_uids)
 
-        classification_summary = {"likely_retake": 0, "ambiguous": 0}
-        for p in pairs:
-            cls = p.get("classification", "likely_retake")
-            classification_summary[cls] = classification_summary.get(cls, 0) + 1
-
-        needs_adjudication = classification_summary.get("ambiguous", 0) > 0
+        # every edge is a confirmed retake. The key "likely_retake" keeps the likely-final-unit heuristic below unchanged; the extra keys
+        # record who confirmed the edges.
+        classification_summary = {"likely_retake": len(pairs), "ambiguous": 0,
+                                  "resolved_by_stacker": sum(1 for p in pairs if p.get("resolved_by") == "stacker"),
+                                  "resolved_by_cross_encoder": sum(1 for p in pairs if p.get("resolved_by") == "cross_encoder")}
+        needs_adjudication = False                        # nothing is left to adjudicate: the span is already a confirmed retake
+        sources = {p.get("resolved_by") for p in pairs}
+        decision_source = sources.pop() if len(sources) == 1 else "mixed"
+        ps = [float(p["stacker_p"]) for p in pairs if p.get("stacker_p") is not None]
 
         likely_final_unit_id = _determine_likely_final_unit_id(
             sorted_uids,
@@ -312,6 +331,9 @@ def build_retake_spans(
             classification_summary=classification_summary,
             needs_adjudication=needs_adjudication,
             likely_final_unit_id=likely_final_unit_id,
+            needs_keeper=True,
+            min_stacker_p=min(ps) if ps else None,
+            decision_source=decision_source,
         )
         raw_spans.append((span_start, span))
 
@@ -324,6 +346,10 @@ def build_retake_spans(
     final_spans: list[RetakeSpan] = []
     for idx, (_, span) in enumerate(raw_spans):
         span.span_id = f"span_{idx}"
+        span.n_units = len(span.unit_ids)                 # counted after the sibling-attachment pass
+        if span.n_units > MAX_UNITS_BEFORE_WARNING:
+            logger.warning("[Stage 5] %s has %d units (> %d); a long chain may merge separate retakes (min stacker_p %.3f)",
+                           span.span_id, span.n_units, MAX_UNITS_BEFORE_WARNING, span.min_stacker_p if span.min_stacker_p is not None else float("nan"))
         final_spans.append(span)
 
     return final_spans

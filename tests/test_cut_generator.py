@@ -38,7 +38,7 @@ def sample_adjudicated_spans():
             "is_genuine_retake_group": True,
             "keeper_unit_id": "2:0",
             "units_to_remove": ["1:0"],
-            "adjudication_status": "not_required",
+            "adjudication_status": "resolved",
             "reasoning": "Standard retake rule",
             "candidate_pairs": [{"candidate_id": 1}],
         },
@@ -119,6 +119,20 @@ def test_non_retake_group_is_not_cut(sample_units):
     assert cutlist.keep_spans[0].start == 0.0
     assert cutlist.keep_spans[0].end == 20.0
     assert cutlist.output_duration == 20.0
+
+
+def test_unresolved_spans_are_skipped_with_a_log_line(sample_units, caplog):
+    """Only spans with status 'resolved' are cut: a failed span (even one that carries a removal list) is skipped and logged."""
+    spans = [
+        {"span_id": "span_failed", "unit_ids": ["1:0", "2:0"], "start": 1.0, "end": 6.5, "is_genuine_retake_group": True, "keeper_unit_id": None,
+         "units_to_remove": None, "adjudication_status": "failed", "adjudication_error": "no API key", "candidate_pairs": []},
+        {"span_id": "span_not_resolved", "unit_ids": ["4:0", "5:0"], "start": 10.0, "end": 15.5, "is_genuine_retake_group": True, "keeper_unit_id": "5:0",
+         "units_to_remove": ["4:0"], "adjudication_status": "failed", "candidate_pairs": []},
+    ]
+    with caplog.at_level("WARNING"):
+        cutlist = generate_cuts_from_adjudicated_spans(adjudicated_spans=spans, units=sample_units, source="test.mp4", source_duration=20.0)
+    assert len(cutlist.discard_spans) == 0 and len(cutlist.retake_groups) == 0
+    assert sum("unresolved" in r.message for r in caplog.records) == 2
 
 
 def test_multi_unit_discard_group(sample_units):

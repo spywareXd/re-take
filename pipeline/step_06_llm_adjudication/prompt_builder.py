@@ -113,18 +113,16 @@ def build_adjudication_prompt(
         for idx, p in enumerate(pairs, 1):
             uid_a = p.get("unit_a", {}).get("unit_id", "?")
             uid_b = p.get("unit_b", {}).get("unit_id", "?")
-            cls = p.get("classification", "ambiguous")
             sem = p.get("semantic_score", 0.0)
             lex = p.get("lexical_score", p.get("combined_score", 0.0))
-            stg2 = p.get("stage2_score", 0.0)
+            plain = p.get("plain_stage2_score", 0.0)
+            prob = p.get("stacker_p")
             direction = p.get("containment_direction", "none")
-            flag = p.get("high_disagreement_flag", False)
-            disagree_str = " [HIGH DISAGREEMENT: lexical vs semantic]" if flag else ""
+            prob_str = f", Stacker probability = {prob:.3f}" if prob is not None else ""
 
             pairs_formatted_lines.append(
                 f'  {idx}. Pair [{uid_a}] <-> [{uid_b}]:\n'
-                f'     - Classification: {cls}{disagree_str}\n'
-                f'     - Scores: Stage2 Score = {stg2:.3f}, Semantic Similarity = {sem:.3f}, Lexical Score = {lex:.3f}\n'
+                f'     - Scores: Plain Stage 2 = {plain:.3f}, Semantic Similarity = {sem:.3f}, Lexical Score = {lex:.3f}{prob_str}\n'
                 f'     - Containment Direction: {direction}'
             )
     else:
@@ -136,11 +134,11 @@ def build_adjudication_prompt(
     span_start = s_dict.get("start", 0.0)
     span_end = s_dict.get("end", 0.0)
 
-    prompt = f"""You are an expert video editing and speech transcript adjudication assistant.
-Your task is to analyze a clustered span of spoken dialogue from a video recording and determine whether it represents a sequence of retakes / false starts / restarts that need to be edited down to a single keeper take, or if it represents valid, distinct dialogue.
+    prompt = f"""You are an expert video editing and speech transcript assistant.
+A scoring model has ALREADY confirmed that the spoken units below are repeated attempts at the same intended line (a retake group): the speaker restarted, stumbled or re-said the same sentence/thought. Do NOT judge whether this is a retake. Your only task is to choose which single unit to KEEP as the final take and which units to REMOVE.
 
 ======================================================================
-SPAN CONTEXT TO ADJUDICATE
+SPAN CONTEXT
 ======================================================================
 Span ID: {span_id} (Time range: {span_start:.2f}s to {span_end:.2f}s)
 Member Unit IDs: {json.dumps(member_uids)}
@@ -148,38 +146,30 @@ Member Unit IDs: {json.dumps(member_uids)}
 SPOKEN UNITS (IN CHRONOLOGICAL ORDER):
 {units_section}
 
-SUPPORTING EVIDENCE (LEXICAL & SEMANTIC SCORES FROM STAGES 1-4):
+SUPPORTING EVIDENCE (SCORES FROM THE SCORING MODEL):
 {pairs_section}
 
 ======================================================================
-ADJUDICATION INSTRUCTIONS
+INSTRUCTIONS
 ======================================================================
-1. RETAKE DETERMINATION:
-   - Carefully read the raw text of each spoken unit in chronological order.
-   - Determine whether the speaker is restarting, stumbling, revising, or repeating the same intended sentence/thought across multiple attempts (a retake group).
-   - If this is a genuine retake group (multiple attempts at saying the same thing, where the speaker intended only the best version to remain in the final video), set "is_genuine_retake_group": true.
-   - If these units are distinct thoughts, deliberate topical repetition, rhetorical callback, or normal continuous speech that should all remain, set "is_genuine_retake_group": false.
-
-2. KEEPER SELECTION (Only when "is_genuine_retake_group": true):
+1. KEEPER SELECTION:
+   - Read the raw text of each spoken unit in chronological order.
    - Select exactly ONE unit from Member Unit IDs as "keeper_unit_id" (typically the final, most complete, fluent, and correct delivery).
-   - Set "units_to_remove" to include all OTHER member unit IDs in the span.
-   - Short fragments/stutters (e.g. "Fellas,") should be in "units_to_remove" if their full sentence attempt succeeded later.
 
-3. NON-RETAKE (When "is_genuine_retake_group": false):
-   - "keeper_unit_id" MUST be null.
-   - "units_to_remove" MUST be an empty list [].
+2. REMOVALS:
+   - Set "units_to_remove" to include all OTHER member unit IDs in the span (the keeper must NOT appear in it).
+   - Short fragments/stutters (e.g. "Fellas,") belong in "units_to_remove" if their full sentence attempt succeeded later.
 
-4. CONFIDENCE & REASONING:
+3. CONFIDENCE & REASONING:
    - Set "confidence" to "high", "medium", or "low".
-   - Provide 1 to 2 concise sentences in "reasoning" explaining the editorial verdict.
+   - Provide 1 to 2 concise sentences in "reasoning" explaining why this unit is the best final take.
 
 ======================================================================
 OUTPUT FORMAT CONTRACT
 ======================================================================
 Return ONLY a valid JSON object matching this exact schema:
 {{
-  "is_genuine_retake_group": true | false,
-  "keeper_unit_id": "<unit_id>" | null,
+  "keeper_unit_id": "<unit_id>",
   "units_to_remove": ["<unit_id>", ...],
   "confidence": "high" | "medium" | "low",
   "reasoning": "<1-2 sentence explanation>"

@@ -35,11 +35,10 @@ def _make_mock_span(
                 "candidate_id": 1,
                 "unit_a": {"unit_id": uids[0], "raw_text": "First attempt at line"},
                 "unit_b": {"unit_id": uids[1], "raw_text": "Second attempt at line"},
-                "classification": "ambiguous" if needs_adjudication else "likely_retake",
-                "stage2_score": 0.75,
+                "plain_stage2_score": 0.75,
+                "stacker_p": 0.93,
                 "semantic_score": 0.90,
                 "lexical_score": 0.60,
-                "high_disagreement_flag": needs_adjudication,
             }
         ],
         "classification_summary": {"likely_retake": 0, "ambiguous": 1} if needs_adjudication else {"likely_retake": 1, "ambiguous": 0},
@@ -48,10 +47,10 @@ def _make_mock_span(
     }
 
 
-def test_pass_through_when_adjudication_not_required():
+def test_every_span_goes_to_the_llm_even_with_a_likely_final_unit():
     """
-    A span with needs_adjudication = False is NOT sent to the LLM.
-    It receives adjudication_status = 'not_required' with keeper_unit_id derived from likely_final_unit_id.
+    There is no pass-through path any more: a span with needs_adjudication = False and an advisory likely_final_unit_id is STILL sent to the
+    LLM (which only chooses the keeper); the advisory unit does not decide.
     """
     span = _make_mock_span(
         span_id="span_0",
@@ -62,17 +61,15 @@ def test_pass_through_when_adjudication_not_required():
         likely_final_unit_id="6:0",
     )
 
-    mock_client = MockLLMClient()
+    mock_client = MockLLMClient(responses=[{"keeper_unit_id": "5:1", "units_to_remove": ["5:0", "6:0"], "confidence": "high", "reasoning": "5:1 is cleaner."}])
     results = run_stage6([span], llm_client=mock_client)
 
-    # LLM must NEVER be called for confident spans
-    assert mock_client.call_count == 0
-
+    assert mock_client.call_count == 1
     assert len(results) == 1
     res = results[0]
-    assert res["adjudication_status"] == "not_required"
-    assert res["keeper_unit_id"] == "6:0"
-    assert res["units_to_remove"] == ["5:0", "5:1"]
+    assert res["adjudication_status"] == "resolved"
+    assert res["keeper_unit_id"] == "5:1"                       # the LLM's choice, not the advisory 6:0
+    assert res["units_to_remove"] == ["5:0", "6:0"]
     assert res["is_genuine_retake_group"] is True
 
 
@@ -147,8 +144,8 @@ def test_hallucinated_keeper_unit_id_triggers_retry_and_fails_on_exhaustion():
 
 def test_self_contradictory_response_rejected():
     """
-    Contradictions like is_genuine_retake_group: false with a non-null keeper_unit_id
-    or keeper_unit_id listed inside units_to_remove must be rejected.
+    keeper_unit_id listed inside units_to_remove must be rejected. The model's own is_genuine_retake_group verdict is ignored
+    (the span is already confirmed), so the old 'false retake group with a keeper' contradiction no longer exists.
     """
     span = _make_mock_span(
         span_id="span_2",
@@ -156,17 +153,15 @@ def test_self_contradictory_response_rejected():
         needs_adjudication=True,
     )
 
-    # Contradiction 1: False retake group but keeper provided
-    contradiction_1 = {
+    # A verdict sent by the model is ignored: the result is always is_genuine_retake_group = True
+    ignored_verdict = {
         "is_genuine_retake_group": False,
         "keeper_unit_id": "1:1",
-        "units_to_remove": [],
+        "units_to_remove": ["1:0"],
         "confidence": "high",
-        "reasoning": "Contradictory output.",
+        "reasoning": "The verdict field is not used.",
     }
-
-    with pytest.raises(ValueError, match="Self-contradictory"):
-        parse_adjudication_response(contradiction_1, span=span)
+    assert parse_adjudication_response(ignored_verdict, span=span)["is_genuine_retake_group"] is True
 
     # Contradiction 2: Keeper also listed in units_to_remove
     contradiction_2 = {
@@ -181,10 +176,10 @@ def test_self_contradictory_response_rejected():
         parse_adjudication_response(contradiction_2, span=span)
 
 
-def test_valid_not_a_retake_response():
+def test_not_a_retake_answer_is_rejected_because_a_keeper_is_required():
     """
-    When the LLM decides a span is NOT a genuine retake group (e.g. coincidental topical repetition),
-    is_genuine_retake_group is False, keeper_unit_id is None, and units_to_remove is [].
+    The span is already a confirmed retake group, so an answer without a keeper (the old "not a retake" answer) is invalid:
+    it is retried and, when it keeps coming back, the span is marked failed and is NOT cut.
     """
     span = _make_mock_span(
         span_id="span_3",
@@ -200,15 +195,15 @@ def test_valid_not_a_retake_response():
         "reasoning": "These are two separate topical statements made at different points in the video, not a restart.",
     }
 
-    mock_client = MockLLMClient(responses=[not_retake_resp])
-    results = run_stage6([span], llm_client=mock_client)
+    mock_client = MockLLMClient(responses=[not_retake_resp] * 3)
+    results = run_stage6([span], config=AdjudicationConfig(max_retries=2), llm_client=mock_client)
 
+    assert mock_client.call_count == 3
     assert len(results) == 1
     res = results[0]
-    assert res["adjudication_status"] == "resolved"
-    assert res["is_genuine_retake_group"] is False
-    assert res["keeper_unit_id"] is None
-    assert res["units_to_remove"] == []
+    assert res["adjudication_status"] == "failed"
+    assert res["keeper_unit_id"] is None and res["units_to_remove"] is None
+    assert "keeper_unit_id is null/missing" in res["adjudication_error"]
 
 
 def test_retry_exhaustion_never_guesses_fallback():
