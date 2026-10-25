@@ -13,6 +13,7 @@ workspace = true
 [dependencies]
 simplecut-core = { workspace = true }
 simplecut-ui = { workspace = true }
+simplecut-service = { workspace = true }
 filmcraft-platform = { workspace = true }
 eframe = { workspace = true, features = ["default_fonts", "glow", "accesskit", "wayland", "x11"] }
 egui = { workspace = true }

@@ -128,6 +128,25 @@ fn capabilities_are_read_once_at_connect() {
 }
 
 #[test]
+fn capabilities_are_refreshed_by_every_request() {
+    let asked = Arc::new(Mutex::new(0));
+    let a2 = Arc::clone(&asked);
+    let m = mock(move |me, p, b| {
+        if p == "/v1/capabilities" {
+            let mut n = a2.lock().unwrap();
+            *n += 1;
+            // the first answer says no AI, as a service whose keys were not loaded yet would
+            return (200, format!(r#"{{"adjudicate":{}}}"#, *n > 1));
+        }
+        happy(me, p, b)
+    });
+    let s = HttpService::connect(&m.url);
+    assert!(!s.capabilities().adjudicate);
+    let _ = wait(&mut *s.analyze(request()));
+    assert!(s.capabilities().adjudicate);
+}
+
+#[test]
 fn a_dead_service_is_unreachable_and_requests_fail_in_plain_words() {
     let dead = {
         let l = TcpListener::bind("127.0.0.1:0").unwrap();

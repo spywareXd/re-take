@@ -28,8 +28,8 @@ const MAX_STATUS_CHARS: usize = 120;
 pub struct HttpService {
     base: String,
     agent: ureq::Agent,
-    capabilities: Mutex<Capabilities>,
-    reachable: AtomicBool,
+    capabilities: Arc<Mutex<Capabilities>>,
+    reachable: Arc<AtomicBool>,
     /// Where each analysed file is: `resolve` does not carry the path, the service needs it.
     paths: Arc<Mutex<Vec<(ItemId, String)>>>,
 }
@@ -42,32 +42,18 @@ impl HttpService {
         let service = Self {
             base: base_url.trim().trim_end_matches('/').to_string(),
             agent: agent(),
-            capabilities: Mutex::new(Capabilities::default()),
-            reachable: AtomicBool::new(false),
+            capabilities: Arc::new(Mutex::new(Capabilities::default())),
+            reachable: Arc::new(AtomicBool::new(false)),
             paths: Arc::new(Mutex::new(Vec::new())),
         };
         service.refresh();
         service
     }
 
-    /// Ask the service again what it can do (after it was started late, for instance).
+    /// Ask the service again what it can do (after it was started late, for instance). Every
+    /// request also does this first, in its own thread.
     pub fn refresh(&self) {
-        let reply = send(&self.agent, Method::Get, &format!("{}/v1/capabilities", self.base), None);
-        let caps = match reply {
-            Ok(r) if r.status == 200 => {
-                serde_json::from_str::<Value>(&r.body).ok().map(|v| Capabilities { adjudicate: v["adjudicate"].as_bool().unwrap_or(false) })
-            }
-            Ok(r) => {
-                log::warn!("capabilities: HTTP {}", r.status);
-                None
-            }
-            Err(e) => {
-                log::warn!("capabilities: {e}");
-                None
-            }
-        };
-        self.reachable.store(caps.is_some(), Ordering::SeqCst);
-        *self.capabilities.lock().unwrap_or_else(PoisonError::into_inner) = caps.unwrap_or_default();
+        refresh_capabilities(&self.agent, &self.base, &self.capabilities, &self.reachable);
     }
 
     /// Whether the last attempt to reach the service worked.
@@ -85,7 +71,9 @@ impl HttpService {
         let cancel = Arc::new(AtomicBool::new(false));
         let (agent, base, endpoint) = (self.agent.clone(), self.base.clone(), endpoint.to_string());
         let (thread_state, thread_cancel) = (Arc::clone(&state), Arc::clone(&cancel));
+        let (caps, reachable) = (Arc::clone(&self.capabilities), Arc::clone(&self.reachable));
         let spawned = std::thread::Builder::new().name("retake-http".into()).spawn(move || {
+            refresh_capabilities(&agent, &base, &caps, &reachable);
             let end = run_job(&agent, &base, &endpoint, &body, &thread_state, &thread_cancel);
             set(&thread_state, end);
         });
@@ -158,6 +146,24 @@ impl AnalysisJob for HttpJob {
     fn cancel(&mut self) {
         self.cancel.store(true, Ordering::SeqCst);
     }
+}
+
+fn refresh_capabilities(agent: &ureq::Agent, base: &str, into: &Mutex<Capabilities>, reachable: &AtomicBool) {
+    let caps = match send(agent, Method::Get, &format!("{base}/v1/capabilities"), None) {
+        Ok(r) if r.status == 200 => {
+            serde_json::from_str::<Value>(&r.body).ok().map(|v| Capabilities { adjudicate: v["adjudicate"].as_bool().unwrap_or(false) })
+        }
+        Ok(r) => {
+            log::warn!("capabilities: HTTP {}", r.status);
+            None
+        }
+        Err(e) => {
+            log::warn!("capabilities: {e}");
+            None
+        }
+    };
+    reachable.store(caps.is_some(), Ordering::SeqCst);
+    *into.lock().unwrap_or_else(PoisonError::into_inner) = caps.unwrap_or_default();
 }
 
 fn failed(why: &str) -> Box<dyn AnalysisJob> {

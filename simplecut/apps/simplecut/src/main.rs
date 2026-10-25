@@ -44,6 +44,13 @@ fn main() -> eframe::Result {
             // a stand-in service so the whole retake flow can be tried before a real one exists
             if std::env::var_os("SIMPLECUT_FAKE_RETAKES").is_some() {
                 app.set_service(Some(Box::new(simplecut_core::FakeService { adjudicate: true, ..Default::default() })));
+            } else if let Some(url) = retake_service_url() {
+                // the real service (`python -m service`); a dead one is reported when a request is made
+                let service = simplecut_service::HttpService::connect(&url);
+                if !service.is_reachable() {
+                    log::warn!("the retake service at {url} did not answer; start it with `python -m service`");
+                }
+                app.set_service(Some(Box::new(service)));
             }
             if let Some(path) = open {
                 app.open_project_path(path);
@@ -51,6 +58,14 @@ fn main() -> eframe::Result {
             Ok(Box::new(app))
         }),
     )
+}
+
+/// Where the retake service is: `SIMPLECUT_RETAKE_URL` is an address, or `1` / empty for the default one.
+/// Unset means no service (the Remove Retakes button stays hidden).
+fn retake_service_url() -> Option<String> {
+    let value = std::env::var("SIMPLECUT_RETAKE_URL").ok()?;
+    let value = value.trim();
+    if value.is_empty() || value == "1" { Some(simplecut_service::DEFAULT_URL.to_string()) } else { Some(value.to_string()) }
 }
 
 /// Window icon: a dark slate tile with an amber cut mark.

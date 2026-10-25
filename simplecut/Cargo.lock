@@ -3561,6 +3561,7 @@ dependencies = [
  "log",
  "rfd",
  "simplecut-core",
+ "simplecut-service",
  "simplecut-ui",
 ]
 
