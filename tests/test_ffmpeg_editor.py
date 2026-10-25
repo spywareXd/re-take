@@ -153,3 +153,19 @@ class TestEditVideo:
         # Even though video might not exist, empty keep_spans should raise first
         with pytest.raises(ValueError, match="no keep_spans"):
             edit_video(tmp_path / "test.mp4", cutlist)
+
+
+@SKIP_NO_FFMPEG
+def test_single_pass_edit_has_no_join_drift(tmp_path):
+    """Synthetic 10 s clip (tone + test pattern): 4 keep spans must come out with the exact summed duration (no per-join AAC padding)."""
+    from pipeline.step_08_video_edit.ffmpeg_editor import probe_media
+
+    src = tmp_path / "src.mp4"
+    subprocess.run(["ffmpeg", "-y", "-f", "lavfi", "-i", "testsrc=duration=10:size=160x120:rate=25", "-f", "lavfi", "-i", "sine=frequency=440:duration=10",
+                    "-c:v", "libx264", "-c:a", "aac", "-shortest", str(src)], capture_output=True, check=True)
+    spans = [TimeSpan(0.0, 1.0), TimeSpan(2.0, 3.0), TimeSpan(4.0, 6.0), TimeSpan(7.0, 10.0)]
+    cutlist = CutList(source="src.mp4", source_duration=10.0, keep_spans=spans, discard_spans=[], retake_groups=[])
+    out = edit_video(src, cutlist, tmp_path / "out.mp4", copy_mode=False)
+    duration, has_audio = probe_media(out)
+    assert has_audio
+    assert abs(duration - 7.0) < 0.08

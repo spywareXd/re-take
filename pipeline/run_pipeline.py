@@ -352,6 +352,9 @@ def run_full_pipeline(
     scorer_model_dir: str | Path | None = None,
     scorer_device: str | None = None,
     scorer_batch_size: int = 64,
+    cut_mode: str = "anchored",
+    cut_config: Any = None,
+    preview_cut_modes: bool = False,
 ) -> PipelineResult:
     """
     Run the complete retake detection and video editing pipeline.
@@ -374,6 +377,9 @@ def run_full_pipeline(
         force_new_id: If True, always allocates the next available video_id.
         scorer_model_dir: Directory with the final scorer (thresholds.json and ce_seed*/ weights). Default: models/final.
         scorer_device: Device for the cross-encoder ('cuda' / 'cpu'). Default: GPU if present, else CPU.
+        cut_mode: How resolved discards become keep spans: 'sentences' | 'anchored' (default) | 'retake_only'. See docs/frontend_integration/cut_modes.md.
+        cut_config: Optional pipeline.step_08_video_edit.CutConfig overriding the cut-mode defaults (pads, caps, motion threshold, fade).
+        preview_cut_modes: Also record the seconds each mode would remove under cutlist 'mode_preview' (extra ffmpeg work).
         scorer_batch_size: Cross-encoder batch size (default 64).
         detect_intra_unit: OPTIONAL, default off. If True, also suggest restarts inside single units and save
             them to <video dir>/candidates/intra_unit_candidates.json for the review UI. Suggestions never feed
@@ -596,16 +602,32 @@ def run_full_pipeline(
         t0 = time.time()
 
         from pipeline.step_08_video_edit import (
-            generate_cuts_from_adjudicated_spans,
+            CUT_MODES,
+            CutConfig,
+            build_cutlist,
+            load_envelope,
+            probe_media,
             save_cutlist,
+            write_keep_spans_vs_units,
         )
 
-        cutlist = generate_cuts_from_adjudicated_spans(
-            adjudicated_spans=adjudicated_spans,
-            units=units,
-            source=str(input_path.name),
-            source_duration=transcript.duration,
+        media_duration, _ = probe_media(input_path)           # the real container length (the transcript can end earlier)
+        cut_cfg = cut_config or CutConfig(cut_mode=cut_mode)
+        if cut_config is not None and cut_mode != cut_cfg.cut_mode and cut_mode != "anchored":
+            cut_cfg = CutConfig(**{**cut_cfg.__dict__, "cut_mode": cut_mode})
+        envelope = load_envelope(input_path)
+        build_args = dict(
+            adjudicated_spans=adjudicated_spans, units=units, transcript=transcript, source=str(input_path.name),
+            source_duration=max(transcript.duration, media_duration or 0.0), envelope=envelope, video_path=input_path,
         )
+        cutlist, csv_rows = build_cutlist(cut_cfg.cut_mode, cfg=cut_cfg, **build_args)
+        if preview_cut_modes:
+            cutlist.mode_preview = {
+                m: (cutlist.removed_seconds if m == cut_cfg.cut_mode else build_cutlist(m, cfg=cut_cfg, **build_args)[0].removed_seconds)
+                for m in CUT_MODES
+            }
+        if save_intermediates:
+            write_keep_spans_vs_units(csv_rows, paths.cutlist.parent / "keep_spans_vs_units.csv")
 
         if save_intermediates:
             save_cutlist(cutlist, output_path=paths.cutlist)
@@ -633,6 +655,7 @@ def run_full_pipeline(
             cutlist=cutlist,
             output_path=output_video_path,
             copy_mode=copy_mode,
+            fade_ms=cut_cfg.fade_ms,
         )
 
         # Keep a copy in data/processed/outputs/ if outputs dir exists or for global access
@@ -689,6 +712,8 @@ def main():
     parser.add_argument("--llm-provider", default="gemini", choices=["gemini", "openai", "mock"], help="LLM provider")
     parser.add_argument("--llm-model", default="gemini-2.5-flash", help="LLM model name")
     parser.add_argument("--copy-mode", action="store_true", help="Fast FFmpeg stream-copy mode")
+    parser.add_argument("--cut-mode", default="anchored", choices=["sentences", "anchored", "retake_only"], help="How discards become keep spans")
+    parser.add_argument("--preview-cut-modes", action="store_true", help="Also record removed seconds per cut mode in the cutlist")
     parser.add_argument("--force-new-id", action="store_true", help="Force assigning next video_id even if previously registered")
 
     args = parser.parse_args()
@@ -708,6 +733,8 @@ def main():
         llm_model=args.llm_model,
         copy_mode=args.copy_mode,
         force_new_id=args.force_new_id,
+        cut_mode=args.cut_mode,
+        preview_cut_modes=args.preview_cut_modes,
     )
 
     if result.success:

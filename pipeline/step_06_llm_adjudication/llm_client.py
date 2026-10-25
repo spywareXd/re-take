@@ -146,6 +146,50 @@ class OpenAIClient(LLMClient):
         return json.loads(content)
 
 
+def _int_or_none(value: Any) -> int | None:
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def extract_usage(data: Any) -> dict[str, int | None]:
+    """
+    Token usage from a decoded API response, for OpenAI-format ("usage") and Gemini-format ("usageMetadata").
+    Fields: prompt_tokens, completion_tokens (billable output INCLUDING reasoning/thinking), reasoning_tokens (informational
+    subset of completion_tokens), total_tokens. A field the API did not return is None, never 0.
+    """
+    out: dict[str, int | None] = {"prompt_tokens": None, "completion_tokens": None, "reasoning_tokens": None, "total_tokens": None}
+    if not isinstance(data, dict):
+        return out
+    usage = data.get("usage")
+    if isinstance(usage, dict):
+        out["prompt_tokens"] = _int_or_none(usage.get("prompt_tokens"))
+        out["completion_tokens"] = _int_or_none(usage.get("completion_tokens"))
+        details = usage.get("completion_tokens_details")
+        out["reasoning_tokens"] = _int_or_none(details.get("reasoning_tokens")) if isinstance(details, dict) else None
+        out["total_tokens"] = _int_or_none(usage.get("total_tokens"))
+        return out
+    meta = data.get("usageMetadata")
+    if isinstance(meta, dict):
+        out["prompt_tokens"] = _int_or_none(meta.get("promptTokenCount"))
+        cand, thought = _int_or_none(meta.get("candidatesTokenCount")), _int_or_none(meta.get("thoughtsTokenCount"))
+        # Gemini reports thinking tokens separately from candidates; billable output is their sum
+        out["completion_tokens"] = None if cand is None and thought is None else (cand or 0) + (thought or 0)
+        out["reasoning_tokens"] = thought
+        out["total_tokens"] = _int_or_none(meta.get("totalTokenCount"))
+    return out
+
+
+def endpoint_label(url: str) -> str:
+    """Name of the API endpoint a request URL actually targets (not the model name)."""
+    u = str(url).lower()
+    if "generativelanguage.googleapis.com" in u:
+        return "gemini-generativelanguage"
+    if "api.groq.com" in u:
+        return "groq-openai-compat"
+    if "api.openai.com" in u:
+        return "openai"
+    return "unknown"
+
+
 class MockLLMClient(LLMClient):
     """
     Mock LLM client for deterministic testing, offline execution, and error simulation.

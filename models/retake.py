@@ -109,6 +109,10 @@ class CutList:
     discard_spans: list[TimeSpan]
     retake_groups: list[RetakeGroup]
     output_duration: float = 0.0
+    # Optional, added with the cut modes; absent from older cutlist files (defaults apply when loading them)
+    mode: str = ""
+    removed_seconds: Optional[float] = None
+    mode_preview: Optional[dict[str, float]] = None      # removed seconds per cut mode, only when a preview was requested
 
     def __post_init__(self):
         if self.output_duration == 0.0:
@@ -124,6 +128,9 @@ class CutList:
             "keep_spans": [s.to_dict() for s in self.keep_spans],
             "discard_spans": [s.to_dict() for s in self.discard_spans],
             "retake_groups": [g.to_dict() for g in self.retake_groups],
+            "mode": self.mode,
+            "removed_seconds": round(self.removed_seconds if self.removed_seconds is not None else self.source_duration - self.output_duration, 4),
+            **({"mode_preview": self.mode_preview} if self.mode_preview else {}),
         }
 
     @classmethod
@@ -135,4 +142,7 @@ class CutList:
             discard_spans=[TimeSpan.from_dict(s) for s in data.get("discard_spans", [])],
             retake_groups=[RetakeGroup.from_dict(g) for g in data.get("retake_groups", [])],
             output_duration=float(data.get("output_duration", 0.0)),
+            mode=str(data.get("mode", "")),
+            removed_seconds=data.get("removed_seconds"),
+            mode_preview=data.get("mode_preview"),
         )

@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 
-ADJUDICATION_MODEL: str = os.environ.get("ADJUDICATION_MODEL", "gemini-2.5-flash")
+ADJUDICATION_MODEL: str = os.environ.get("ADJUDICATION_MODEL", "gemini-2.5-flash-lite")
 ADJUDICATION_TEMPERATURE: float = 0.0  # deterministic — classification task, not creative generation
 ADJUDICATION_MAX_RETRIES: int = 2     # for transient API failures or validation retries
 ADJUDICATION_DEFAULT_PROVIDER: str = os.environ.get("ADJUDICATION_PROVIDER", "gemini")

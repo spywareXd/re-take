@@ -13,6 +13,7 @@ Supports two modes:
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import subprocess
@@ -163,12 +164,69 @@ def concatenate_segments(
     return output_p
 
 
+def probe_media(path: Union[str, Path]) -> tuple[float | None, bool]:
+    """(container duration in seconds, has an audio stream) of a media file via ffprobe; (None, True) if probing fails."""
+    try:
+        out = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration:stream=codec_type", "-of", "json", str(path)],
+            capture_output=True, text=True, encoding="utf-8", errors="replace", check=True,
+        ).stdout
+        data = json.loads(out)
+        duration = float(data["format"]["duration"])
+        has_audio = any(s.get("codec_type") == "audio" for s in data.get("streams", []))
+        return duration, has_audio
+    except (OSError, subprocess.CalledProcessError, KeyError, ValueError):
+        return None, True
+
+
+def build_concat_filter(spans: Sequence[TimeSpan], fade_s: float, has_audio: bool = True) -> str:
+    """
+    Filter graph for one inputs-per-span ffmpeg pass: each span is input i (opened with -ss/-t), its timestamps are reset,
+    the audio gets a short fade in/out so a cut never lands on a non-zero sample, and the concat FILTER joins them sample-exactly
+    (no per-segment AAC priming, so no drift).
+    """
+    lines = []
+    for i, s in enumerate(spans):
+        lines.append(f"[{i}:v]setpts=PTS-STARTPTS[v{i}];")
+        if has_audio:
+            f = min(fade_s, s.duration / 2.0)
+            fade = f",afade=t=in:st=0:d={f:.4f},afade=t=out:st={s.duration - f:.4f}:d={f:.4f}" if f > 0 else ""
+            lines.append(f"[{i}:a]asetpts=PTS-STARTPTS{fade}[a{i}];")
+    joined = "".join(f"[v{i}][a{i}]" if has_audio else f"[v{i}]" for i in range(len(spans)))
+    lines.append(f"{joined}concat=n={len(spans)}:v=1:a={1 if has_audio else 0}[outv]" + ("[outa]" if has_audio else ""))
+    return "\n".join(lines)
+
+
+def _edit_single_pass(input_p: Path, spans: Sequence[TimeSpan], output_p: Path, temp_dir: Path, fade_s: float) -> None:
+    _, has_audio = probe_media(input_p)
+    script = temp_dir / "_filter.txt"
+    script.write_text(build_concat_filter(spans, fade_s, has_audio), encoding="utf-8")
+    args = ["-y"]
+    for s in spans:
+        args += ["-ss", f"{s.start:.3f}", "-t", f"{s.duration:.3f}", "-i", str(input_p)]
+    args += ["-filter_complex_script", str(script), "-map", "[outv]"]
+    if has_audio:
+        args += ["-map", "[outa]"]
+    args += ["-c:v", "libx264", "-preset", "fast", "-crf", "18"]
+    if has_audio:
+        args += ["-c:a", "aac", "-b:a", "192k"]
+    args.append(str(output_p))
+    try:
+        _run_ffmpeg(args, description=f"Single-pass edit ({len(spans)} segments)")
+    finally:
+        try:
+            script.unlink()
+        except OSError:
+            pass
+
+
 def edit_video(
     input_path: Union[str, Path],
     cutlist: CutList,
     output_path: Union[str, Path, None] = None,
     copy_mode: bool = False,
     cleanup_segments: bool = True,
+    fade_ms: float = 12.0,
 ) -> Path:
     """
     Main entry point: apply a CutList to a source video and produce a cleaned output.
@@ -179,6 +237,7 @@ def edit_video(
         output_path: Destination for the cleaned video. Auto-generated if None.
         copy_mode: If True, use stream copy (fast). If False, re-encode (precise).
         cleanup_segments: If True, remove temporary segment files after concatenation.
+        fade_ms: Re-encode mode only: audio fade in/out at every cut (ms); 0 disables.
 
     Returns:
         Path to the final cleaned video.
@@ -209,7 +268,17 @@ def edit_video(
         f"({len(cutlist.keep_spans)} segments, copy_mode={copy_mode})"
     )
 
-    # Step 1: Extract each keep segment
+    if not copy_mode:
+        # One ffmpeg pass: sample-exact joins with short fades (no per-segment AAC padding, no drift)
+        _edit_single_pass(input_p, cutlist.keep_spans, output_p, temp_dir, fade_s=fade_ms / 1000.0)
+        try:
+            temp_dir.rmdir()
+        except OSError:
+            pass
+        logger.info(f"[OK] Video editing complete: {output_p}")
+        return output_p
+
+    # Step 1: Extract each keep segment (stream-copy mode)
     segment_paths: list[Path] = []
     for idx, span in enumerate(cutlist.keep_spans):
         seg_path = temp_dir / f"segment_{idx:03d}.mp4"

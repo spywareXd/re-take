@@ -92,6 +92,18 @@ def compute_keep_spans(
     return keep_spans
 
 
+def resolved_discard_unit_ids(adjudicated_spans: Sequence[Any]) -> list[str]:
+    """Unit ids to remove according to the RESOLVED spans (same rule generate_cuts_from_adjudicated_spans applies)."""
+    out: list[str] = []
+    for raw_span in adjudicated_spans:
+        span = _extract_dict(raw_span)
+        if span.get("adjudication_status") != "resolved":
+            continue
+        if span.get("is_genuine_retake_group") is not False:
+            out.extend(str(u) for u in (span.get("units_to_remove") or []))
+    return list(dict.fromkeys(out))
+
+
 def generate_cuts_from_adjudicated_spans(
     adjudicated_spans: Sequence[Any],
     units: Sequence[Any],
