@@ -13,3 +13,7 @@ ffmpeg-python>=0.2.0
 
 # Testing & Quality
 pytest>=8.0.0
+
+# Local service (service/)
+fastapi>=0.115.0
+uvicorn>=0.30.0

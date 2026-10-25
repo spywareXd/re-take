@@ -64,7 +64,8 @@ class FinalScorer:
     tuned file (results_v2/final/fair_comparison.json), then the legacy 0.65 / 0.35 rules, each with a WARNING."""
 
     def __init__(self, model_dir: Optional[str | Path] = None, mock: bool = False, device: Optional[str] = None, batch_size: int = 64,
-                 thresholds_path: Optional[str | Path] = None, tuned_thresholds_path: Optional[str | Path] = None):
+                 thresholds_path: Optional[str | Path] = None, tuned_thresholds_path: Optional[str | Path] = None,
+                 unsure_band_enabled: bool = True, max_questions: int = 25):
         self.model_dir = Path(model_dir) if model_dir else HERE
         self.mock, self.device, self.batch_size = mock, device, int(batch_size)
         self.thresholds_path = Path(thresholds_path) if thresholds_path else self.model_dir / "thresholds.json"
@@ -99,6 +100,16 @@ class FinalScorer:
                 self._enter_fallback([f"t_amb missing in {self.thresholds_path} (run models/final/fit_t_amb.py)"])
             else:
                 self.t_amb = float(self.t_amb)
+        # unsure band: cross-encoder prob >= t_hi -> retake, <= t_lo -> different, in between -> ambiguous (ask the user). Only meaningful in stacker mode
+        # and only when thresholds.json carries "unsure_band"; with unsure_band_enabled=False the old single threshold t_amb decides (old behaviour).
+        self.max_questions = int(max_questions)
+        band = self.art.get("unsure_band") if self.mode == "stacker" else None
+        self.t_lo = float(band["t_lo"]) if band else None
+        self.t_hi = float(band["t_hi"]) if band else self.t_amb
+        self.unsure_band_enabled = bool(unsure_band_enabled) and band is not None
+        if unsure_band_enabled and self.mode == "stacker" and band is None:
+            logger.warning("final scorer: thresholds.json has no unsure_band (run models/final/fit_unsure_band.py); using the single t_amb threshold")
+        self.thresholds_version = str(self.art.get("thresholds_version", "1")) if self.mode == "stacker" else ""
         self.model_version = self.art.get("model_version", "") if self.mode == "stacker" else ""
         self.feature_version = self.art.get("feature_version", "v1")
         self.label_version = self.art.get("label_version", "") if self.mode == "stacker" else ""
@@ -226,22 +237,49 @@ class FinalScorer:
     def score_pairs(self, pairs: Sequence[dict[str, Any]]) -> np.ndarray:
         return self.score_detailed(pairs)["p"]
 
+    def band_decision(self, ce_prob: float) -> str:
+        """The unsure band applied to a cross-encoder probability: 'retake' (>= t_hi), 'different' (<= t_lo) or 'ambiguous' (in between)."""
+        if ce_prob >= self.t_hi:
+            return "retake"
+        if ce_prob <= self.t_lo:
+            return "different"
+        return "ambiguous"
+
     def resolve(self, p, ce_prob) -> tuple[list[str], list[str]]:
-        """Final decision for every pair: ('retake' | 'not_retake', resolved_by).
-        stacker mode: p >= high -> retake and p < low -> not_retake, both resolved_by 'stacker'; in between the cross-encoder decides
-        (retake if ce_prob >= t_amb), resolved_by 'cross_encoder'.
+        """Final decision for every pair: (decision, resolved_by).
+        stacker mode: p >= high -> 'retake' and p < low -> 'not_retake', both resolved_by 'stacker'; in between the cross-encoder decides.
+          unsure_band_enabled (default): ce >= t_hi -> 'retake', ce <= t_lo -> 'not_retake' (both resolved_by 'cross_encoder'); otherwise 'ambiguous'
+            with resolved_by 'unsure' (to be asked). At most `max_questions` pairs per call stay ambiguous: those closest to the middle of the band;
+            the rest are decided by ce >= t_hi, i.e. 'not_retake' / 'cross_encoder', and are never emitted as ambiguous. Call once per video.
+          unsure_band_enabled=False (old behaviour): retake if ce >= t_amb else 'not_retake', resolved_by 'cross_encoder'.
         fallback modes (plain Stage 2): >= high retake, < low not_retake; an in-between pair is NOT cut (not_retake), resolved_by 'stage2_fallback'."""
         decisions, by = [], []
-        for pv, cp in zip(np.asarray(p, dtype=float), np.asarray(ce_prob, dtype=float)):
+        ce_arr = np.asarray(ce_prob, dtype=float)
+        for pv, cp in zip(np.asarray(p, dtype=float), ce_arr):
             tier = self.classify(float(pv))
             if tier == RETAKE:
                 decisions.append("retake"); by.append("stacker" if self.mode == "stacker" else "stage2_fallback")
             elif tier == UNLIKELY:
                 decisions.append("not_retake"); by.append("stacker" if self.mode == "stacker" else "stage2_fallback")
-            elif self.mode == "stacker":
+            elif self.mode != "stacker":
+                decisions.append("not_retake"); by.append("stage2_fallback")
+            elif not self.unsure_band_enabled:
                 decisions.append("retake" if cp >= self.t_amb else "not_retake"); by.append("cross_encoder")
             else:
-                decisions.append("not_retake"); by.append("stage2_fallback")
+                d = self.band_decision(float(cp))
+                if d == "retake":
+                    decisions.append("retake"); by.append("cross_encoder")
+                elif d == "different":
+                    decisions.append("not_retake"); by.append("cross_encoder")
+                else:
+                    decisions.append("ambiguous"); by.append("unsure")
+        if self.unsure_band_enabled and self.mode == "stacker":
+            asked = [i for i, r in enumerate(by) if r == "unsure"]
+            if len(asked) > self.max_questions:
+                mid = (self.t_lo + self.t_hi) / 2.0
+                asked.sort(key=lambda i: (abs(ce_arr[i] - mid), i))
+                for i in asked[self.max_questions:]:               # over the cap: decided by ce >= t_hi, which is False inside the band
+                    decisions[i], by[i] = "not_retake", "cross_encoder"
         return decisions, by
 
     def classify(self, p):

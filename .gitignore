@@ -252,3 +252,11 @@ data/**/extracted_audio/
 
 # trained final cross-encoder weights (about 264 MB; publish via a release or the Hub, do not commit)
 models/final/ce_seed*/
+
+# review-service cache and label files
+/cache/
+labels.jsonl
+labels_skipped.jsonl
+
+# local service state (labels, cache)
+/service/data/

@@ -191,7 +191,7 @@ def test_real_models_smoke():
 # ---------------- pipeline integration: ambiguous pairs are resolved by the cross-encoder ----------------
 @need_artifacts
 def test_resolve_ambiguous_pairs_by_the_cross_encoder_threshold():
-    s = FinalScorer(mock=True)
+    s = FinalScorer(mock=True, unsure_band_enabled=False)          # the old single-threshold behaviour, reproduced by the flag
     assert s.t_amb is not None and s.low < s.high
     mid = (s.low + s.high) / 2
     decisions, by = s.resolve(np.array([s.high, s.low - 1e-9, mid, mid]), np.array([0.0, 1.0, s.t_amb, s.t_amb - 1e-9]))

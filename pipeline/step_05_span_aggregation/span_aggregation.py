@@ -6,6 +6,8 @@ from dataclasses import asdict, dataclass, is_dataclass
 from pathlib import Path
 from typing import Any, Sequence
 
+from .constrained_clustering import Edge, cluster_with_constraints, pair_key
+
 logger = logging.getLogger(__name__)
 
 MAX_UNITS_BEFORE_WARNING = 4          # spans with more units than this are logged (long chains may merge separate retakes)
@@ -228,6 +230,7 @@ def _attach_sibling_short_units(
 def build_retake_spans(
     candidates: Sequence[Any],
     all_units: Sequence[Any] | None = None,
+    labels: dict[str, str] | None = None,
 ) -> list[RetakeSpan]:
     """
     Clusters overlapping and transitively connected CandidatePairs into RetakeSpans.
@@ -239,6 +242,9 @@ def build_retake_spans(
         candidates: Sequence of Step 04 candidate pair dicts or objects.
         all_units: Optional sequence of all ComparableUnits from the transcript.
                    Used in the second pass to attach silent short-unit fragments.
+        labels: Optional user labels {"<earlier unit>|<later unit>": "retake" | "different"}. They are constraints: "retake" = must-link
+                (processed first, even for a pair the model dropped), "different" = cannot-link (a union that would put such a pair into one
+                component is skipped), see constrained_clustering. None (default) keeps the plain union-find behaviour unchanged.
 
     Returns:
         List of RetakeSpan instances representing grouped retake clusters.
@@ -248,19 +254,29 @@ def build_retake_spans(
 
     # 1. Filter: only pairs whose FINAL decision is "retake" (set by Stage 4 after the stacker / cross-encoder resolution)
     surviving_pairs: list[dict[str, Any]] = []
+    must_pairs: list[dict[str, Any]] = []
+    cannot_keys: list[tuple[str, str]] = []
     for c in candidates:
         c_dict = _extract_candidate_dict(c)
+        if labels:
+            label = labels.get(pair_key(_extract_unit_dict(c_dict["unit_a"]), _extract_unit_dict(c_dict["unit_b"])))
+            if label == "retake":
+                must_pairs.append(c_dict)               # a user "retake" is kept even when the model said otherwise
+                continue
+            if label == "different":
+                cannot_keys.append((str(c_dict["unit_a"]["unit_id"]), str(c_dict["unit_b"]["unit_id"])))
+                continue                                # never an edge
         if c_dict.get("class") == "retake":
             surviving_pairs.append(c_dict)
 
-    if not surviving_pairs:
+    if not surviving_pairs and not must_pairs:
         return []
 
-    # 2. Collect unit info & perform Union-Find clustering
+    # 2. Collect unit info & perform Union-Find clustering (constrained when user labels are given)
     uf = _UnionFind()
     unit_map: dict[str, dict[str, Any]] = {}
 
-    for pair in surviving_pairs:
+    for pair in must_pairs + surviving_pairs:
         unit_a = _extract_unit_dict(pair["unit_a"])
         unit_b = _extract_unit_dict(pair["unit_b"])
 
@@ -272,7 +288,21 @@ def build_retake_spans(
         if uid_b not in unit_map:
             unit_map[uid_b] = unit_b
 
-        uf.union(uid_a, uid_b)
+        if not labels:
+            uf.union(uid_a, uid_b)
+
+    if labels:
+        def _edge(pr: dict[str, Any], kind: str) -> Edge:
+            return Edge(str(pr["unit_a"]["unit_id"]), str(pr["unit_b"]["unit_id"]), float(pr.get("stacker_p") or 0.0), kind, pr)
+
+        clustered = cluster_with_constraints([_edge(p, "model") for p in surviving_pairs], [_edge(p, "user") for p in must_pairs], cannot_keys)
+        for e in clustered.accepted:
+            uf.union(e.a, e.b)
+        surviving_pairs = [e.tag for e in clustered.accepted]      # only edges that were really merged back a span
+        used = {u for e in clustered.accepted for u in (e.a, e.b)}
+        unit_map = {u: m for u, m in unit_map.items() if u in used}
+        if not surviving_pairs:
+            return []
 
     # 3. Group units and candidate pairs by connected component root
     component_units: dict[str, set[str]] = {}

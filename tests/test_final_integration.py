@@ -23,7 +23,7 @@ def _candidate(cid, ua, sa, ea, ta, ub, sb, eb, tb, lexical, semantic, containme
 
 @pytest.fixture
 def mock_scorer():
-    s = FinalScorer(mock=True)
+    s = FinalScorer(mock=True, unsure_band_enabled=False)          # these tests cover the two-way (retake / not_retake) pipeline path
     assert s.mode == "stacker" and s.t_amb is not None
     return s
 

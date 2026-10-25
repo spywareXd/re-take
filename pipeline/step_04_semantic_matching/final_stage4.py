@@ -8,8 +8,10 @@ For every candidate pair (from step 03):
      stacker and thresholds were trained on; it is NOT the pipeline's recency-adjusted value.
   3. The cross-encoder (saved 3-seed average, raw text, earlier unit first, max length 128) gives ce_prob / ce_logit; the stacker gives stacker_p.
   4. Classification: stacker_p >= high -> retake, < low -> not a retake, otherwise ambiguous.
-  5. Ambiguous pairs are resolved by the cross-encoder (retake if ce_prob >= t_amb). After this step every pair is `retake` or `not_retake`
-     with resolved_by = "stacker" or "cross_encoder" (or "stage2_fallback" when the scorer fell back to plain Stage 2).
+  5. Ambiguous pairs go through the cross-encoder UNSURE BAND: ce_prob >= t_hi (= t_amb) -> retake, <= t_lo -> not_retake (resolved_by
+     "cross_encoder"); in between the pair stays `ambiguous` with resolved_by = "unsure" (a person is asked), at most `max_questions` per call. With
+     unsure_band_enabled=False the old single t_amb threshold decides and every pair is `retake` or `not_retake`. resolved_by is "stacker",
+     "cross_encoder", "unsure" (or "stage2_fallback" when the scorer fell back to plain Stage 2).
 The old lexical-vs-semantic disagreement rule is no longer used for classification; its value stays stored in the candidate.
 """
 from __future__ import annotations
@@ -30,17 +32,20 @@ def _earlier_first(c: dict[str, Any]) -> tuple[str, str]:
     return str(a.get("raw_text", "")), str(b.get("raw_text", ""))
 
 
-def get_final_scorer(model_dir: Optional[str] = None, device: Optional[str] = None, batch_size: int = 64, mock: bool = False):
+def get_final_scorer(model_dir: Optional[str] = None, device: Optional[str] = None, batch_size: int = 64, mock: bool = False,
+                     unsure_band_enabled: bool = True, max_questions: int = 25):
     """Build the FinalScorer from models/final (imported lazily; heavy imports only when Stage 4 runs)."""
     from models.final.final_scorer import FinalScorer
-    return FinalScorer(model_dir=model_dir, device=device, batch_size=batch_size, mock=mock)
+    return FinalScorer(model_dir=model_dir, device=device, batch_size=batch_size, mock=mock,
+                       unsure_band_enabled=unsure_band_enabled, max_questions=max_questions)
 
 
 def scorer_envelope(scorer) -> dict[str, Any]:
     """Metadata written into every candidate and into the JSON envelope."""
     return {"scorer_name": scorer.scorer_name, "thresholds_file": scorer.thresholds_file, "model_version": scorer.model_version,
             "feature_version": scorer.feature_version, "label_version": scorer.label_version,
-            "thresholds": {"high": scorer.high, "low": scorer.low, "t_amb": scorer.t_amb}}
+            "thresholds": {"high": scorer.high, "low": scorer.low, "t_amb": scorer.t_amb, "t_lo": scorer.t_lo, "t_hi": scorer.t_hi,
+                           "unsure_band_enabled": scorer.unsure_band_enabled, "version": scorer.thresholds_version}}
 
 
 def run_stage4(
@@ -71,7 +76,9 @@ def run_stage4(
         d["plain_stage2_score"] = round(float(scored["plain_stage2"][i]), 6)
         d["ce_logit"] = None if scored["ce_logit"][i] != scored["ce_logit"][i] else round(float(scored["ce_logit"][i]), 6)
         d["stacker_p"] = round(float(scored["p"][i]), 6)                     # in a fallback mode this is the plain Stage 2 score
-        d["class"] = decisions[i]                                           # "retake" | "not_retake" (final, after resolving ambiguous pairs)
+        d["stacker_p_raw"] = float(scored["p"][i])                           # unrounded (the review documents compare it with the thresholds)
+        d["ce_prob"] = None if scored["ce_prob"][i] != scored["ce_prob"][i] else float(scored["ce_prob"][i])
+        d["class"] = decisions[i]                                           # "retake" | "not_retake"; "ambiguous" only for unsure-band pairs that are asked
         d["resolved_by"] = resolved_by[i]
         d.update(meta)
         out.append(d)
