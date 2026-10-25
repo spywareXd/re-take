@@ -43,6 +43,33 @@ def api(tmp_path):
     return TestClient(app), media, cfg
 
 
+def test_refine_errors_and_ranges(api, monkeypatch):
+    client, media, _ = api
+    body = {"path": str(media), "remove": ["x"], "mode": "anchored"}
+    r = client.post("/v1/refine", json=body)
+    assert r.status_code == 400 and "not been analysed" in r.json()["error"]
+
+    done = _poll(client, client.post("/v1/analyze", json={"path": str(media), "duration_seconds": 25.8}).json()["job"])
+    ids = [s["id"] for s in done["result"]["sentences"]]
+    assert ids
+    r = client.post("/v1/refine", json={**body, "remove": ["nope:99"]})
+    assert r.status_code == 400 and "unknown sentence id" in r.json()["error"]
+    r = client.post("/v1/refine", json={**body, "remove": [ids[0]], "mode": "everything"})
+    assert r.status_code == 400 and "mode must be one of" in r.json()["error"]
+
+    # the stand-in file has no audio or video, so stub the media probes; the cut-mode code itself runs for real
+    import pipeline.step_08_video_edit as edit
+    monkeypatch.setattr(edit, "probe_media", lambda p: (25.8, None, None))
+    import numpy as np
+    monkeypatch.setattr(edit, "load_envelope", lambda p: np.full(2600, -40.0))
+    for mode in ("sentences", "anchored", "retake_only"):
+        r = client.post("/v1/refine", json={**body, "remove": [ids[0]], "mode": mode})
+        assert r.status_code == 200, r.text
+        ranges = r.json()["ranges"]
+        assert ranges and all(0.0 <= x["start"] < x["end"] <= 25.9 for x in ranges)
+        assert all(a["end"] <= b["start"] for a, b in zip(ranges, ranges[1:]))
+
+
 def test_service_flow_with_mock_llm(api):
     client, media, cfg = api
     assert client.get("/v1/capabilities").json() == {"adjudicate": True, "refine": True}
@@ -55,7 +82,7 @@ def test_service_flow_with_mock_llm(api):
     assert done["state"] == "done" and done["fraction"] == 1.0 and "result" in done
     doc = done["result"]
     assert validate_document(doc, file_duration=25.8) == []
-    assert doc["job"] == job and doc["media"]["fingerprint"]
+    assert doc["job"] == job and "fingerprint" not in doc["media"]
 
     # resolve -> poll (repeatable, from the echoed document only)
     if doc["stage"] == "candidates":

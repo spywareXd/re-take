@@ -86,7 +86,7 @@ def test_stable_ids_and_cache_reuse(tmp_path, monkeypatch):
     assert len(calls) == 1 and len(scored) == 1                               # the second run used the cache (no transcription, no scoring)
     assert [s["id"] for s in first["sentences"]] == [s["id"] for s in second["sentences"]]
     assert [p["id"] for p in first["pairs"]] == [p["id"] for p in second["pairs"]] and first["pairs"] == second["pairs"]
-    assert first["media"]["fingerprint"] == second["media"]["fingerprint"] and len(first["media"]["fingerprint"]) == 64
+    assert "fingerprint" not in first["media"] and first["media"] == second["media"]
     trimmed = analyze_media(media, duration_seconds=25.8, used=[[8.0, 26.0]], cfg=cfg, scorer=scorer, transcribe_fn=_fake_transcribe(calls))
     assert len(calls) == 1                                                    # `used` filters AFTER scoring: ids are the same, nothing is retranscribed
     assert {s["id"] for s in trimmed["sentences"]} < {s["id"] for s in first["sentences"]}

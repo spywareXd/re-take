@@ -284,7 +284,7 @@ def analyze_media(
         duration_seconds = _probe_duration(p) or float(transcript.get("duration", 0.0))
     tick("Building the candidates", 0.95)
     doc = build_candidates(units, scores, transcript, engine,
-                           {"path": str(path), "duration_seconds": float(duration_seconds), "fingerprint": fp},
+                           {"path": str(path), "duration_seconds": float(duration_seconds)},   # no media.fingerprint: the editor matches the file by duration; fp is only the cache key
                            job or f"j_{uuid.uuid4().hex[:8]}", used, cfg)
     tick("Done", 1.0)
     return doc
