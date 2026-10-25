@@ -10,6 +10,7 @@ from .cut_generator import (
     merge_spans,
     save_cutlist,
 )
+from .intra_decisions import apply_intra_decisions
 from .ffmpeg_editor import (
     DEFAULT_OUTPUT_DIR,
     concatenate_segments,
@@ -22,6 +23,7 @@ __all__ = [
     "RetakeGroup",
     "TimeSpan",
     "DEFAULT_CUTLIST_PATH",
+    "apply_intra_decisions",
     "DEFAULT_OUTPUT_DIR",
     "compute_keep_spans",
     "generate_cuts_from_adjudicated_spans",

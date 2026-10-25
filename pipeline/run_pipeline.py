@@ -49,9 +49,11 @@ class PipelineResult:
     cutlist_dict: dict[str, Any] = field(default_factory=dict)
     success: bool = False
     error: str = ""
+    # Optional: only set when run_full_pipeline(detect_intra_unit=True); None (and absent from to_dict) otherwise
+    intra_unit_candidates_count: Optional[int] = None
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        d = {
             "video_id": self.video_id,
             "input_video": self.input_video,
             "output_video": self.output_video,
@@ -69,6 +71,9 @@ class PipelineResult:
             "success": self.success,
             "error": self.error,
         }
+        if self.intra_unit_candidates_count is not None:   # key absent when the feature is off
+            d["intra_unit_candidates_count"] = self.intra_unit_candidates_count
+        return d
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> PipelineResult:
@@ -89,6 +94,7 @@ class PipelineResult:
             cutlist_dict=dict(data.get("cutlist_dict", {})),
             success=bool(data.get("success", False)),
             error=str(data.get("error", "")),
+            intra_unit_candidates_count=data.get("intra_unit_candidates_count"),
         )
 
 
@@ -342,6 +348,7 @@ def run_full_pipeline(
     reuse_existing_transcript: bool = True,
     video_id: str | None = None,
     force_new_id: bool = False,
+    detect_intra_unit: bool = False,
 ) -> PipelineResult:
     """
     Run the complete retake detection and video editing pipeline.
@@ -362,6 +369,9 @@ def run_full_pipeline(
         reuse_existing_transcript: If True and transcript.json exists, reuses it without re-transcribing.
         video_id: Explicit video_id (e.g. 'video_1'). If None, automatically assigned.
         force_new_id: If True, always allocates the next available video_id.
+        detect_intra_unit: OPTIONAL, default off. If True, also suggest restarts inside single units and save
+            them to <video dir>/candidates/intra_unit_candidates.json for the review UI. Suggestions never feed
+            candidate generation, span aggregation, adjudication or the cutlist.
 
     Returns:
         PipelineResult with all outputs and timing information.
@@ -468,6 +478,19 @@ def run_full_pipeline(
 
         if save_intermediates:
             save_comparable_units(units, output_path=paths.units, source_transcript=str(transcript.source))
+
+        # Optional, flag-gated: suggestions for the review UI only. Not passed to any later stage.
+        if detect_intra_unit:
+            from pipeline.step_03_token_matching import find_intra_unit_candidates, save_intra_unit_candidates
+
+            intra_candidates = find_intra_unit_candidates(units, transcript, video_id=paths.video_id)
+            result.intra_unit_candidates_count = len(intra_candidates)
+            if save_intermediates:
+                save_intra_unit_candidates(
+                    intra_candidates,
+                    output_path=paths.candidates_dir / "intra_unit_candidates.json",
+                    video_id=paths.video_id,
+                )
 
         candidates = generate_candidate_pairs(units, config=token_config)
 

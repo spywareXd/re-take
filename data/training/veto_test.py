@@ -1,0 +1,375 @@
+"""Veto test: can an LLM (and/or the cross-encoder) remove Stage 2's false positives without dropping true retakes?
+
+Pairs: every real pair with Stage 2 score >= 0.65 (333: 303 retakes, 30 non-retakes). A veto only REMOVES a Stage 2
+positive. Rules V0..V4 and every metric are fixed in results/veto/preregistration.md (written before any call).
+Writes new files only under results/veto/. Reads (never modifies) baseline_scores.csv, ce_scores.csv, pairs_v1.csv,
+adjudication_compare.py (for the unchanged prompt text), gemini_cache.jsonl (read-only consistency check).
+Resumable: rerun the same command; cached answers are never re-requested.
+The key comes from GEMINI_API_KEY (environment, else the repo's git-ignored .env) and is never printed.
+"""
+import ast
+import json
+import os
+import threading
+import time
+import traceback
+from datetime import date
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+import requests
+
+HERE = Path(__file__).resolve().parent
+REPO = HERE.parents[1]
+RES = HERE / "results"
+OUT = RES / "veto"
+CACHE, STATUS = OUT / "veto_cache.jsonl", OUT / "status.txt"
+MODEL = "gemini-3.5-flash-lite"                     # pinned (the alias gemini-flash-lite-latest resolved to this on 2026-10-25)
+VARIANT = "zero_v1"                                 # the existing zero-shot prompt, unchanged
+S2_T, V4_HI = 0.65, 0.75
+HARD_CAP = 600                                      # call attempts for this run
+RPM = min(60.0, float(os.environ.get("GEMINI_RPM", "30")))
+WORKERS = int(os.environ.get("LLM_WORKERS", "6"))
+MIN_INTERVAL = 60.0 / RPM
+N_BOOT, SEED = 1000, 0
+RECALL_TOL = 0.010
+PRICE_IN, PRICE_OUT = 0.30, 2.50                    # USD per 1M tokens, gemini-3.5-flash-lite (estimate from the pricing page)
+TODAY = date.today().isoformat()
+URL = f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL}:generateContent"
+
+
+def set_status(text):
+    STATUS.write_text(text + "\n", encoding="utf-8")
+
+
+KEY = os.environ.get("GEMINI_API_KEY", "") or os.environ.get("GOOGLE_API_KEY", "")
+if not KEY and (REPO / ".env").exists():
+    for line in (REPO / ".env").read_text().splitlines():
+        if line.strip().startswith("GEMINI_API_KEY="):
+            KEY = line.split("=", 1)[1].strip().strip('"').strip("'")
+if not KEY:
+    set_status("failed: GEMINI_API_KEY missing")
+    raise SystemExit("GEMINI_API_KEY is missing; stopping.")
+
+
+def scrub(x):
+    return str(x).replace(KEY, "<key>")
+
+
+# ---------------- unchanged prompt from adjudication_compare.py ----------------
+def load_prompt_fn():
+    tree = ast.parse((HERE / "adjudication_compare.py").read_text(encoding="utf-8"))
+    nodes = [n for n in tree.body
+             if (isinstance(n, ast.Assign) and any(getattr(t, "id", None) in {"HEAD", "TAIL"} for t in n.targets))
+             or (isinstance(n, ast.FunctionDef) and n.name in {"pair_block", "make_prompt"})]
+    ns = {"json": json, "ZERO": "zero", "FEW": "few", "fewshot": {}}
+    exec(compile(ast.Module(nodes, []), "prompt_extract", "exec"), ns)
+    return lambda row: ns["make_prompt"](row, "zero")
+
+
+make_prompt = load_prompt_fn()
+
+# ---------------- data ----------------
+base = pd.read_csv(RES / "baseline_scores.csv", dtype={"pair_id": str, "video_id": str})
+ce = pd.read_csv(RES / "ce_scores.csv", dtype={"pair_id": str}).drop_duplicates("pair_id")
+pv = pd.read_csv(HERE / "pairs_v1.csv", dtype=str, keep_default_na=False)[["pair_id", "text_a", "text_b"]]
+df = base.merge(ce[["pair_id", "prob_mean"]], on="pair_id", validate="1:1").merge(pv, on="pair_id", validate="1:1")
+df = df.rename(columns={"prob_mean": "ce_prob"}).reset_index(drop=True)
+assert len(df) == 3570
+df["inset"] = df.current_stage2 >= S2_T
+SET = df[df.inset]
+assert len(SET) == 333 and int(SET.label.sum()) == 303, "pair set differs from the pre-registration"
+
+# ---------------- cache and calls ----------------
+cache = {}
+if CACHE.exists():
+    for line in CACHE.read_text(encoding="utf-8").splitlines():
+        r = json.loads(line)
+        cache[(r["pair_id"], r["model_id"], r["variant"])] = r
+lock = threading.Lock()
+stats = {"attempts": 0, "ok": 0, "failed": 0}
+slot = [0.0]
+
+
+class DailyQuota(Exception):
+    pass
+
+
+class Stop(Exception):
+    pass
+
+
+def wait_slot():
+    with lock:
+        now = time.time()
+        wait = max(0.0, slot[0] - now)
+        slot[0] = max(slot[0], now) + MIN_INTERVAL
+    time.sleep(wait)
+
+
+def parse_verdict(text):
+    s, e = text.find("{"), text.rfind("}")
+    if s < 0 or e <= s:
+        raise ValueError("no JSON object")
+    obj = json.loads(text[s:e + 1])
+    if not isinstance(obj.get("same_intended_line"), bool):
+        raise ValueError("same_intended_line missing or not boolean")
+    return obj
+
+
+def call_pair(row):
+    key = (row.pair_id, MODEL, VARIANT)
+    if key in cache:
+        return
+    prompt = make_prompt(row)
+    parse_fail = transient = 0
+    last = ""
+    while True:
+        with lock:
+            if stats["attempts"] >= HARD_CAP:
+                raise Stop(f"hard cap of {HARD_CAP} call attempts reached")
+            stats["attempts"] += 1
+        wait_slot()
+        try:
+            r = requests.post(URL, headers={"x-goog-api-key": KEY, "Content-Type": "application/json"}, timeout=120,
+                              json={"contents": [{"parts": [{"text": prompt}]}],
+                                    "generationConfig": {"temperature": 0.0, "responseMimeType": "application/json"}})
+        except requests.RequestException as e:
+            transient += 1
+            last = scrub(e)[:200]
+            if transient >= 5:
+                break
+            time.sleep(min(60, 2 ** transient * 2))
+            continue
+        if r.status_code == 429:
+            body = scrub(r.text)
+            if "PerDay" in body or "per day" in body.lower():
+                raise DailyQuota(body[:200])
+            time.sleep(25)                                                # per-minute limit: back off and retry
+            continue
+        if r.status_code >= 500:
+            transient += 1
+            last = f"HTTP {r.status_code}"
+            if transient >= 5:
+                break
+            time.sleep(min(60, 2 ** transient * 2))
+            continue
+        if r.status_code != 200:
+            raise Stop(f"HTTP {r.status_code}: {scrub(r.text)[:300]}")
+        j = r.json()
+        if j.get("modelVersion") != MODEL:
+            raise Stop(f"resolved model changed: {j.get('modelVersion')!r} != {MODEL!r}")
+        u = j.get("usageMetadata", {})
+        try:
+            v = parse_verdict(j["candidates"][0]["content"]["parts"][0]["text"])
+            rec = {"pair_id": row.pair_id, "model_id": MODEL, "variant": VARIANT, "failed": False,
+                   "same_intended_line": v["same_intended_line"], "confidence": v.get("confidence"),
+                   "usage": {"in": u.get("promptTokenCount", 0), "out": u.get("candidatesTokenCount", 0) + u.get("thoughtsTokenCount", 0)},
+                   "date": TODAY}
+            break
+        except Exception as e:
+            parse_fail += 1
+            last = f"parse: {e}"
+            if parse_fail > 2:
+                rec = {"pair_id": row.pair_id, "model_id": MODEL, "variant": VARIANT, "failed": True, "error": last,
+                       "usage": {"in": u.get("promptTokenCount", 0), "out": u.get("candidatesTokenCount", 0) + u.get("thoughtsTokenCount", 0)},
+                       "date": TODAY}
+                break
+    else:
+        return
+    if "rec" not in locals():                                              # transient failures exhausted: not cached, retried next run
+        with lock:
+            stats["failed"] += 1
+        print(f"UNRESOLVED {row.pair_id}: {last}")
+        return
+    with lock:
+        cache[key] = rec
+        with open(CACHE, "a", encoding="utf-8") as f:
+            f.write(json.dumps(rec) + "\n")
+        stats["failed" if rec["failed"] else "ok"] += 1
+
+
+status = "done"
+try:
+    from concurrent.futures import ThreadPoolExecutor
+    todo = [r for r in SET.itertuples() if (r.pair_id, MODEL, VARIANT) not in cache]
+    print(f"{len(SET) - len(todo)} cached, {len(todo)} to call at <= {RPM:.0f} requests/min, {WORKERS} workers")
+    with ThreadPoolExecutor(WORKERS) as ex:
+        list(ex.map(call_pair, todo))
+    missing = sum(1 for r in SET.itertuples() if (r.pair_id, MODEL, VARIANT) not in cache)
+    if missing:
+        status = f"partial: {missing} pairs without an answer (transient API errors); rerun the same command"
+except DailyQuota as e:
+    status = f"partial: daily quota reached ({e}); rerun after the quota resets"
+except Stop as e:
+    status = f"failed: {e}"
+except Exception:
+    status = "failed: " + traceback.format_exc()[-400:]
+print("status:", status[:200])
+set_status(status)
+if status.startswith("failed"):
+    raise SystemExit(status)
+
+# ---------------- evaluation ----------------
+def llm_verdict(pid):
+    r = cache.get((pid, MODEL, VARIANT))
+    return np.nan if r is None or r["failed"] else float(r["same_intended_line"])
+
+
+df["llm"] = df.pair_id.map(llm_verdict).where(df.inset)                       # 1 retake / 0 not / NaN no verdict
+df["llm_failed"] = df.pair_id.map(lambda p: bool(cache.get((p, MODEL, VARIANT), {}).get("failed", False)))
+y = df.label.values
+d0 = (df.current_stage2 >= S2_T).values
+inset = df.inset.values
+folds = sorted(df.fold.unique())
+
+
+def prf(yt, p):
+    yt, p = np.asarray(yt), np.asarray(p)
+    tp = int(((p == 1) & (yt == 1)).sum()); fp = int(((p == 1) & (yt == 0)).sum()); fn = int(((p == 0) & (yt == 1)).sum())
+    pr = tp / (tp + fp) if tp + fp else 0.0
+    rc = tp / (tp + fn) if tp + fn else 0.0
+    return {"precision": pr, "recall": rc, "F1": 2 * pr * rc / (pr + rc) if pr + rc else 0.0, "TP": tp, "FP": fp, "FN": fn}
+
+
+# V2 threshold per held-out fold: chosen on the OTHER folds' rows to maximise end-to-end F1 (ties -> fewer vetoes)
+thr = {}
+for k in folds:
+    tr = (df.fold != k).values
+    cands = np.sort(np.unique(df.ce_prob.values[tr & inset]))
+    best = (prf(y[tr], d0[tr])["F1"], -np.inf)                                # "no veto" baseline
+    for t in cands:
+        f1 = prf(y[tr], d0[tr] & ~(inset[tr] & (df.ce_prob.values[tr] < t)))["F1"]
+        if f1 > best[0] + 1e-12:
+            best = (f1, float(t))
+    thr[k] = best[1]
+df["ce_thr"] = df.fold.map(thr)
+ce_no = inset & (df.ce_prob.values < df.ce_thr.values)                        # cross-encoder says "not a retake"
+llm_no = inset & (df.llm.values == 0)                                         # failed / missing LLM answers are NOT vetoes
+veto = {"V0": np.zeros(len(df), bool), "V1": llm_no, "V2": ce_no, "V3": llm_no & ce_no,
+        "V4": llm_no & (df.current_stage2.values < V4_HI)}
+dec = {r: d0 & ~v for r, v in veto.items()}
+e2e = {r: prf(y, d) for r, d in dec.items()}
+
+rng = np.random.default_rng(SEED)
+vids = df.video_id.unique()
+idx_by_v = {v: np.where(df.video_id.values == v)[0] for v in vids}
+bs = {r: {"F1": [], "precision": []} for r in dec}
+for _ in range(N_BOOT):
+    idx = np.concatenate([idx_by_v[v] for v in rng.choice(vids, len(vids), replace=True)])
+    for r, d in dec.items():
+        m = prf(y[idx], d[idx])
+        bs[r]["F1"].append(m["F1"]); bs[r]["precision"].append(m["precision"])
+ci = {}
+for r in dec:
+    if r == "V0":
+        continue
+    ci[r] = {}
+    for m in ("F1", "precision"):
+        dd = np.array(bs[r][m]) - np.array(bs["V0"][m])
+        lo, hi = np.percentile(dd, [2.5, 97.5])
+        ci[r][m] = (e2e[r][m] - e2e["V0"][m], lo, hi)
+
+# ---------------- report ----------------
+n_fail = int(df.llm_failed.sum())
+tok_in = sum(r["usage"]["in"] for r in cache.values() if r["model_id"] == MODEL)
+tok_out = sum(r["usage"]["out"] for r in cache.values() if r["model_id"] == MODEL)
+cost = tok_in / 1e6 * PRICE_IN + tok_out / 1e6 * PRICE_OUT
+fp_total, tr_total = int(((~d0.astype(bool)) | True).sum() and ((y == 0) & inset).sum()), int(((y == 1) & inset).sum())
+md = ["# Veto test: removing Stage 2 false positives", "",
+      f"Run date {TODAY}. Pre-registered in preregistration.md before any call. Pairs: {len(SET)} real pairs with Stage 2 >= {S2_T} "
+      f"({tr_total} retakes, {fp_total} non-retakes). Model pinned to `{MODEL}` (the earlier runs used the alias `gemini-flash-lite-latest`, which "
+      f"resolved to this id on {TODAY} but may differ on other dates, so the earlier cached answers are not reused). Prompt: the existing zero-shot "
+      f"prompt, unchanged (variant `{VARIANT}`), temperature 0. Status: **{status.split(':')[0]}**. LLM calls failed (not treated as vetoes): {n_fail}; "
+      f"pairs without an answer: {int((df.inset & df.llm.isna()).sum())}.", "",
+      "CE thresholds (veto if prob_mean < t, chosen on the other folds): " + ", ".join(f"fold{k}: {('none' if thr[k] == -np.inf else format(thr[k], '.4f'))}" for k in folds), "",
+      "### Pairs per fold and video", "", "| scope | pairs | retakes | non-retakes |", "|---|---|---|---|"]
+for k, g in SET.groupby("fold"):
+    md.append(f"| fold{k} | {len(g)} | {int(g.label.sum())} | {int((g.label == 0).sum())} |")
+for v, g in SET.groupby("video_id"):
+    md.append(f"| {v} | {len(g)} | {int(g.label.sum())} | {int((g.label == 0).sum())} |")
+md += ["", "### Per rule: what was vetoed and the end-to-end effect (all 3,570 rows; everything outside the set keeps Stage 2)", "",
+       "| rule | FPs removed (of 30) | retakes dropped (of 303) | TP | FP | FN (retakes left in the video) | precision | recall | F1 |", "|---|---|---|---|---|---|---|---|---|"]
+for r in dec:
+    v = veto[r]; e = e2e[r]
+    md.append(f"| {r} | {int((v & (y == 0)).sum())} | {int((v & (y == 1)).sum())} | {e['TP']} | {e['FP']} | {e['FN']} | {e['precision']:.4f} | {e['recall']:.4f} | {e['F1']:.4f} |")
+md += ["", "V4 is exploratory (V1 restricted to Stage 2 in [0.65, 0.75)).", "",
+       "### Paired video-level bootstrap vs V0 (1000 resamples, seed 0)", "",
+       "| rule | F1 diff [95% CI] | precision diff [95% CI] | recall change | F1 CI excludes 0 | recall drop <= 0.010 |", "|---|---|---|---|---|---|"]
+good = []
+for r in ci:
+    f, p_ = ci[r]["F1"], ci[r]["precision"]
+    rd = e2e[r]["recall"] - e2e["V0"]["recall"]
+    ex = f[1] > 0 or f[2] < 0
+    ok = rd >= -RECALL_TOL
+    if ex and f[0] > 0 and ok:
+        good.append(r)
+    md.append(f"| {r} | {f[0]:+.4f} [{f[1]:+.4f}, {f[2]:+.4f}] | {p_[0]:+.4f} [{p_[1]:+.4f}, {p_[2]:+.4f}] | {rd:+.4f} | {ex} | {ok} |")
+
+md += ["", "### Per fold (FPs removed / retakes dropped)", "", "| rule | " + " | ".join(f"fold{k}" for k in folds) + " |", "|---|" + "---|" * len(folds)]
+for r in ("V1", "V2", "V3", "V4"):
+    md.append(f"| {r} | " + " | ".join(f"{int((veto[r] & (y == 0) & (df.fold.values == k)).sum())} / {int((veto[r] & (y == 1) & (df.fold.values == k)).sum())}" for k in folds) + " |")
+md += ["", "### Per video (FPs removed / retakes dropped, V1 and V3; videos with the most changes first)", "", "| video | pairs | FPs in set | V1 | V3 |", "|---|---|---|---|---|"]
+vid_rows = []
+for vname, g in SET.groupby("video_id"):
+    ii = g.index.values
+    vid_rows.append((int(veto["V1"][ii].sum() + 0), vname, len(g), int((g.label == 0).sum()),
+                     f"{int((veto['V1'][ii] & (y[ii] == 0)).sum())} / {int((veto['V1'][ii] & (y[ii] == 1)).sum())}",
+                     f"{int((veto['V3'][ii] & (y[ii] == 0)).sum())} / {int((veto['V3'][ii] & (y[ii] == 1)).sum())}"))
+for _, vname, n, nfp, a, b in sorted(vid_rows, reverse=True):
+    md.append(f"| {vname} | {n} | {nfp} | {a} | {b} |")
+big = [(vn) for vn in ("video_02", "speaker_a_6")]
+md += ["", f"Flagged for attention: {', '.join(big)} hold {int(((SET.video_id.isin(big)) & (SET.label == 0)).sum())} of the 30 false positives.", ""]
+
+both = inset & ~np.isnan(df.llm.values)
+l_ = df.llm.values[both]; c_ = (~ce_no[both]).astype(float); yy = y[both]
+ag = l_ == c_
+md += ["### Agreement of the LLM with the cross-encoder on these pairs (both 'retake' / both 'not')", "",
+       f"- n = {int(both.sum())}; they agree on {ag.mean():.1%}. Accuracy of the shared answer when they agree: "
+       f"{((l_[ag] == yy[ag]).mean() if ag.any() else float('nan')):.3f} ({int(ag.sum())} pairs). On the {int((~ag).sum())} disagreements the LLM is right "
+       f"{((l_[~ag] == yy[~ag]).mean() if (~ag).any() else float('nan')):.3f} and the cross-encoder {((c_[~ag] == yy[~ag]).mean() if (~ag).any() else float('nan')):.3f} of the time.", ""]
+
+# consistency with the earlier alias run (read-only, exploratory): the 30 false positives were answered then under the alias
+old = {}
+gc = RES / "gemini_cache.jsonl"
+if gc.exists():
+    for line in gc.read_text(encoding="utf-8").splitlines():
+        rec = json.loads(line)
+        if rec.get("variant") == "zero_v1@gemini-flash-lite-latest" and not rec.get("failed", False):
+            old[rec["pair_id"]] = rec["response"]["same_intended_line"]
+fp_ids = SET[SET.label == 0].pair_id
+shared = [p for p in fp_ids if p in old and not np.isnan(llm_verdict(p))]
+md += ["### Exploratory: earlier alias run vs the pinned id on the 30 false positives", "",
+       f"- {len(shared)} of the 30 had an answer under the alias run; the pinned model gives the same verdict on "
+       f"{sum(old[p] == bool(llm_verdict(p)) for p in shared)} of them.", ""]
+
+md += ["### Tokens and cost", "", f"- `{MODEL}`: {tok_in:,} input tokens and {tok_out:,} output tokens (incl. thinking) over {sum(1 for r in cache.values() if r['model_id'] == MODEL and not r['failed'])} answers "
+       f"and {sum(1 for r in cache.values() if r['model_id'] == MODEL and r['failed'])} failed parses; estimated cost ${cost:.3f} at ${PRICE_IN}/M in and ${PRICE_OUT}/M out "
+       f"(the price is an estimate from Google's pricing page, not a bill). Call attempts this run: {stats['attempts']} of the {HARD_CAP} cap.", ""]
+
+best_r = max(ci, key=lambda r: ci[r]["F1"][0])
+md += ["## Summary", "",
+       f"1. Stage 2 alone: precision {e2e['V0']['precision']:.3f}, recall {e2e['V0']['recall']:.3f}, F1 {e2e['V0']['F1']:.3f}; 30 FPs and 303 retakes among the 333 pairs.",
+       "2. " + "; ".join(f"{r}: -{int((veto[r] & (y == 0)).sum())} FP, -{int((veto[r] & (y == 1)).sum())} retakes, F1 {e2e[r]['F1']:.3f}" for r in ("V1", "V2", "V3", "V4")) + ".",
+       f"3. Best F1 change: {best_r} {ci[best_r]['F1'][0]:+.4f} [{ci[best_r]['F1'][1]:+.4f}, {ci[best_r]['F1'][2]:+.4f}].",
+       ("4. Rules improving end-to-end F1 with a CI excluding 0 AND recall drop <= 0.010: " + ", ".join(good) + ".") if good else
+       "4. No rule improves end-to-end F1 with a 95% CI excluding 0 while keeping recall within 0.010 of Stage 2.",
+       f"5. Failed calls: {n_fail}; tokens {tok_in + tok_out:,}; estimated cost ${cost:.2f}; model `{MODEL}`, run {TODAY}."]
+(OUT / "veto.md").write_text("\n".join(md), encoding="utf-8")
+
+# scores and changed pairs
+sc = df.loc[df.inset, ["pair_id", "video_id", "fold", "label", "current_stage2", "ce_prob", "ce_thr", "llm", "llm_failed"]].copy()
+for r in ("V1", "V2", "V3", "V4"):
+    sc[r + "_veto"] = veto[r][sc.index]
+sc.to_csv(OUT / "veto_scores.csv", index=False)
+rows = []
+for r in ("V1", "V2", "V3", "V4"):
+    ii = np.where(veto[r])[0]
+    for i in ii:
+        rows.append({"rule": r, "change": "false_positive_removed" if y[i] == 0 else "true_retake_wrongly_dropped",
+                     "pair_id": df.pair_id[i], "video_id": df.video_id[i], "fold": df.fold[i], "label": y[i],
+                     "stage2": df.current_stage2[i], "ce_prob": df.ce_prob[i], "llm_verdict": df.llm[i],
+                     "text_a": df.text_a[i], "text_b": df.text_b[i]})
+pd.DataFrame(rows).sort_values(["change", "rule", "video_id"]).to_csv(OUT / "veto_changed_pairs.csv", index=False)
+print("\n".join(md[-8:]))

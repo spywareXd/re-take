@@ -1,7 +1,19 @@
 from .candidate_generator import generate_candidate_pairs, rank_similar_sentence_ids
-from .config import PAUSE_SPLIT_THRESHOLD_SECONDS, TokenMatchingConfig, default_config
+from .config import (
+    PAUSE_SPLIT_THRESHOLD_SECONDS,
+    IntraUnitConfig,
+    TokenMatchingConfig,
+    default_config,
+    default_intra_config,
+)
 from .edit_distance import containment_details, containment_score, sequence_similarity_score
 from .exact_match import exact_match_score, near_exact_match_score
+from .intra_candidates import (
+    IntraUnitCandidate,
+    find_intra_unit_candidates,
+    load_intra_unit_candidates,
+    save_intra_unit_candidates,
+)
 from .jaccard import jaccard_score
 from .ngram_match import ngram_overlap_score
 from .normalize import load_transcript_units, normalize, split_into_units, tokenize
@@ -19,6 +31,12 @@ from .windowing import get_candidates_in_window
 
 __all__ = [
     "CandidatePair",
+    "IntraUnitCandidate",
+    "IntraUnitConfig",
+    "default_intra_config",
+    "find_intra_unit_candidates",
+    "load_intra_unit_candidates",
+    "save_intra_unit_candidates",
     "CandidateScores",
     "CandidateUnitRef",
     "ComparableUnit",
