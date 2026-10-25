@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use serde_json::{Value, json};
-use simplecut_core::{AnalysisJob, AnalysisRequest, Capabilities, ItemId, JobState, ResolveRequest, RetakeService, Tick};
+use simplecut_core::{AdjudicateRequest, AnalysisJob, AnalysisRequest, Capabilities, ItemId, JobState, ResolveRequest, RetakeService, Tick};
 
 /// The address the service listens on unless told otherwise.
 pub const DEFAULT_URL: &str = "http://127.0.0.1:8765";
@@ -128,6 +128,32 @@ impl RetakeService for HttpService {
             return failed("Could not read the answers.");
         };
         self.start("/v1/resolve", json!({ "path": path, "labels": labels, "candidates": candidates }).to_string())
+    }
+
+    fn adjudicate(&self, request: AdjudicateRequest) -> Option<Box<dyn AnalysisJob>> {
+        if !self.capabilities().adjudicate {
+            return None;
+        }
+        let Some(path) = self.path_of(request.item) else {
+            return Some(failed("The retake service does not know this file yet. Run Remove Retakes again."));
+        };
+        // the groups as the editor holds them now (spans the user changed included); the service needs the text
+        let groups: Vec<Value> = request
+            .groups
+            .iter()
+            .map(|g| {
+                json!({
+                    "id": g.id,
+                    "start": seconds(g.start),
+                    "end": seconds(g.end),
+                    "likely": g.likely,
+                    "sentences": g.sentences.iter().map(|s| json!({
+                        "id": s.id, "start": seconds(s.start), "end": seconds(s.end), "text": s.text,
+                    })).collect::<Vec<_>>(),
+                })
+            })
+            .collect();
+        Some(self.start("/v1/adjudicate", json!({ "path": path, "job": request.job, "groups": groups }).to_string()))
     }
 }
 

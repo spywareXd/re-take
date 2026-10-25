@@ -8,7 +8,9 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use serde_json::Value;
-use simplecut_core::{AnalysisJob, AnalysisRequest, ItemId, JobState, LabelsRequest, ResolveRequest, RetakeService, Tick};
+use simplecut_core::{
+    AdjudicateRequest, AnalysisJob, AnalysisRequest, ItemId, JobState, LabelsRequest, ResolveRequest, RetakeService, ReviewGroup, Sentence, Tick, review,
+};
 use simplecut_service::HttpService;
 
 type Handler = dyn Fn(&str, &str, &str) -> (u16, String) + Send + Sync;
@@ -144,6 +146,61 @@ fn capabilities_are_refreshed_by_every_request() {
     assert!(!s.capabilities().adjudicate);
     let _ = wait(&mut *s.analyze(request()));
     assert!(s.capabilities().adjudicate);
+}
+
+fn group() -> ReviewGroup {
+    let s = |id: &str, a: i64, b: i64, text: &str| Sentence {
+        id: id.into(),
+        start: Tick(a * 254_016_000_000),
+        end: Tick(b * 254_016_000_000),
+        text: text.into(),
+        confidence: None,
+    };
+    ReviewGroup {
+        id: "g1".into(),
+        start: Tick(0),
+        end: Tick(9 * 254_016_000_000),
+        likely: true,
+        sentences: vec![s("s1", 0, 4, "Welcome back."), s("s2", 5, 9, "Welcome back everyone.")],
+    }
+}
+
+#[test]
+fn adjudicate_sends_the_groups_with_their_text_and_returns_the_advice_array() {
+    let m = mock(|me, p, b| match (me, p) {
+        ("POST", "/v1/adjudicate") => (202, r#"{"job":"a1"}"#.into()),
+        ("GET", "/v1/jobs/a1") => (200, r#"{"state":"done","fraction":1.0,"result":[{"group":"g1","keep":["s2"],"reason":"cleaner"}]}"#.into()),
+        _ => happy(me, p, b),
+    });
+    let s = HttpService::connect(&m.url);
+    let _ = wait(&mut *s.analyze(request()));
+    let req = AdjudicateRequest { item: ItemId(7), job: "j1".into(), groups: vec![group()] };
+    let JobState::Done(text) = wait(&mut *s.adjudicate(req).expect("the service offers advice")) else { panic!("should be done") };
+    let (advice, notes) = review::parse_advice(&text, &[group()]).unwrap();
+    assert!(notes.is_empty() && advice.len() == 1 && advice[0].keep == ["s2"], "{advice:?} {notes:?}");
+    let seen = m.seen.lock().unwrap();
+    let (_, _, body) = seen.iter().find(|(me, p, _)| me == "POST" && p == "/v1/adjudicate").unwrap();
+    let sent: Value = serde_json::from_str(body).unwrap();
+    assert_eq!((sent["path"].as_str(), sent["job"].as_str()), (Some("C:/clips/take.mp4"), Some("j1")));
+    assert_eq!(sent["groups"][0]["sentences"][1]["text"], "Welcome back everyone.");
+    assert_eq!(sent["groups"][0]["sentences"][1]["start"], 5.0);
+}
+
+#[test]
+fn no_advice_when_the_service_cannot_give_it() {
+    let m = mock(|me, p, b| if p == "/v1/capabilities" { (200, r#"{"adjudicate":false,"refine":true}"#.into()) } else { happy(me, p, b) });
+    let s = HttpService::connect(&m.url);
+    let req = AdjudicateRequest { item: ItemId(7), job: "j1".into(), groups: vec![group()] };
+    assert!(s.adjudicate(req).is_none());
+}
+
+#[test]
+fn advice_for_an_unknown_file_fails_without_calling_the_service() {
+    let m = mock(happy);
+    let s = HttpService::connect(&m.url);
+    let req = AdjudicateRequest { item: ItemId(99), job: "j1".into(), groups: vec![group()] };
+    assert!(matches!(wait(&mut *s.adjudicate(req).unwrap()), JobState::Failed(_)));
+    assert!(m.seen.lock().unwrap().iter().all(|(_, p, _)| p != "/v1/adjudicate"));
 }
 
 #[test]
