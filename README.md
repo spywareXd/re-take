@@ -5,6 +5,16 @@ This project aims to build an automated pipeline for detecting and removing reta
 
 When creators record content, they often stumble, correct themselves, or restart a sentence. This tool analyzes transcription data (including metadata like timestamps, speaker IDs, and transcription confidence) to identify these overlapping or corrective segments. Ultimately, this enables an automated editing process that cuts out the "bad" takes and keeps only the final, clean versions.
 
+## Setup (uv)
+Dependencies are managed with [uv](https://docs.astral.sh/uv/) (`pyproject.toml` + `uv.lock`); there is no `requirements.txt`. FFmpeg must be on PATH.
+
+```
+uv sync                              # create .venv and install the locked dependencies
+uv run pytest tests models/final     # run the tests
+uv run python -m service             # local HTTP service for the editor (see docs/frontend_integration/)
+uv add <package>                     # add a dependency (updates pyproject.toml and uv.lock)
+```
+
 ## Core Objectives
 - **Parse raw transcripts**: Ingest JSON transcript data with word/segment level metadata, timestamps, and confidence scores.
 - **Detect redundancies**: Use a combination of token matching and semantic similarity to find repeated or corrected phrases within a local window.
