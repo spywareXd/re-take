@@ -1,0 +1,7 @@
+/target
+*.log
+*.err
+*.out
+
+scratch.md
+.env

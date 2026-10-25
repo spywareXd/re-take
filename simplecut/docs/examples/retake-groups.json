@@ -1,0 +1,39 @@
+{
+  "schema": "simplecut.retakes/2",
+  "stage": "groups",
+  "job": "j_8f3a",
+  "media": { "path": "C:/videos/take1.mp4", "duration_seconds": 60.0 },
+  "generator": { "name": "retake", "version": "0.4.0", "model": "cross-encoder-ft-v2" },
+  "groups": [
+    { "id": "span_0", "start": 4.10, "end": 14.60, "likely": true,
+      "sentences": [
+        { "id": "3:0", "start": 4.10,  "end": 6.30,  "text": "So now we're going to learn about" },
+        { "id": "4:0", "start": 7.00,  "end": 9.40,  "text": "So [redacted sentence] editing" },
+        { "id": "5:0", "start": 10.20, "end": 14.60, "text": "So [redacted sentence] video editing basics." } ] },
+
+    { "id": "span_1", "start": 21.50, "end": 31.80, "likely": true,
+      "sentences": [
+        { "id": "9:0",  "start": 21.50, "end": 24.00, "text": "And that is the key idea." },
+        { "id": "11:0", "start": 27.30, "end": 31.80, "text": "And that is the key idea of the whole video." } ] },
+
+    { "id": "span_2", "start": 33.00, "end": 37.40, "likely": true,
+      "sentences": [
+        { "id": "13:0", "start": 33.00, "end": 34.80, "text": "Let's get started." },
+        { "id": "14:0", "start": 35.00, "end": 37.40, "text": "Let's get started with the first step." } ] },
+
+    { "id": "span_3", "start": 38.00, "end": 43.10, "likely": true,
+      "sentences": [
+        { "id": "15:0", "start": 38.00, "end": 40.20, "text": "Click export and wait." },
+        { "id": "16:0", "start": 41.00, "end": 43.10, "text": "Click export and then wait." } ] },
+
+    { "id": "span_4", "start": 44.00, "end": 48.00, "likely": false,
+      "sentences": [
+        { "id": "17:0", "start": 44.00, "end": 45.50, "text": "Now open the menu." },
+        { "id": "18:0", "start": 46.00, "end": 48.00, "text": "Now open the file menu." } ] },
+
+    { "id": "span_5", "start": 49.00, "end": 54.00, "likely": true,
+      "sentences": [
+        { "id": "20:0", "start": 49.00, "end": 51.40, "text": "Thanks for watching." },
+        { "id": "21:0", "start": 52.10, "end": 54.00, "text": "Thanks so much for watching." } ] }
+  ]
+}

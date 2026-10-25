@@ -1,0 +1,22 @@
+[package]
+name = "simplecut"
+description = "SimpleCut: a simple video editor for talking-head and YouTube videos"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+default-run = "simplecut"
+
+[lints]
+workspace = true
+
+[dependencies]
+simplecut-core = { workspace = true }
+simplecut-ui = { workspace = true }
+filmcraft-platform = { workspace = true }
+eframe = { workspace = true, features = ["default_fonts", "glow", "accesskit", "wayland", "x11"] }
+egui = { workspace = true }
+cpal = { workspace = true }
+rfd = { workspace = true }
+log = { workspace = true }
+env_logger = { workspace = true }

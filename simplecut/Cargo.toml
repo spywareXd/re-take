@@ -1,0 +1,82 @@
+[workspace]
+resolver = "3"
+members = ["crates/*", "apps/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+rust-version = "1.95"
+
+[workspace.dependencies]
+# FilmCraft, by path. Built against commit a504f3c5 of github.com/storytold/filmcraft; bump deliberately.
+filmcraft-time = { path = "../filmcraft/crates/time" }
+filmcraft-frame = { path = "../filmcraft/crates/frame" }
+filmcraft-media = { path = "../filmcraft/crates/media" }
+filmcraft-codecs = { path = "../filmcraft/crates/codecs" }
+filmcraft-project = { path = "../filmcraft/crates/project" }
+filmcraft-edit = { path = "../filmcraft/crates/edit" }
+filmcraft-render = { path = "../filmcraft/crates/render" }
+filmcraft-export = { path = "../filmcraft/crates/export" }
+filmcraft-engine = { path = "../filmcraft/crates/engine" }
+filmcraft-platform = { path = "../filmcraft/crates/platform" }
+
+simplecut-core = { path = "crates/core" }
+simplecut-ui = { path = "crates/ui" }
+
+thiserror = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+log = "0.4"
+sha2 = "0.10"
+env_logger = { version = "0.11", default-features = false, features = ["humantime"] }
+
+# the window: the same egui / eframe as FilmCraft
+egui = "0.36"
+eframe = { version = "0.36", default-features = false }
+egui_kittest = "0.36"
+rfd = "0.17"
+cpal = "0.16"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+# "Never crash": no unwrap / expect / panic in product code (tests are exempt, see clippy.toml).
+[workspace.lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+dbg_macro = "warn"
+todo = "warn"
+unimplemented = "deny"
+
+# Cargo ignores a dependency workspace's profiles, so repeat FilmCraft's: dependencies optimised even in
+# debug builds, and the codec hot loops at the top level (decoding in an unoptimised build is unusable).
+[profile.dev.package."*"]
+opt-level = 2
+debug = false
+
+[profile.dev]
+opt-level = 1
+debug = "line-tables-only"
+
+[profile.dev.package.filmcraft-h264]
+opt-level = 3
+[profile.dev.package.filmcraft-h264enc]
+opt-level = 3
+[profile.dev.package.filmcraft-hevc]
+opt-level = 3
+[profile.dev.package.filmcraft-prores]
+opt-level = 3
+[profile.dev.package.filmcraft-av1]
+opt-level = 3
+[profile.dev.package.filmcraft-aac]
+opt-level = 3
+[profile.dev.package.filmcraft-audio-dsp]
+opt-level = 3
+[profile.dev.package.filmcraft-vp9]
+opt-level = 3
+
+[profile.release]
+lto = "thin"
+codegen-units = 1

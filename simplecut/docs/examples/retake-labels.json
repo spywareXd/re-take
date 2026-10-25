@@ -1,0 +1,8 @@
+{
+  "job": "j_8f3a",
+  "labels": [
+    { "pair": "9:0|11:0",  "label": "retake",    "source": "user" },
+    { "pair": "21:0|22:0", "label": "different", "source": "user" }
+  ],
+  "skipped": [ "13:0|14:0", "17:0|18:0" ]
+}
