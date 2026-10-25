@@ -21,6 +21,7 @@ use filmcraft_time::Tick;
 
 use crate::editor::{Editor, ItemId};
 use crate::error::{EditorError, Result};
+use crate::refine::CutMode;
 use crate::review::{self, Capabilities, DocV2, LabelsRequest, PairClass, ReviewGroup, Verdict};
 
 /// One file to analyse.
@@ -56,6 +57,18 @@ pub struct AdjudicateRequest {
     pub item: ItemId,
     pub job: String,
     pub groups: Vec<ReviewGroup>,
+}
+
+/// Exact cut ranges for sentences the user removes.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RefineRequest {
+    pub item: ItemId,
+    pub job: String,
+    pub mode: CutMode,
+    /// The removed sentences to refine (see [`crate::ids_to_refine`]).
+    pub remove: Vec<String>,
+    /// Where those sentences are now (id, start, end), for a service that has no transcript of its own.
+    pub spans: Vec<(String, Tick, Tick)>,
 }
 
 /// How a request is going.
@@ -97,6 +110,13 @@ pub trait RetakeService: Send + Sync {
 
     /// Ask an LLM which sentences to keep. None when the service cannot.
     fn adjudicate(&self, _request: AdjudicateRequest) -> Option<Box<dyn AnalysisJob>> {
+        None
+    }
+
+    /// Turn removed sentences into exact cut ranges in the chosen mode. The job's result is
+    /// `{"ranges": [{"start", "end"}]}` in seconds of file time; check it with [`crate::plan_cuts`].
+    /// None when the service cannot ([`Capabilities::refine`]).
+    fn refine(&self, _request: RefineRequest) -> Option<Box<dyn AnalysisJob>> {
         None
     }
 }
@@ -167,6 +187,10 @@ pub struct FakeService {
     pub adjudicate: bool,
     /// `analyze` answers with groups straight away (nothing to ask the user).
     pub skip_questions: bool,
+    /// Offer exact cut ranges (`refine`).
+    pub refine: bool,
+    /// `refine` answers with ranges that break the rules, to test the fallbacks.
+    pub bad_refine: bool,
 }
 
 impl Default for FakeService {
@@ -179,6 +203,8 @@ impl Default for FakeService {
             wrong_length: false,
             adjudicate: true,
             skip_questions: false,
+            refine: true,
+            bad_refine: false,
         }
     }
 }
@@ -327,7 +353,7 @@ impl RetakeService for FakeService {
     }
 
     fn capabilities(&self) -> Capabilities {
-        Capabilities { adjudicate: self.adjudicate }
+        Capabilities { adjudicate: self.adjudicate, refine: self.refine }
     }
 
     fn analyze(&self, request: AnalysisRequest) -> Box<dyn AnalysisJob> {
@@ -369,6 +395,37 @@ impl RetakeService for FakeService {
                 .filter_map(|g| g.sentences.last().map(|s| serde_json::json!({"group": g.id, "keep": [s.id], "reason": "Kept the last take (demo)."})))
                 .collect();
             Ok(serde_json::Value::Array(reply).to_string())
+        }))
+    }
+
+    fn refine(&self, request: RefineRequest) -> Option<Box<dyn AnalysisJob>> {
+        if !self.refine {
+            return None;
+        }
+        let bad = self.bad_refine;
+        Some(spawn_job(self.steps, self.step_delay, "Refining the cuts".into(), move || {
+            let secs = |t: Tick| t.0 as f64 / 254_016_000_000.0;
+            // how far past the sentence each mode reaches, standing in for the real audio analysis
+            let (before, after) = match request.mode {
+                CutMode::Sentences => (0.3, 0.3),
+                CutMode::Anchored => (0.2, 0.2),
+                CutMode::RetakeOnly => (-0.05, -0.05),
+            };
+            let mut spans: Vec<(f64, f64)> = request.spans.iter().map(|(_, a, b)| (secs(*a), secs(*b))).collect();
+            spans.sort_by(|a, b| a.0.total_cmp(&b.0));
+            let mut merged: Vec<(f64, f64)> = Vec::new();
+            for (a, b) in spans {
+                let (start, end) = (round2((a - before).max(0.0)), round2(b + after));
+                match merged.last_mut() {
+                    Some(last) if start <= last.1 => last.1 = last.1.max(end),
+                    _ => merged.push((start, end)),
+                }
+            }
+            let mut ranges: Vec<serde_json::Value> = merged.iter().map(|(s, e)| serde_json::json!({"start": s, "end": e})).collect();
+            if bad {
+                ranges.push(serde_json::json!({"start": 5.0, "end": 4.0}));
+            }
+            Ok(serde_json::json!({"ranges": ranges}).to_string())
         }))
     }
 }

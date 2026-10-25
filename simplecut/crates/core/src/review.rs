@@ -480,6 +480,9 @@ impl LabelsRequest {
 pub struct Capabilities {
     #[serde(default)]
     pub adjudicate: bool,
+    /// The service can turn removed sentences into exact cut ranges (`POST /v1/refine`).
+    #[serde(default)]
+    pub refine: bool,
 }
 
 /// The AI's advice for one group: which sentences to keep.

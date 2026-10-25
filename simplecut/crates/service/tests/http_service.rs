@@ -9,7 +9,8 @@ use std::time::{Duration, Instant};
 
 use serde_json::Value;
 use simplecut_core::{
-    AdjudicateRequest, AnalysisJob, AnalysisRequest, ItemId, JobState, LabelsRequest, ResolveRequest, RetakeService, ReviewGroup, Sentence, Tick, review,
+    AdjudicateRequest, AnalysisJob, AnalysisRequest, CutMode, ItemId, JobState, LabelsRequest, RefineRequest, ResolveRequest, RetakeService, ReviewGroup,
+    Sentence, Tick, review,
 };
 use simplecut_service::HttpService;
 
@@ -201,6 +202,67 @@ fn advice_for_an_unknown_file_fails_without_calling_the_service() {
     let req = AdjudicateRequest { item: ItemId(99), job: "j1".into(), groups: vec![group()] };
     assert!(matches!(wait(&mut *s.adjudicate(req).unwrap()), JobState::Failed(_)));
     assert!(m.seen.lock().unwrap().iter().all(|(_, p, _)| p != "/v1/adjudicate"));
+}
+
+fn refine_request(mode: CutMode) -> RefineRequest {
+    RefineRequest { item: ItemId(7), job: "j1".into(), mode, remove: vec!["s1".into()], spans: vec![("s1".into(), Tick(0), Tick(254_016_000_000 * 4))] }
+}
+
+fn refine_service(reply: impl Fn() -> (u16, String) + Send + Sync + 'static) -> Mock {
+    mock(move |me, p, b| if (me, p) == ("POST", "/v1/refine") { reply() } else { happy(me, p, b) })
+}
+
+#[test]
+fn refine_sends_the_mode_and_the_ids_and_returns_the_ranges() {
+    let m = refine_service(|| (200, r#"{"ranges":[{"start":0.0,"end":4.2}]}"#.into()));
+    let s = HttpService::connect(&m.url);
+    let _ = wait(&mut *s.analyze(request()));
+    for mode in CutMode::ALL {
+        let JobState::Done(text) = wait(&mut *s.refine(refine_request(mode)).expect("the service offers refine")) else { panic!("should be done") };
+        assert_eq!(serde_json::from_str::<Value>(&text).unwrap()["ranges"][0]["end"], 4.2);
+    }
+    let seen = m.seen.lock().unwrap();
+    let sent: Vec<Value> = seen.iter().filter(|(me, p, _)| me == "POST" && p == "/v1/refine").map(|(_, _, b)| serde_json::from_str(b).unwrap()).collect();
+    assert_eq!(sent.iter().map(|v| v["mode"].as_str().unwrap()).collect::<Vec<_>>(), ["anchored", "retake_only", "sentences"]);
+    assert_eq!(sent[0]["path"], "C:/clips/take.mp4");
+    assert_eq!(sent[0]["remove"], serde_json::json!(["s1"]));
+}
+
+#[test]
+fn refine_errors_are_shown_as_the_service_wrote_them() {
+    let m = refine_service(|| (400, r#"{"error":"This file has not been analysed yet. Run Remove Retakes first."}"#.into()));
+    let s = HttpService::connect(&m.url);
+    let _ = wait(&mut *s.analyze(request()));
+    let JobState::Failed(why) = wait(&mut *s.refine(refine_request(CutMode::Anchored)).unwrap()) else { panic!() };
+    assert!(why.contains("not been analysed"), "{why}");
+}
+
+#[test]
+fn refine_for_an_unknown_file_fails_and_without_the_capability_there_is_none() {
+    let m = mock(happy);
+    let s = HttpService::connect(&m.url);
+    let mut other = refine_request(CutMode::Anchored);
+    other.item = ItemId(99);
+    assert!(matches!(wait(&mut *s.refine(other).unwrap()), JobState::Failed(_)));
+    let off = mock(|me, p, b| if p == "/v1/capabilities" { (200, r#"{"adjudicate":true,"refine":false}"#.into()) } else { happy(me, p, b) });
+    assert!(HttpService::connect(&off.url).refine(refine_request(CutMode::Anchored)).is_none());
+}
+
+#[test]
+fn cancelling_refine_reads_as_cancelled_at_once_and_the_late_answer_is_dropped() {
+    let m = refine_service(|| {
+        std::thread::sleep(Duration::from_millis(800));
+        (200, r#"{"ranges":[{"start":0.0,"end":4.2}]}"#.into())
+    });
+    let s = HttpService::connect(&m.url);
+    let _ = wait(&mut *s.analyze(request()));
+    let mut job = s.refine(refine_request(CutMode::Anchored)).unwrap();
+    std::thread::sleep(Duration::from_millis(200));
+    assert!(matches!(job.poll(), JobState::Running { .. }));
+    job.cancel();
+    assert_eq!(job.poll(), JobState::Cancelled);
+    std::thread::sleep(Duration::from_millis(1200));
+    assert_eq!(job.poll(), JobState::Cancelled, "the answer that arrived later must not bring the job back");
 }
 
 #[test]

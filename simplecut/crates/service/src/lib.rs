@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use serde_json::{Value, json};
-use simplecut_core::{AdjudicateRequest, AnalysisJob, AnalysisRequest, Capabilities, ItemId, JobState, ResolveRequest, RetakeService, Tick};
+use simplecut_core::{AdjudicateRequest, AnalysisJob, AnalysisRequest, Capabilities, ItemId, JobState, RefineRequest, ResolveRequest, RetakeService, Tick};
 
 /// The address the service listens on unless told otherwise.
 pub const DEFAULT_URL: &str = "http://127.0.0.1:8765";
@@ -67,6 +67,12 @@ impl HttpService {
     }
 
     fn start(&self, endpoint: &str, body: String) -> Box<dyn AnalysisJob> {
+        self.start_as(endpoint, body, false)
+    }
+
+    /// `immediate`: the service answers in one reply (no job to follow), so Cancel cannot reach it;
+    /// the job reads as cancelled at once and the late answer is dropped.
+    fn start_as(&self, endpoint: &str, body: String, immediate: bool) -> Box<dyn AnalysisJob> {
         let state = Arc::new(Mutex::new(JobState::Running { fraction: 0.0, status: "Contacting the retake service".into() }));
         let cancel = Arc::new(AtomicBool::new(false));
         let (agent, base, endpoint) = (self.agent.clone(), self.base.clone(), endpoint.to_string());
@@ -74,13 +80,19 @@ impl HttpService {
         let (caps, reachable) = (Arc::clone(&self.capabilities), Arc::clone(&self.reachable));
         let spawned = std::thread::Builder::new().name("retake-http".into()).spawn(move || {
             refresh_capabilities(&agent, &base, &caps, &reachable);
-            let end = run_job(&agent, &base, &endpoint, &body, &thread_state, &thread_cancel);
-            set(&thread_state, end);
+            let end = if immediate {
+                run_once(&agent, &base, &endpoint, &body, &thread_state)
+            } else {
+                run_job(&agent, &base, &endpoint, &body, &thread_state, &thread_cancel)
+            };
+            if !(immediate && thread_cancel.load(Ordering::SeqCst)) {
+                set(&thread_state, end);
+            }
         });
         if spawned.is_err() {
             return failed("Could not start the request.");
         }
-        Box::new(HttpJob { state, cancel })
+        Box::new(HttpJob { state, cancel, immediate })
     }
 
     fn path_of(&self, item: ItemId) -> Option<String> {
@@ -155,6 +167,17 @@ impl RetakeService for HttpService {
             .collect();
         Some(self.start("/v1/adjudicate", json!({ "path": path, "job": request.job, "groups": groups }).to_string()))
     }
+
+    fn refine(&self, request: RefineRequest) -> Option<Box<dyn AnalysisJob>> {
+        if !self.capabilities().refine {
+            return None;
+        }
+        let Some(path) = self.path_of(request.item) else {
+            return Some(failed("The retake service does not know this file yet. Run Remove Retakes again."));
+        };
+        let body = json!({ "path": path, "job": request.job, "remove": request.remove, "mode": request.mode.as_str() });
+        Some(self.start_as("/v1/refine", body.to_string(), true))
+    }
 }
 
 // ── jobs ───────────────────────────────────────────────────────────────────
@@ -162,6 +185,7 @@ impl RetakeService for HttpService {
 struct HttpJob {
     state: Arc<Mutex<JobState>>,
     cancel: Arc<AtomicBool>,
+    immediate: bool,
 }
 
 impl AnalysisJob for HttpJob {
@@ -171,14 +195,20 @@ impl AnalysisJob for HttpJob {
 
     fn cancel(&mut self) {
         self.cancel.store(true, Ordering::SeqCst);
+        if self.immediate {
+            let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+            if matches!(*state, JobState::Running { .. }) {
+                *state = JobState::Cancelled;
+            }
+        }
     }
 }
 
 fn refresh_capabilities(agent: &ureq::Agent, base: &str, into: &Mutex<Capabilities>, reachable: &AtomicBool) {
     let caps = match send(agent, Method::Get, &format!("{base}/v1/capabilities"), None) {
-        Ok(r) if r.status == 200 => {
-            serde_json::from_str::<Value>(&r.body).ok().map(|v| Capabilities { adjudicate: v["adjudicate"].as_bool().unwrap_or(false) })
-        }
+        Ok(r) if r.status == 200 => serde_json::from_str::<Value>(&r.body)
+            .ok()
+            .map(|v| Capabilities { adjudicate: v["adjudicate"].as_bool().unwrap_or(false), refine: v["refine"].as_bool().unwrap_or(false) }),
         Ok(r) => {
             log::warn!("capabilities: HTTP {}", r.status);
             None
@@ -193,7 +223,17 @@ fn refresh_capabilities(agent: &ureq::Agent, base: &str, into: &Mutex<Capabiliti
 }
 
 fn failed(why: &str) -> Box<dyn AnalysisJob> {
-    Box::new(HttpJob { state: Arc::new(Mutex::new(JobState::Failed(why.to_string()))), cancel: Arc::new(AtomicBool::new(false)) })
+    Box::new(HttpJob { state: Arc::new(Mutex::new(JobState::Failed(why.to_string()))), cancel: Arc::new(AtomicBool::new(false)), immediate: false })
+}
+
+/// One request, one reply (`/v1/refine`): the reply body is the result.
+fn run_once(agent: &ureq::Agent, base: &str, endpoint: &str, body: &str, state: &Mutex<JobState>) -> JobState {
+    set(state, JobState::Running { fraction: 0.5, status: "Refining the cuts".into() });
+    match send(agent, Method::Post, &format!("{base}{endpoint}"), Some(body)) {
+        Ok(r) if r.status == 200 => JobState::Done(r.body),
+        Ok(r) => JobState::Failed(error_of(&r)),
+        Err(e) => JobState::Failed(e),
+    }
 }
 
 fn set(state: &Mutex<JobState>, to: JobState) {
