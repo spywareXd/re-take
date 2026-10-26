@@ -1,10 +1,12 @@
 # Start the retake service and the SimpleCut editor together.
-#   .\run_dev.ps1              real service (LLM keys from .env), editor connected to it
+#   .\run_dev.ps1              real service (LLM keys from .env, Groq by default), editor connected to it
+#   .\run_dev.ps1 -Llm gemini  use another provider (groq | gemini | openai | auto)
 #   .\run_dev.ps1 -MockLlm     "Ask AI" answers from a mock, no key or network
 #   .\run_dev.ps1 -Release     run the optimised editor build (slower to build, smoother to use)
 #   .\run_dev.ps1 -ServiceOnly just the service (open the editor yourself with SIMPLECUT_RETAKE_URL=1)
 # Closing the editor stops the service.
 param(
+    [ValidateSet('groq', 'gemini', 'openai', 'auto')][string]$Llm = 'groq',   # which LLM answers "Ask AI" (auto = first key found: gemini, groq, openai)
     [switch]$MockLlm,
     [switch]$Release,
     [switch]$ServiceOnly,
@@ -27,6 +29,7 @@ if ($running) {
 } else {
     # set or clear it explicitly: an earlier -MockLlm run leaves the variable in this terminal session
     if ($MockLlm) { $env:RETAKE_LLM_MOCK = '1' } else { Remove-Item Env:RETAKE_LLM_MOCK -ErrorAction SilentlyContinue }
+    if ($Llm -eq 'auto') { Remove-Item Env:RETAKE_LLM_PROVIDER -ErrorAction SilentlyContinue } else { $env:RETAKE_LLM_PROVIDER = $Llm }
     $env:RETAKE_PORT = "$Port"
     Write-Host "Starting the retake service on $url ..."
     $service = Start-Process -FilePath $python -ArgumentList '-m', 'service' -WorkingDirectory $root -PassThru -NoNewWindow
