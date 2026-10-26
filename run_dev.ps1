@@ -23,9 +23,10 @@ try { Invoke-RestMethod "$url/v1/capabilities" -TimeoutSec 2 | Out-Null; $runnin
 
 $service = $null
 if ($running) {
-    Write-Host "A retake service is already answering at $url; using it."
+    Write-Host "A retake service is already answering at $url; using it (it keeps whatever LLM setting it was started with; stop it to change that)."
 } else {
-    if ($MockLlm) { $env:RETAKE_LLM_MOCK = '1' }
+    # set or clear it explicitly: an earlier -MockLlm run leaves the variable in this terminal session
+    if ($MockLlm) { $env:RETAKE_LLM_MOCK = '1' } else { Remove-Item Env:RETAKE_LLM_MOCK -ErrorAction SilentlyContinue }
     $env:RETAKE_PORT = "$Port"
     Write-Host "Starting the retake service on $url ..."
     $service = Start-Process -FilePath $python -ArgumentList '-m', 'service' -WorkingDirectory $root -PassThru -NoNewWindow
