@@ -15,11 +15,11 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use egui::{Color32, CornerRadius, RichText, WidgetInfo, WidgetType, vec2};
-use simplecut_core::retake::{CutProposal, CutScope, MAX_DOCUMENT_BYTES, Presence};
+use simplecut_core::retake::{CutScope, MAX_DOCUMENT_BYTES, Presence};
 use simplecut_core::review::parse_advice;
 use simplecut_core::{
-    AdjudicateRequest, AnalysisJob, Candidates, Checked, ItemId, JobState, Label, LabelsRequest, PairClass, ResolveRequest, ReviewGroup, Sentence, Tick,
-    Verdict,
+    AdjudicateRequest, AnalysisJob, Candidates, Checked, CutMode, ItemId, JobState, Label, LabelsRequest, PairClass, RefineRequest, RefinedCuts,
+    ResolveRequest, ReviewGroup, Sentence, Tick, Verdict, ids_to_refine, plan_cuts,
 };
 
 use crate::app::{Action, SimpleCutApp, Source};
@@ -86,6 +86,13 @@ impl Questions {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PlanKey {
+    pub mode: CutMode,
+    pub removed: Vec<(String, Tick, Tick)>,
+    pub edited: Vec<String>,
+}
+
 /// The groups, and what the user keeps.
 pub(crate) struct Review {
     pub item: ItemId,
@@ -107,6 +114,12 @@ pub(crate) struct Review {
     pub reasons: HashMap<String, String>,
     pub ai_consent_pending: bool,
     pub skip_unticked: bool,
+    pub mode: CutMode,
+    pub refine: Option<Running>,
+    pub refine_for: Option<PlanKey>,
+    pub pending_apply: bool,
+    pub plan_cache: Option<(PlanKey, String)>,
+    pub debounce: Option<(PlanKey, std::time::Instant)>,
 }
 
 impl Review {
@@ -154,7 +167,7 @@ impl RetakeUi {
     pub fn busy(&self) -> bool {
         match &self.stage {
             Some(Stage::Analyzing(_) | Stage::Resolving { .. }) => true,
-            Some(Stage::Review(r)) => r.advice.is_some(),
+            Some(Stage::Review(r)) => r.advice.is_some() || r.refine.is_some() || r.debounce.is_some(),
             _ => false,
         }
     }
@@ -197,6 +210,31 @@ impl SimpleCutApp {
 
     pub fn has_service(&self) -> bool {
         self.service.is_some()
+    }
+
+    pub fn refine_available(&self) -> bool {
+        self.service.as_ref().map(|s| s.capabilities().refine).unwrap_or(false)
+    }
+
+    pub fn review_cut_mode(&self) -> Option<CutMode> {
+        match &self.retakes.stage {
+            Some(Stage::Review(r)) => Some(r.mode),
+            _ => None,
+        }
+    }
+
+    pub fn review_planned_ranges(&self) -> Vec<(Tick, Tick)> {
+        match &self.retakes.stage {
+            Some(Stage::Review(r)) => self.planned_cuts(r).cuts.into_iter().map(|c| (c.start, c.end)).collect(),
+            _ => Vec::new(),
+        }
+    }
+
+    pub fn review_refining(&self) -> bool {
+        match &self.retakes.stage {
+            Some(Stage::Review(r)) => r.refine.is_some(),
+            _ => false,
+        }
     }
 
     /// Whether the service offers the optional AI extension.
@@ -382,6 +420,38 @@ impl SimpleCutApp {
         r.groups.iter().filter(|g| self.actionable(r.item, g)).flat_map(|g| g.sentences.iter()).filter(|s| !r.is_kept(&s.id) && self.on(r.item, s)).collect()
     }
 
+    pub(crate) fn edited_sentence_ids(&self, r: &Review) -> Vec<String> {
+        let mut edited = Vec::new();
+        for g in &r.groups {
+            for s in &g.sentences {
+                if let Some(orig) = r.original.get(&s.id)
+                    && ((s.start.0 - orig.0.0).abs() > 1000 || (s.end.0 - orig.1.0).abs() > 1000)
+                {
+                    edited.push(s.id.clone());
+                }
+            }
+        }
+        edited.sort();
+        edited.dedup();
+        edited
+    }
+
+    pub(crate) fn plan_key(&self, r: &Review) -> PlanKey {
+        let mut removed: Vec<(String, Tick, Tick)> = self.cuts(r).into_iter().map(|s| (s.id.clone(), s.start, s.end)).collect();
+        removed.sort_by(|a, b| a.0.cmp(&b.0));
+        let edited = self.edited_sentence_ids(r);
+        PlanKey { mode: r.mode, removed, edited }
+    }
+
+    pub(crate) fn planned_cuts(&self, r: &Review) -> RefinedCuts {
+        let key = self.plan_key(r);
+        let removed: Vec<Sentence> = self.cuts(r).into_iter().cloned().collect();
+        let edited = self.edited_sentence_ids(r);
+        let media_duration = self.editor.media_entry(r.item).map(|m| m.duration).unwrap_or(Tick::ZERO);
+        let reply = if self.refine_available() { r.plan_cache.as_ref().filter(|(k, _)| k == &key).map(|(_, reply)| reply.as_str()) } else { None };
+        plan_cuts(r.mode, &removed, &edited, reply, media_duration)
+    }
+
     /// What the timeline draws for the open review.
     pub(crate) fn review_marks(&self) -> Vec<Mark> {
         let Some(Stage::Review(r)) = &self.retakes.stage else { return Vec::new() };
@@ -395,10 +465,34 @@ impl SimpleCutApp {
                 out.push(Mark { start: s, end: e, color, kind: MarkKind::Band { likely: g.likely }, sentence_id: None });
             }
             for sent in g.sentences.iter().filter(|s| self.on(r.item, s)) {
-                let kind = if r.is_kept(&sent.id) { MarkKind::Kept } else { MarkKind::Cut };
-                for (s, e) in self.editor.timeline_ranges_of(r.item, sent.start, sent.end) {
-                    out.push(Mark { start: s, end: e, color, kind, sentence_id: Some(sent.id.clone()) });
+                if r.is_kept(&sent.id) {
+                    for (s, e) in self.editor.timeline_ranges_of(r.item, sent.start, sent.end) {
+                        out.push(Mark { start: s, end: e, color, kind: MarkKind::Kept, sentence_id: Some(sent.id.clone()) });
+                    }
                 }
+            }
+        }
+        let planned = self.planned_cuts(r);
+        for c in planned.cuts {
+            let (color, matching_sent_id) = r
+                .groups
+                .iter()
+                .enumerate()
+                .find_map(|(i, g)| {
+                    if let Some(s) = g.sentences.iter().find(|s| s.id == c.id) {
+                        return Some((i % theme::GROUP_COLORS.len(), Some(s.id.clone())));
+                    }
+                    if g.start <= c.end && c.start <= g.end {
+                        let touched_s: Vec<&Sentence> = g.sentences.iter().filter(|s| s.start <= c.end && c.start <= s.end).collect();
+                        let sid = if touched_s.len() == 1 { Some(touched_s[0].id.clone()) } else { None };
+                        return Some((i % theme::GROUP_COLORS.len(), sid));
+                    }
+                    None
+                })
+                .unwrap_or((0, None));
+
+            for (s, e) in self.editor.timeline_ranges_of(r.item, c.start, c.end) {
+                out.push(Mark { start: s, end: e, color, kind: MarkKind::Cut, sentence_id: matching_sent_id.clone() });
             }
         }
         out
@@ -494,6 +588,8 @@ impl SimpleCutApp {
             Action::SetSentenceSpan { sentence, start, end } => self.set_sentence_span(&sentence, start, end),
             Action::ResetSentenceSpan(sentence) => self.reset_sentence_span(&sentence),
             Action::SaveGroups => self.save_groups(),
+            Action::SetCutMode(mode) => self.set_cut_mode(mode),
+            Action::ApplyWholeSentences => self.apply_whole_sentences(),
             _ => {}
         }
     }
@@ -538,6 +634,14 @@ impl SimpleCutApp {
                     a.job.cancel();
                     self.info_text("Cancelled the AI request.");
                 }
+                if let Some(mut ref_job) = r.refine.take() {
+                    ref_job.job.cancel();
+                    r.refine_for = None;
+                    if r.pending_apply {
+                        r.pending_apply = false;
+                        self.info_text("Cancelled refining the cuts.");
+                    }
+                }
                 self.retakes.stage = Some(Stage::Review(r));
             }
             other => self.retakes.stage = other,
@@ -551,6 +655,9 @@ impl SimpleCutApp {
             Some(Stage::Review(mut r)) => {
                 if let Some(a) = &mut r.advice {
                     a.job.cancel();
+                }
+                if let Some(ref_job) = &mut r.refine {
+                    ref_job.job.cancel();
                 }
             }
             _ => {}
@@ -644,6 +751,12 @@ impl SimpleCutApp {
             reasons: HashMap::new(),
             ai_consent_pending: false,
             skip_unticked: true,
+            mode: CutMode::Anchored,
+            refine: None,
+            refine_for: None,
+            pending_apply: false,
+            plan_cache: None,
+            debounce: None,
         };
         self.review_tick(&mut r);
         let handled = r.groups.iter().filter(|g| !self.actionable(item, g)).count();
@@ -670,6 +783,12 @@ impl SimpleCutApp {
                 }
             }
         }
+        self.poll_advice(r);
+        self.poll_refine(r);
+        self.pump_refine_debounce(r);
+    }
+
+    fn poll_advice(&mut self, r: &mut Review) {
         let Some(run) = &mut r.advice else { return };
         let Some(state) = run.poll() else { return };
         r.advice = None;
@@ -767,13 +886,18 @@ impl SimpleCutApp {
 
     fn redo_questions(&mut self) {
         match self.retakes.stage.take() {
-            Some(Stage::Review(mut r)) => match r.from.take() {
-                Some(q) => self.retakes.stage = Some(Stage::Questions(q)),
-                None => {
-                    self.info_text("There are no questions to ask again for this analysis.");
-                    self.retakes.stage = Some(Stage::Review(r));
+            Some(Stage::Review(mut r)) => {
+                if let Some(ref_job) = &mut r.refine {
+                    ref_job.job.cancel();
                 }
-            },
+                match r.from.take() {
+                    Some(q) => self.retakes.stage = Some(Stage::Questions(q)),
+                    None => {
+                        self.info_text("There are no questions to ask again for this analysis.");
+                        self.retakes.stage = Some(Stage::Review(r));
+                    }
+                }
+            }
             other => self.retakes.stage = other,
         }
     }
@@ -895,15 +1019,16 @@ impl SimpleCutApp {
         }
     }
 
-    fn apply_retakes(&mut self) {
-        let Some(Stage::Review(r)) = &self.retakes.stage else { return };
-        let cuts: Vec<CutProposal> = self.cuts(r).into_iter().map(Sentence::as_cut).collect();
-        let item = r.item;
-        match self.editor.apply_cut_sets(&[(item, cuts)], CutScope::MainTracks) {
+    fn apply_cuts_planned(&mut self, planned: RefinedCuts, item: ItemId) {
+        match self.editor.apply_cut_sets(&[(item, planned.cuts)], CutScope::MainTracks) {
             Ok(report) => {
                 self.source = Source::Timeline;
-                let secs = report.removed.0 as f64 / 254_016_000_000.0;
+                let secs = report.removed.0 as f64 / TICKS_PER_SECOND;
                 let mut text = format!("Removed {} piece{} ({secs:.1} s). Ctrl+Z puts them back.", report.cuts, if report.cuts == 1 { "" } else { "s" });
+                for n in &planned.notes {
+                    text.push(' ');
+                    text.push_str(n);
+                }
                 if let Some(n) = report.notes.first() {
                     text.push(' ');
                     text.push_str(n);
@@ -912,6 +1037,174 @@ impl SimpleCutApp {
                 self.player.set_skips(Vec::new());
             }
             Err(e) => self.fail_text(&e.to_string()),
+        }
+    }
+
+    fn apply_retakes(&mut self) {
+        let (key, has_cache, refine_avail, already_refining) = {
+            let Some(Stage::Review(r)) = &self.retakes.stage else { return };
+            let key = self.plan_key(r);
+            if key.removed.is_empty() {
+                return;
+            }
+            let removed: Vec<Sentence> = self.cuts(r).into_iter().cloned().collect();
+            let edited = self.edited_sentence_ids(r);
+            let refine_avail = self.refine_available() && !ids_to_refine(&removed, &edited).is_empty();
+            let has_cache = r.plan_cache.as_ref().map(|(k, _)| k == &key).unwrap_or(false);
+            let already_refining = r.refine.is_some() && r.refine_for.as_ref() == Some(&key);
+            (key, has_cache, refine_avail, already_refining)
+        };
+
+        if !refine_avail || has_cache {
+            let Some(Stage::Review(r)) = &self.retakes.stage else { return };
+            let planned = self.planned_cuts(r);
+            let item = r.item;
+            self.apply_cuts_planned(planned, item);
+            return;
+        }
+
+        if already_refining {
+            let Some(Stage::Review(r)) = &mut self.retakes.stage else { return };
+            r.pending_apply = true;
+            return;
+        }
+
+        self.start_refine_job(key, true);
+    }
+
+    fn apply_whole_sentences(&mut self) {
+        self.banner = None;
+        if let Some(Stage::Review(r)) = &mut self.retakes.stage {
+            r.plan_cache = None;
+        }
+        let Some(Stage::Review(r)) = &self.retakes.stage else { return };
+        let planned = self.planned_cuts(r);
+        let item = r.item;
+        self.apply_cuts_planned(planned, item);
+    }
+
+    fn set_cut_mode(&mut self, mode: CutMode) {
+        let Some(Stage::Review(r)) = &mut self.retakes.stage else { return };
+        if r.mode != mode {
+            r.mode = mode;
+            r.debounce = None;
+        }
+    }
+
+    fn poll_refine(&mut self, r: &mut Review) {
+        let Some(run) = &mut r.refine else { return };
+        let Some(state) = run.poll() else { return };
+        let started_key = r.refine_for.take();
+        let was_pending = r.pending_apply;
+        r.refine = None;
+        let current_key = self.plan_key(r);
+
+        match state {
+            JobState::Done(reply) => {
+                if started_key.as_ref() == Some(&current_key) {
+                    r.plan_cache = Some((current_key, reply));
+                    if was_pending {
+                        r.pending_apply = false;
+                        let planned = self.planned_cuts(r);
+                        let item = r.item;
+                        self.apply_cuts_planned(planned, item);
+                    }
+                } else {
+                    // key changed meanwhile: discard reply and stop!
+                    r.pending_apply = false;
+                }
+            }
+            JobState::Failed(why) => {
+                r.pending_apply = false;
+                if was_pending {
+                    self.banner = Some(crate::app::Banner {
+                        text: why,
+                        error: true,
+                        action: Some(("Cut whole sentences instead".to_string(), Action::ApplyWholeSentences)),
+                    });
+                }
+            }
+            JobState::Cancelled => {
+                r.pending_apply = false;
+            }
+            _ => {}
+        }
+    }
+
+    fn pump_refine_debounce(&mut self, r: &mut Review) {
+        if !self.refine_available() {
+            return;
+        }
+        if r.refine.is_some() {
+            return;
+        }
+        let current_key = self.plan_key(r);
+        if current_key.removed.is_empty() {
+            r.debounce = None;
+            return;
+        }
+        let removed: Vec<Sentence> = self.cuts(r).into_iter().cloned().collect();
+        let edited = self.edited_sentence_ids(r);
+        let remove = ids_to_refine(&removed, &edited);
+        if remove.is_empty() {
+            r.debounce = None;
+            return;
+        }
+        if r.plan_cache.as_ref().map(|(k, _)| k == &current_key).unwrap_or(false) {
+            r.debounce = None;
+            return;
+        }
+        let now = std::time::Instant::now();
+        match &r.debounce {
+            Some((k, since)) if k == &current_key => {
+                if now.duration_since(*since) >= std::time::Duration::from_millis(500) {
+                    r.debounce = None;
+                    let spans: Vec<(String, Tick, Tick)> = removed.iter().filter(|s| !edited.contains(&s.id)).map(|s| (s.id.clone(), s.start, s.end)).collect();
+                    let request = RefineRequest { item: r.item, job: r.job.clone(), mode: r.mode, remove, spans };
+                    if let Some(job) = self.service.as_ref().and_then(|s| s.refine(request)) {
+                        r.refine = Some(Running::new(job, r.item, "Refining the cuts…"));
+                        r.refine_for = Some(current_key);
+                        r.pending_apply = false;
+                    }
+                }
+            }
+            _ => {
+                r.debounce = Some((current_key, now));
+            }
+        }
+    }
+
+    fn start_refine_job(&mut self, key: PlanKey, pending_apply: bool) {
+        let (request, needs_refine) = {
+            let Some(Stage::Review(r)) = &self.retakes.stage else { return };
+            let removed: Vec<Sentence> = self.cuts(r).into_iter().cloned().collect();
+            let edited = self.edited_sentence_ids(r);
+            let remove = ids_to_refine(&removed, &edited);
+            let spans: Vec<(String, Tick, Tick)> = removed.iter().filter(|s| !edited.contains(&s.id)).map(|s| (s.id.clone(), s.start, s.end)).collect();
+            let needs_refine = !remove.is_empty();
+            (RefineRequest { item: r.item, job: r.job.clone(), mode: r.mode, remove, spans }, needs_refine)
+        };
+        if !needs_refine {
+            if pending_apply {
+                let Some(Stage::Review(r)) = &self.retakes.stage else { return };
+                let planned = self.planned_cuts(r);
+                let item = r.item;
+                self.apply_cuts_planned(planned, item);
+            }
+            return;
+        }
+        let job = self.service.as_ref().and_then(|s| s.refine(request));
+        if let Some(job) = job {
+            let Some(Stage::Review(r)) = &mut self.retakes.stage else { return };
+            r.refine = Some(Running::new(job, r.item, "Refining the cuts…"));
+            r.refine_for = Some(key);
+            r.pending_apply = pending_apply;
+            r.debounce = None;
+        } else if pending_apply {
+            let Some(Stage::Review(r)) = &self.retakes.stage else { return };
+            let planned = self.planned_cuts(r);
+            let item = r.item;
+            self.apply_cuts_planned(planned, item);
         }
     }
 
@@ -1226,7 +1519,7 @@ struct GroupView {
 fn review_panel(app: &mut SimpleCutApp, ui: &mut egui::Ui, fps: f64) {
     let t = theme::tokens();
     let ai = app.ai_available();
-    let (item, groups, pending, advice_running, notes, can_redo, ignored) = {
+    let (item, groups, pending, advice_running, notes, can_redo, ignored, current_mode, refine_running, pending_apply) = {
         let Some(Stage::Review(r)) = &app.retakes.stage else { return };
         let groups: Vec<GroupView> = r
             .groups
@@ -1254,7 +1547,18 @@ fn review_panel(app: &mut SimpleCutApp, ui: &mut egui::Ui, fps: f64) {
                 seen_off: g.sentences.iter().any(|s| r.seen_on.contains(&s.id) && !app.on(r.item, s)),
             })
             .collect();
-        (r.item, groups, r.ai_consent_pending, r.advice.as_ref().map(|a| (a.status.clone(), a.fraction)), r.notes.clone(), r.from.is_some(), r.rejected.len())
+        (
+            r.item,
+            groups,
+            r.ai_consent_pending,
+            r.advice.as_ref().map(|a| (a.status.clone(), a.fraction)),
+            r.notes.clone(),
+            r.from.is_some(),
+            r.rejected.len(),
+            r.mode,
+            r.refine.as_ref().map(|run| (run.status.clone(), run.fraction)),
+            r.pending_apply,
+        )
     };
     let live = |g: &GroupView| g.rows.iter().filter(|r| r.on).count() >= 2;
     let cut_count: usize = groups.iter().filter(|g| live(g)).map(|g| g.rows.iter().filter(|r| r.on && !r.kept).count()).sum();
@@ -1331,7 +1635,8 @@ fn review_panel(app: &mut SimpleCutApp, ui: &mut egui::Ui, fps: f64) {
     );
     ui.add_space(2.0);
 
-    let list_height = (ui.available_height() - 52.0).max(80.0);
+    let footer_height = if app.refine_available() { if current_mode.warning().is_some() { 130.0 } else { 110.0 } } else { 52.0 };
+    let list_height = (ui.available_height() - footer_height).max(80.0);
     egui::ScrollArea::vertical().max_height(list_height).auto_shrink([false, false]).show(ui, |ui| {
         let likely: Vec<&GroupView> = groups.iter().filter(|g| live(g) && g.likely).collect();
         let possible: Vec<&GroupView> = groups.iter().filter(|g| live(g) && !g.likely).collect();
@@ -1374,14 +1679,43 @@ fn review_panel(app: &mut SimpleCutApp, ui: &mut egui::Ui, fps: f64) {
         }
     });
 
-    ui.add_space(6.0);
-    let label = format!("Remove {cut_count} sentence{}", if cut_count == 1 { "" } else { "s" });
-    if ui
-        .add_enabled(cut_count > 0, egui::Button::new(RichText::new(label).strong()).min_size(egui::vec2(ui.available_width(), 30.0)))
-        .on_hover_text("Cut every sentence that is not ticked as kept (one undo step)")
-        .clicked()
+    if app.refine_available() {
+        ui.add_space(6.0);
+        ui.horizontal(|ui| {
+            for &mode in &CutMode::ALL {
+                let selected = current_mode == mode;
+                let btn = ui.selectable_label(selected, mode.label());
+                btn.widget_info(|| WidgetInfo::selected(WidgetType::Button, true, selected, format!("Cut mode: {}", mode.label())));
+                if btn.clicked() && !selected {
+                    app.queue(Action::SetCutMode(mode));
+                }
+            }
+        });
+        ui.label(RichText::new(current_mode.description()).color(t.text_dim).small());
+        if let Some(warn) = current_mode.warning() {
+            ui.label(RichText::new(warn).color(t.danger).small());
+        }
+    }
+
+    if let Some((status, fraction)) = refine_running
+        && pending_apply
     {
-        app.queue(Action::ApplyRetakes);
+        ui.add_space(6.0);
+        ui.label(RichText::new(status).color(t.text));
+        ui.add(egui::ProgressBar::new(fraction.clamp(0.0, 1.0)).desired_width(ui.available_width()));
+        if ui.button("Cancel").clicked() {
+            app.queue(Action::CancelAnalysis);
+        }
+    } else {
+        ui.add_space(6.0);
+        let label = format!("Remove {cut_count} sentence{}", if cut_count == 1 { "" } else { "s" });
+        if ui
+            .add_enabled(cut_count > 0, egui::Button::new(RichText::new(label).strong()).min_size(egui::vec2(ui.available_width(), 30.0)))
+            .on_hover_text("Cut every sentence that is not ticked as kept (one undo step)")
+            .clicked()
+        {
+            app.queue(Action::ApplyRetakes);
+        }
     }
 }
 

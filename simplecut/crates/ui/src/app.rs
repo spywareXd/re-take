@@ -133,6 +133,10 @@ pub enum Action {
     ResetSentenceSpan(String),
     /// Save the current groups to a JSON file.
     SaveGroups,
+    /// Switch the cut mode for refining retakes.
+    SetCutMode(simplecut_core::CutMode),
+    /// Cut whole sentences when refine fails.
+    ApplyWholeSentences,
 }
 
 /// A line of feedback under the work area.
@@ -416,7 +420,9 @@ impl SimpleCutApp {
             | Action::SetSkipUnticked(_)
             | Action::SetSentenceSpan { .. }
             | Action::ResetSentenceSpan(_)
-            | Action::SaveGroups => self.perform_retake(action),
+            | Action::SaveGroups
+            | Action::SetCutMode(_)
+            | Action::ApplyWholeSentences => self.perform_retake(action),
             Action::NewProject => self.guard_unsaved(Then::New),
             Action::OpenProject => {
                 if let Some(path) = self.dialogs.pick_project_to_open() {
@@ -841,8 +847,13 @@ impl SimpleCutApp {
         if let Some(crate::retakes::Stage::Review(r)) = &self.retakes.stage
             && r.skip_unticked
         {
-            let skips: Vec<(Tick, Tick)> =
-                self.review_marks().into_iter().filter(|m| m.kind == crate::retakes::MarkKind::Cut).map(|m| (m.start, m.end)).collect();
+            let planned = self.planned_cuts(r);
+            let mut skips = Vec::new();
+            for c in planned.cuts {
+                for (s, e) in self.editor.timeline_ranges_of(r.item, c.start, c.end) {
+                    skips.push((s, e));
+                }
+            }
             self.player.set_skips(skips);
         } else if !self.player.current_skips().is_empty() {
             self.player.set_skips(Vec::new());

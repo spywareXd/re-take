@@ -11,7 +11,7 @@ mod common;
 use common::harness::{Script, click, item, skip, step_until, window, window_with, with_media_and_service};
 use egui::{Pos2, pos2, vec2};
 use egui_kittest::kittest::{NodeT, Queryable};
-use simplecut_core::{FakeService, Lane, Tick, Verdict};
+use simplecut_core::{CutMode, FakeService, Lane, Tick, Verdict};
 use simplecut_ui::Action;
 
 const TPS: f64 = 254_016_000_000.0;
@@ -163,6 +163,7 @@ fn the_steps_go_questions_then_groups_and_nothing_is_cut_until_the_user_chooses(
     h.get_by_label("Remove 1 sentence");
 
     click(&mut h, "Remove 1 sentence");
+    step_until(&mut h, "removed", |a| a.banner().is_some_and(|b| !b.error && b.text.contains("Removed")));
     assert!(video_total(&h) < before - 0.02, "{} vs {before}", video_total(&h));
     assert_eq!(h.state().editor().session().history.undo.len(), steps + 1, "one undo step");
     assert!(h.state().banner().is_some_and(|b| !b.error && b.text.contains("Removed")), "{:?}", h.state().banner());
@@ -389,8 +390,7 @@ fn a_group_that_is_cut_moves_to_already_handled_and_undo_brings_it_back() {
     let n = h.state().review_groups().len();
     h.state_mut().perform(Action::KeepLastOnly("span_0".into()));
     h.state_mut().perform(Action::ApplyRetakes);
-    h.step();
-    h.step();
+    step_until(&mut h, "applied", |a| a.review_groups().len() == n - 1);
     assert_eq!(h.state().review_groups().len(), n - 1, "only one take of that line is on the timeline now");
     assert_eq!(h.state().review_handled().len(), 1);
 
@@ -430,7 +430,7 @@ fn preview_skips_unticked_sentences_checkbox_toggle_remove_and_undo() {
 
     // After Remove: nothing left to skip
     h.state_mut().perform(Action::ApplyRetakes);
-    h.step();
+    step_until(&mut h, "skips empty", |a| a.player().current_skips().is_empty());
     assert!(h.state().player().current_skips().is_empty(), "nothing left to skip after Remove");
 
     // Undo brings the skips back
@@ -680,4 +680,329 @@ fn rejected_span_edits_are_not_logged_and_clamped_ones_log_the_stored_value() {
     let v: serde_json::Value = serde_json::from_str(text.lines().next().unwrap()).unwrap();
     assert!((v["new"]["end"].as_f64().unwrap() - s1).abs() < 1e-4, "{v}");
     assert_eq!(lines(&log_path), 1);
+}
+
+#[test]
+fn mode_selector_present_only_with_capability_and_shows_warnings() {
+    if skip() {
+        return;
+    }
+    // 1. Without refine capability: selector absent, flow unchanged
+    let no_refine_service = FakeService { refine: false, ..Default::default() };
+    let (mut h_no, _) = ready(no_refine_service);
+    to_review(&mut h_no);
+    assert!(!h_no.state().refine_available());
+    assert!(h_no.query_by_label("Cut mode: Retakes and dead air").is_none());
+    assert!(h_no.query_by_label("Cut mode: Speech only").is_none());
+    assert!(h_no.query_by_label("Cut mode: Retakes only").is_none());
+
+    // 2. With refine capability: selector present, default Anchored
+    let (mut h, _) = ready(FakeService::default());
+    to_review(&mut h);
+    assert!(h.state().refine_available());
+    assert_eq!(h.state().review_cut_mode(), Some(CutMode::Anchored));
+    h.get_by_label("Cut mode: Retakes and dead air");
+    h.get_by_label("Cut mode: Speech only");
+    h.get_by_label("Cut mode: Retakes only");
+
+    // Anchored and RetakeOnly have no warning
+    assert!(CutMode::Anchored.warning().is_none());
+    assert!(CutMode::RetakeOnly.warning().is_none());
+    let sent_warn = CutMode::Sentences.warning().expect("Sentences has warning");
+
+    // Sentences shows warning text
+    click(&mut h, "Cut mode: Speech only");
+    assert_eq!(h.state().review_cut_mode(), Some(CutMode::Sentences));
+    h.get_by_label(sent_warn);
+
+    // Switching back to Anchored hides warning
+    click(&mut h, "Cut mode: Retakes and dead air");
+    assert_eq!(h.state().review_cut_mode(), Some(CutMode::Anchored));
+    assert!(h.query_by_label(sent_warn).is_none());
+}
+
+#[test]
+fn remove_in_each_mode_cuts_exactly_planned_ranges_and_ordering() {
+    if skip() {
+        return;
+    }
+    let mut durations_removed = Vec::new();
+
+    for mode in [CutMode::RetakeOnly, CutMode::Anchored, CutMode::Sentences] {
+        let (mut h, _) = ready(FakeService::default());
+        to_review(&mut h);
+        let before = video_total(&h);
+
+        // Set mode
+        h.state_mut().perform(Action::SetCutMode(mode));
+        assert_eq!(h.state().review_cut_mode(), Some(mode));
+
+        // Untick span_0
+        h.state_mut().perform(Action::KeepLastOnly("span_0".into()));
+        h.step();
+
+        // Apply retakes and wait for refine to complete
+        h.state_mut().perform(Action::ApplyRetakes);
+        step_until(&mut h, "applied", |a| a.banner().is_some_and(|b| !b.error && b.text.contains("Removed")));
+
+        let after = video_total(&h);
+        let removed = before - after;
+        durations_removed.push(removed);
+
+        let seq = h.state().editor().sequence().expect("sequence exists");
+        let v_track = &seq.tracks[0];
+        let total_clip_dur: f64 = v_track.clips.iter().map(|c| s_of(c.duration)).sum();
+        assert!((total_clip_dur - after).abs() < 1e-4);
+        match mode {
+            CutMode::RetakeOnly => {
+                assert_eq!(s_of(v_track.clips[0].source_in), 0.0);
+                assert_eq!(v_track.clips.len(), 3);
+            }
+            CutMode::Anchored => {
+                assert_eq!(s_of(v_track.clips[0].source_in), 0.0);
+                assert_eq!(v_track.clips.len(), 2);
+            }
+            CutMode::Sentences => {
+                assert!(s_of(v_track.clips[0].source_in) > 0.0);
+                assert_eq!(v_track.clips.len(), 1);
+            }
+        }
+    }
+
+    // the three modes remove strictly more in the order retake_only < anchored < sentences
+    assert!(durations_removed[0] < durations_removed[1], "RetakeOnly ({}) should remove less than Anchored ({})", durations_removed[0], durations_removed[1]);
+    assert!(durations_removed[1] < durations_removed[2], "Anchored ({}) should remove less than Sentences ({})", durations_removed[1], durations_removed[2]);
+}
+
+#[test]
+fn bad_refine_cuts_inside_allowed_bounds_notes_in_info_and_one_undo() {
+    if skip() {
+        return;
+    }
+    let service = FakeService { bad_refine: true, ..Default::default() };
+    let (mut h, _) = ready(service);
+    to_review(&mut h);
+    let steps = h.state().editor().session().history.undo.len();
+    let before = video_total(&h);
+
+    h.state_mut().perform(Action::KeepLastOnly("span_0".into()));
+    h.step();
+
+    h.state_mut().perform(Action::ApplyRetakes);
+    step_until(&mut h, "applied", |a| a.banner().is_some_and(|b| !b.error && b.text.contains("Removed")));
+
+    // Remove still cuts
+    assert!(video_total(&h) < before);
+    // Exactly one undo step
+    assert_eq!(h.state().editor().session().history.undo.len(), steps + 1);
+    // Info text carries the note
+    let banner = h.state().banner().expect("banner present");
+    assert!(!banner.error);
+    assert!(banner.text.contains("whole sentences are cut instead") || banner.text.contains("could not be used"));
+}
+
+#[test]
+fn hand_edited_sentence_span_is_cut_exactly_as_set_in_every_mode() {
+    if skip() {
+        return;
+    }
+    for mode in [CutMode::RetakeOnly, CutMode::Anchored, CutMode::Sentences] {
+        let (mut h, _) = ready(FakeService::default());
+        to_review(&mut h);
+
+        h.state_mut().perform(Action::SetCutMode(mode));
+        let (s_orig, _) = h.state().sentence_span_f64("3:0").expect("sentence 3:0 exists");
+        let new_s = 0.30;
+        let new_e = 0.40;
+        assert!(new_s > s_orig);
+
+        h.state_mut().perform(Action::SetKeep { sentence: "3:0".into(), keep: false });
+        h.state_mut().perform(Action::SetSentenceSpan { sentence: "3:0".into(), start: new_s, end: new_e });
+        h.step();
+
+        h.state_mut().perform(Action::ApplyRetakes);
+        h.step();
+
+        let seq = h.state().editor().sequence().expect("sequence exists");
+        let v_track = &seq.tracks[0];
+        assert_eq!(v_track.clips.len(), 2, "video was cut into 2 pieces in mode {mode:?}");
+
+        let c0 = &v_track.clips[0];
+        assert_eq!(s_of(c0.start), 0.0);
+        assert!((s_of(c0.duration) - new_s).abs() < 1e-4);
+
+        let c1 = &v_track.clips[1];
+        assert!((s_of(c1.start) - new_s).abs() < 1e-4);
+        assert!((s_of(c1.source_in) - new_e).abs() < 1e-4);
+        assert!((s_of(c1.duration) - (4.0 - new_e)).abs() < 1e-4);
+    }
+}
+
+#[test]
+fn cancel_during_refining_leaves_timeline_and_undo_stack_unchanged() {
+    if skip() {
+        return;
+    }
+    let (mut h, _) = ready(FakeService::default());
+    to_review(&mut h);
+    let before_len = video_total(&h);
+    let steps = h.state().editor().session().history.undo.len();
+
+    h.state_mut().perform(Action::KeepLastOnly("span_0".into()));
+    h.step();
+
+    // Start refining
+    h.state_mut().perform(Action::ApplyRetakes);
+    h.step();
+    assert!(h.state().review_refining());
+
+    // Cancel while refining
+    h.state_mut().perform(Action::CancelAnalysis);
+    h.step();
+    assert!(!h.state().review_refining());
+
+    // Timeline and undo stack are untouched
+    assert_eq!(video_total(&h), before_len);
+    assert_eq!(h.state().editor().session().history.undo.len(), steps);
+}
+
+#[test]
+fn changing_tick_or_mode_while_refine_in_flight_never_applies_old_plan() {
+    if skip() {
+        return;
+    }
+    let (mut h, _) = ready(FakeService::default());
+    to_review(&mut h);
+    let before_len = video_total(&h);
+    let steps = h.state().editor().session().history.undo.len();
+
+    // Untick sentences of span_0
+    h.state_mut().perform(Action::KeepLastOnly("span_0".into()));
+    h.step();
+
+    // Start refine
+    h.state_mut().perform(Action::ApplyRetakes);
+    h.step();
+    assert!(h.state().review_refining());
+
+    // Change mode while refine is in flight
+    h.state_mut().perform(Action::SetCutMode(CutMode::RetakeOnly));
+    h.step();
+
+    // Wait until background refine finishes
+    step_until(&mut h, "refine settled", |a| !a.review_refining());
+
+    // The old plan must NOT have been applied to the timeline
+    assert_eq!(video_total(&h), before_len);
+    assert_eq!(h.state().editor().session().history.undo.len(), steps);
+}
+
+#[test]
+fn refine_job_fails_shows_message_nothing_cut_cut_whole_sentences_works() {
+    if skip() {
+        return;
+    }
+    let service = FakeService { fail_refine: Some("Audio refine service crashed".into()), ..Default::default() };
+    let (mut h, _) = ready(service);
+    to_review(&mut h);
+    let before_len = video_total(&h);
+    let steps = h.state().editor().session().history.undo.len();
+
+    h.state_mut().perform(Action::KeepLastOnly("span_0".into()));
+    h.step();
+
+    // Remove starts refine, which will fail
+    h.state_mut().perform(Action::ApplyRetakes);
+    step_until(&mut h, "failed", |a| a.banner().is_some_and(|b| b.error));
+
+    // Message is shown
+    let banner = h.state().banner().expect("banner");
+    assert!(banner.text.contains("Audio refine service crashed"));
+    assert!(banner.error);
+    assert_eq!(banner.action.as_ref().map(|(l, _)| l.as_str()), Some("Cut whole sentences instead"));
+
+    // Nothing was cut yet
+    assert_eq!(video_total(&h), before_len);
+    assert_eq!(h.state().editor().session().history.undo.len(), steps);
+
+    // "Cut whole sentences instead" works
+    click(&mut h, "Cut whole sentences instead");
+    step_until(&mut h, "cut applied", |a| a.banner().is_some_and(|b| !b.error && b.text.contains("Removed")));
+
+    // Video was cut, banner is info
+    assert!(video_total(&h) < before_len);
+    assert_eq!(h.state().editor().session().history.undo.len(), steps + 1);
+}
+
+#[test]
+fn preview_before_and_after_debounce_matches_planned_ranges_and_rects() {
+    if skip() {
+        return;
+    }
+    let (mut h, _) = ready(FakeService::default());
+    to_review(&mut h);
+
+    // Untick sentences of span_0
+    h.state_mut().perform(Action::KeepLastOnly("span_0".into()));
+    h.step();
+
+    // Before reply/debounce: skips equal whole sentence spans
+    let initial_skips = h.state().player().current_skips().to_vec();
+    assert!(!initial_skips.is_empty(), "has skips before debounce");
+
+    let planned_before = h.state().review_planned_ranges();
+
+    // Sleep 600ms so debounce fires, then step_until refine completes
+    std::thread::sleep(std::time::Duration::from_millis(600));
+    step_until(&mut h, "debounce refined", |a| {
+        let planned = a.review_planned_ranges();
+        planned != planned_before
+    });
+    h.step();
+
+    // After debounce: player current_skips equals planned ranges mapped to timeline
+    let refined_skips = h.state().player().current_skips().to_vec();
+    assert_ne!(refined_skips, initial_skips, "skips updated from refined ranges");
+
+    // review_marker_rects match the refined ranges
+    let rects = h.state().review_marker_rects();
+    assert!(!rects.is_empty(), "marker rects exist for refined cuts");
+}
+
+#[test]
+fn refine_remove_is_one_undo_step_and_undo_redo_with_review_open_works() {
+    if skip() {
+        return;
+    }
+    let (mut h, _) = ready(FakeService::default());
+    to_review(&mut h);
+    let before_len = video_total(&h);
+    let groups_count = h.state().review_groups().len();
+    let steps = h.state().editor().session().history.undo.len();
+
+    h.state_mut().perform(Action::KeepLastOnly("span_0".into()));
+    h.step();
+
+    // Apply retakes with refine
+    h.state_mut().perform(Action::ApplyRetakes);
+    step_until(&mut h, "removed", |a| a.review_groups().len() == groups_count - 1);
+
+    // Exactly one undo step
+    assert_eq!(h.state().editor().session().history.undo.len(), steps + 1);
+    let cut_len = video_total(&h);
+    assert!(cut_len < before_len);
+
+    // Undo brings it back
+    click(&mut h, "Undo");
+    h.step();
+    assert!((video_total(&h) - before_len).abs() < 1e-3);
+    assert_eq!(h.state().review_groups().len(), groups_count);
+    assert_eq!(h.state().review_stage(), "review");
+
+    // Redo re-applies the cuts
+    click(&mut h, "Redo");
+    h.step();
+    assert!((video_total(&h) - cut_len).abs() < 1e-3);
+    assert_eq!(h.state().review_groups().len(), groups_count - 1);
+    assert_eq!(h.state().review_stage(), "review");
 }

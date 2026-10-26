@@ -191,6 +191,8 @@ pub struct FakeService {
     pub refine: bool,
     /// `refine` answers with ranges that break the rules, to test the fallbacks.
     pub bad_refine: bool,
+    /// `refine` fails with this message, to test error handling.
+    pub fail_refine: Option<String>,
 }
 
 impl Default for FakeService {
@@ -205,6 +207,7 @@ impl Default for FakeService {
             skip_questions: false,
             refine: true,
             bad_refine: false,
+            fail_refine: None,
         }
     }
 }
@@ -403,7 +406,11 @@ impl RetakeService for FakeService {
             return None;
         }
         let bad = self.bad_refine;
+        let me = self.clone();
         Some(spawn_job(self.steps, self.step_delay, "Refining the cuts".into(), move || {
+            if let Some(why) = &me.fail_refine {
+                return Err(why.clone());
+            }
             let secs = |t: Tick| t.0 as f64 / 254_016_000_000.0;
             // how far past the sentence each mode reaches, standing in for the real audio analysis
             let (before, after) = match request.mode {
