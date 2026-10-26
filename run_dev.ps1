@@ -43,6 +43,8 @@ if ($running) {
 try {
     $caps = Invoke-RestMethod "$url/v1/capabilities"
     Write-Host ("Service ready: adjudicate={0}, refine={1}" -f $caps.adjudicate, $caps.refine)
+    Write-Host "Service log (full errors): $(Join-Path $root 'service\data\logs\service.log')"
+    Write-Host "  last lines:  Get-Content '$(Join-Path $root 'service\data\logs\service.log')' -Tail 60"
     if ($ServiceOnly) {
         Write-Host "Service only. Press Ctrl+C to stop."
         if ($service) { $service.WaitForExit() }

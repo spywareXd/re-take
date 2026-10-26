@@ -137,7 +137,8 @@ class JobManager:
             self._finish(job, FAILED, error="Could not read the file")
         except Exception:                                          # never leak stack traces or server paths to the editor
             logger.exception("job %s (%s) failed", job.id, job.kind)
-            self._finish(job, FAILED, error="The retake service could not finish: something went wrong while processing the file. See the service log.")
+            # the editor adds "The retake service could not finish:" itself; the job id is the key into the service log
+            self._finish(job, FAILED, error=f"Something went wrong while processing the file (job {job.id}). See the service log.")
         finally:
             if acquired:
                 self._heavy.release()
