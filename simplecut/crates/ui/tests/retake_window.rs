@@ -741,7 +741,16 @@ fn remove_in_each_mode_cuts_exactly_planned_ranges_and_ordering() {
         h.state_mut().perform(Action::KeepLastOnly("span_0".into()));
         h.step();
 
-        // Apply retakes and wait for refine to complete
+        // Wait for debounce refine so review_planned_ranges() holds the refined plan
+        let initial_planned = h.state().review_planned_ranges();
+        std::thread::sleep(std::time::Duration::from_millis(600));
+        step_until(&mut h, "debounce refined", |a| a.review_planned_ranges() != initial_planned);
+        h.step();
+
+        let planned_ranges = h.state().review_planned_ranges();
+        assert!(!planned_ranges.is_empty(), "has planned ranges");
+
+        // Apply retakes (uses the cached refined plan)
         h.state_mut().perform(Action::ApplyRetakes);
         step_until(&mut h, "applied", |a| a.banner().is_some_and(|b| !b.error && b.text.contains("Removed")));
 
@@ -753,6 +762,28 @@ fn remove_in_each_mode_cuts_exactly_planned_ranges_and_ordering() {
         let v_track = &seq.tracks[0];
         let total_clip_dur: f64 = v_track.clips.iter().map(|c| s_of(c.duration)).sum();
         assert!((total_clip_dur - after).abs() < 1e-4);
+
+        // Assert that the removed ranges on the timeline match review_planned_ranges()
+        let mut actual_removed: Vec<(f64, f64)> = Vec::new();
+        if s_of(v_track.clips[0].source_in) > 1e-4 {
+            actual_removed.push((0.0, s_of(v_track.clips[0].source_in)));
+        }
+        for w in v_track.clips.windows(2) {
+            let cut_start = s_of(w[0].source_in) + s_of(w[0].duration);
+            let cut_end = s_of(w[1].source_in);
+            actual_removed.push((cut_start, cut_end));
+        }
+        let last_clip = &v_track.clips[v_track.clips.len() - 1];
+        if s_of(last_clip.source_in) + s_of(last_clip.duration) < 4.0 - 1e-4 {
+            actual_removed.push((s_of(last_clip.source_in) + s_of(last_clip.duration), 4.0));
+        }
+        let planned_secs: Vec<(f64, f64)> = planned_ranges.iter().map(|(s, e)| (s_of(*s), s_of(*e))).collect();
+        assert_eq!(actual_removed.len(), planned_secs.len(), "cut pieces count matches planned ranges");
+        for (act, exp) in actual_removed.iter().zip(&planned_secs) {
+            assert!((act.0 - exp.0).abs() < 0.035, "cut start matches planned start: {} vs {}", act.0, exp.0);
+            assert!((act.1 - exp.1).abs() < 0.035, "cut end matches planned end: {} vs {}", act.1, exp.1);
+        }
+
         match mode {
             CutMode::RetakeOnly => {
                 assert_eq!(s_of(v_track.clips[0].source_in), 0.0);
@@ -785,6 +816,12 @@ fn bad_refine_cuts_inside_allowed_bounds_notes_in_info_and_one_undo() {
     let steps = h.state().editor().session().history.undo.len();
     let before = video_total(&h);
 
+    // Get spans of sentences 3:0 and 4:0 before removing them
+    let (s3, e3) = h.state().sentence_span_f64("3:0").expect("span 3:0");
+    let (s4, e4) = h.state().sentence_span_f64("4:0").expect("span 4:0");
+    let widen = simplecut_core::WIDEN_SECS;
+    let allowed_bounds = [(s3 - widen, e3 + widen), (s4 - widen, e4 + widen)];
+
     h.state_mut().perform(Action::KeepLastOnly("span_0".into()));
     h.step();
 
@@ -799,6 +836,28 @@ fn bad_refine_cuts_inside_allowed_bounds_notes_in_info_and_one_undo() {
     let banner = h.state().banner().expect("banner present");
     assert!(!banner.error);
     assert!(banner.text.contains("whole sentences are cut instead") || banner.text.contains("could not be used"));
+
+    // Assert that every removed piece lies inside some removed sentence's span widened by WIDEN_SECS
+    let seq = h.state().editor().sequence().expect("sequence exists");
+    let v_track = &seq.tracks[0];
+    let mut actual_removed: Vec<(f64, f64)> = Vec::new();
+    if s_of(v_track.clips[0].source_in) > 1e-4 {
+        actual_removed.push((0.0, s_of(v_track.clips[0].source_in)));
+    }
+    for w in v_track.clips.windows(2) {
+        let cut_start = s_of(w[0].source_in) + s_of(w[0].duration);
+        let cut_end = s_of(w[1].source_in);
+        actual_removed.push((cut_start, cut_end));
+    }
+    let last_clip = &v_track.clips[v_track.clips.len() - 1];
+    if s_of(last_clip.source_in) + s_of(last_clip.duration) < 4.0 - 1e-4 {
+        actual_removed.push((s_of(last_clip.source_in) + s_of(last_clip.duration), 4.0));
+    }
+    assert!(!actual_removed.is_empty(), "some cuts were applied");
+    for (cs, ce) in &actual_removed {
+        let inside = allowed_bounds.iter().any(|(b_start, b_end)| *cs >= *b_start - 1e-3 && *ce <= *b_end + 1e-3);
+        assert!(inside, "removed piece [{cs}, {ce}] must lie inside widened sentence span bounds: {allowed_bounds:?}");
+    }
 }
 
 #[test]
@@ -807,6 +866,7 @@ fn hand_edited_sentence_span_is_cut_exactly_as_set_in_every_mode() {
         return;
     }
     for mode in [CutMode::RetakeOnly, CutMode::Anchored, CutMode::Sentences] {
+        // Case 1: single sentence removed and hand-edited
         let (mut h, _) = ready(FakeService::default());
         to_review(&mut h);
 
@@ -835,6 +895,68 @@ fn hand_edited_sentence_span_is_cut_exactly_as_set_in_every_mode() {
         assert!((s_of(c1.start) - new_s).abs() < 1e-4);
         assert!((s_of(c1.source_in) - new_e).abs() < 1e-4);
         assert!((s_of(c1.duration) - (4.0 - new_e)).abs() < 1e-4);
+
+        // Case 2: TWO removed sentences, one edited and one not. Refine is called for the unedited one.
+        let count = Arc::new(AtomicUsize::new(0));
+        let last_req = Arc::new(Mutex::new(None));
+        let service = CountingService { inner: FakeService::default(), refine_count: count.clone(), last_request: last_req.clone() };
+        let (mut h2, _) = ready_any(Box::new(service));
+        to_review(&mut h2);
+
+        h2.state_mut().perform(Action::SetCutMode(mode));
+        let new_s2 = 0.30;
+        let new_e2 = 0.40;
+        // Untick both 3:0 (in group 0) and 9:0 (in group 1)
+        h2.state_mut().perform(Action::SetKeep { sentence: "3:0".into(), keep: false });
+        h2.state_mut().perform(Action::SetKeep { sentence: "9:0".into(), keep: false });
+        // Only 3:0 is edited
+        h2.state_mut().perform(Action::SetSentenceSpan { sentence: "3:0".into(), start: new_s2, end: new_e2 });
+        h2.step();
+
+        // Wait for debounce so review_planned_ranges holds the refined plan
+        let initial_planned = h2.state().review_planned_ranges();
+        std::thread::sleep(std::time::Duration::from_millis(600));
+        step_until(&mut h2, "debounce refined 2", |a| a.review_planned_ranges() != initial_planned);
+        h2.step();
+
+        // Get planned ranges just before Remove
+        let planned_ranges = h2.state().review_planned_ranges();
+
+        h2.state_mut().perform(Action::ApplyRetakes);
+        step_until(&mut h2, "applied case 2", |a| a.banner().is_some_and(|b| !b.error && b.text.contains("Removed")));
+
+        // Assert refine request carried only the unedited id "9:0"
+        let req = last_req.lock().unwrap().clone().expect("refine request recorded");
+        assert_eq!(req.remove, vec!["9:0"], "refine carried only unedited sentence id in mode {mode:?}");
+
+        // Assert the cuts on the timeline:
+        let seq2 = h2.state().editor().sequence().expect("sequence exists");
+        let v_track2 = &seq2.tracks[0];
+        let mut actual_removed: Vec<(f64, f64)> = Vec::new();
+        if s_of(v_track2.clips[0].source_in) > 1e-4 {
+            actual_removed.push((0.0, s_of(v_track2.clips[0].source_in)));
+        }
+        for w in v_track2.clips.windows(2) {
+            let cut_start = s_of(w[0].source_in) + s_of(w[0].duration);
+            let cut_end = s_of(w[1].source_in);
+            actual_removed.push((cut_start, cut_end));
+        }
+        let last_clip = &v_track2.clips[v_track2.clips.len() - 1];
+        if s_of(last_clip.source_in) + s_of(last_clip.duration) < 4.0 - 1e-4 {
+            actual_removed.push((s_of(last_clip.source_in) + s_of(last_clip.duration), 4.0));
+        }
+
+        // First cut is the edited sentence [new_s2, new_e2] cut exactly as set
+        assert!((actual_removed[0].0 - new_s2).abs() < 1e-3, "first cut start matches edited start: {} vs {}", actual_removed[0].0, new_s2);
+        assert!((actual_removed[0].1 - new_e2).abs() < 1e-3, "first cut end matches edited end: {} vs {}", actual_removed[0].1, new_e2);
+
+        // Remaining cut is refined range for 9:0
+        let planned_secs: Vec<(f64, f64)> = planned_ranges.iter().map(|(s, e)| (s_of(*s), s_of(*e))).collect();
+        assert_eq!(actual_removed.len(), planned_secs.len());
+        for (act, exp) in actual_removed.iter().zip(&planned_secs) {
+            assert!((act.0 - exp.0).abs() < 0.035, "cut start matches planned: {} vs {}", act.0, exp.0);
+            assert!((act.1 - exp.1).abs() < 0.035, "cut end matches planned: {} vs {}", act.1, exp.1);
+        }
     }
 }
 
@@ -871,6 +993,7 @@ fn changing_tick_or_mode_while_refine_in_flight_never_applies_old_plan() {
     if skip() {
         return;
     }
+    // Variant 1: change mode while refine is in flight
     let (mut h, _) = ready(FakeService::default());
     to_review(&mut h);
     let before_len = video_total(&h);
@@ -895,6 +1018,33 @@ fn changing_tick_or_mode_while_refine_in_flight_never_applies_old_plan() {
     // The old plan must NOT have been applied to the timeline
     assert_eq!(video_total(&h), before_len);
     assert_eq!(h.state().editor().session().history.undo.len(), steps);
+
+    // Variant 2: change tick while refine is in flight
+    let (mut h2, _) = ready(FakeService::default());
+    to_review(&mut h2);
+    let before_len2 = video_total(&h2);
+    let steps2 = h2.state().editor().session().history.undo.len();
+
+    h2.state_mut().perform(Action::KeepLastOnly("span_0".into()));
+    h2.step();
+
+    h2.state_mut().perform(Action::ApplyRetakes);
+    h2.step();
+    assert!(h2.state().review_refining());
+
+    // Change tick while refine is in flight
+    h2.state_mut().perform(Action::SetKeep { sentence: "3:0".into(), keep: true });
+    h2.step();
+
+    // Wait until background refine finishes
+    step_until(&mut h2, "refine settled 2", |a| !a.review_refining());
+
+    assert_eq!(video_total(&h2), before_len2);
+    assert_eq!(h2.state().editor().session().history.undo.len(), steps2);
+
+    let banner = h2.state().banner().expect("info banner shown");
+    assert!(!banner.error);
+    assert_eq!(banner.text, "The selection changed while the cuts were being refined. Press Remove again.");
 }
 
 #[test]
@@ -942,13 +1092,31 @@ fn preview_before_and_after_debounce_matches_planned_ranges_and_rects() {
     let (mut h, _) = ready(FakeService::default());
     to_review(&mut h);
 
-    // Untick sentences of span_0
+    let item = h.state().review_item().expect("review item exists");
+
+    // Untick sentences of span_0 (sentences 3:0 and 4:0 removed, 5:0 kept)
     h.state_mut().perform(Action::KeepLastOnly("span_0".into()));
     h.step();
 
-    // Before reply/debounce: skips equal whole sentence spans
-    let initial_skips = h.state().player().current_skips().to_vec();
-    assert!(!initial_skips.is_empty(), "has skips before debounce");
+    // Before reply/debounce: skips equal whole sentence spans mapped to timeline
+    let s3 = h.state().review_sentence_span("3:0").expect("span 3:0");
+    let s4 = h.state().review_sentence_span("4:0").expect("span 4:0");
+    let mut expected_before = Vec::new();
+    for (s, e) in [s3, s4] {
+        expected_before.extend(h.state().editor().timeline_ranges_of(item, s, e));
+    }
+    expected_before.sort_by_key(|r| r.0);
+    let mut merged_before: Vec<(Tick, Tick)> = Vec::new();
+    for (s, e) in expected_before {
+        if let Some(last) = merged_before.last_mut()
+            && s <= last.1
+        {
+            last.1 = last.1.max(e);
+            continue;
+        }
+        merged_before.push((s, e));
+    }
+    assert_eq!(h.state().player().current_skips(), merged_before.as_slice(), "before reply: skips equal sentence spans mapped to timeline");
 
     let planned_before = h.state().review_planned_ranges();
 
@@ -960,13 +1128,38 @@ fn preview_before_and_after_debounce_matches_planned_ranges_and_rects() {
     });
     h.step();
 
-    // After debounce: player current_skips equals planned ranges mapped to timeline
-    let refined_skips = h.state().player().current_skips().to_vec();
-    assert_ne!(refined_skips, initial_skips, "skips updated from refined ranges");
+    // After debounce: player current_skips equals planned ranges mapped to timeline, merged and sorted
+    let planned_after = h.state().review_planned_ranges();
+    let mut expected_after = Vec::new();
+    for (s, e) in &planned_after {
+        expected_after.extend(h.state().editor().timeline_ranges_of(item, *s, *e));
+    }
+    expected_after.sort_by_key(|r| r.0);
+    let mut merged_after: Vec<(Tick, Tick)> = Vec::new();
+    for (s, e) in expected_after {
+        if let Some(last) = merged_after.last_mut()
+            && s <= last.1
+        {
+            last.1 = last.1.max(e);
+            continue;
+        }
+        merged_after.push((s, e));
+    }
+    assert_eq!(h.state().player().current_skips(), merged_after.as_slice(), "after reply: skips equal planned ranges mapped, merged, and sorted");
 
-    // review_marker_rects match the refined ranges
+    // review_marker_rects() has one rect per planned range on the timeline and x-extent matches
     let rects = h.state().review_marker_rects();
-    assert!(!rects.is_empty(), "marker rects exist for refined cuts");
+    let mut timeline_ranges = Vec::new();
+    for (s, e) in &planned_after {
+        timeline_ranges.extend(h.state().editor().timeline_ranges_of(item, *s, *e));
+    }
+    assert_eq!(rects.len(), timeline_ranges.len(), "one marker rect per planned range on timeline");
+    for (rect, (s, e)) in rects.iter().zip(&timeline_ranges) {
+        let x0 = h.state().timeline_x(*s).expect("x0 from timeline hook");
+        let x1 = h.state().timeline_x(*e).expect("x1 from timeline hook");
+        assert!((rect.min.x - x0).abs() < 1.0, "rect min.x ({}) matches timeline_x start ({})", rect.min.x, x0);
+        assert!((rect.max.x - x1).abs() < 1.0, "rect max.x ({}) matches timeline_x end ({})", rect.max.x, x1);
+    }
 }
 
 #[test]
@@ -1005,4 +1198,188 @@ fn refine_remove_is_one_undo_step_and_undo_redo_with_review_open_works() {
     assert!((video_total(&h) - cut_len).abs() < 1e-3);
     assert_eq!(h.state().review_groups().len(), groups_count - 1);
     assert_eq!(h.state().review_stage(), "review");
+}
+
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
+
+struct CountingService {
+    inner: FakeService,
+    refine_count: Arc<AtomicUsize>,
+    last_request: Arc<Mutex<Option<simplecut_core::RefineRequest>>>,
+}
+
+impl simplecut_core::RetakeService for CountingService {
+    fn name(&self) -> String {
+        self.inner.name()
+    }
+    fn capabilities(&self) -> simplecut_core::Capabilities {
+        self.inner.capabilities()
+    }
+    fn analyze(&self, request: simplecut_core::AnalysisRequest) -> Box<dyn simplecut_core::AnalysisJob> {
+        self.inner.analyze(request)
+    }
+    fn resolve(&self, request: simplecut_core::ResolveRequest) -> Box<dyn simplecut_core::AnalysisJob> {
+        self.inner.resolve(request)
+    }
+    fn adjudicate(&self, request: simplecut_core::AdjudicateRequest) -> Option<Box<dyn simplecut_core::AnalysisJob>> {
+        self.inner.adjudicate(request)
+    }
+    fn refine(&self, request: simplecut_core::RefineRequest) -> Option<Box<dyn simplecut_core::AnalysisJob>> {
+        self.refine_count.fetch_add(1, Ordering::SeqCst);
+        *self.last_request.lock().unwrap() = Some(request.clone());
+        self.inner.refine(request)
+    }
+}
+
+fn ready_any(service: Box<dyn simplecut_core::RetakeService>) -> (Win, std::path::PathBuf) {
+    let dir = common::scratch("window-retakes-counting");
+    let script = Script::default();
+    script.media.lock().unwrap().push_back(vec![common::make_clip(&dir, "talk.mp4", 4), common::make_music(&dir, "bed.wav", 6)]);
+    let mut h = window_with(script.clone(), Some(service));
+    click(&mut h, "Import");
+    step_until(&mut h, "the import", |a| a.editor().media().len() == 2);
+    let video = item(&h, "talk.mp4");
+    h.state_mut().perform(Action::AddToTimeline(video, Lane::Main));
+    h.state_mut().perform(Action::SelectClips { clips: vec![], add: false });
+    h.step();
+    h.step();
+    (h, dir)
+}
+
+#[test]
+fn failing_refine_is_not_retried_in_a_loop_when_idle() {
+    if skip() {
+        return;
+    }
+    let count = Arc::new(AtomicUsize::new(0));
+    let last_req = Arc::new(Mutex::new(None));
+    let service = CountingService {
+        inner: FakeService { fail_refine: Some("Model failed".into()), ..Default::default() },
+        refine_count: count.clone(),
+        last_request: last_req.clone(),
+    };
+    let (mut h, _) = ready_any(Box::new(service));
+    to_review(&mut h);
+
+    // Untick sentences of span_0 to cause refine to be needed
+    h.state_mut().perform(Action::KeepLastOnly("span_0".into()));
+    h.step();
+
+    // Idle for 3 seconds of frames
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(3000);
+    while std::time::Instant::now() < deadline {
+        h.step();
+        std::thread::sleep(std::time::Duration::from_millis(16));
+    }
+
+    assert!(count.load(Ordering::SeqCst) <= 1, "failing refine retried in a loop: got {} calls", count.load(Ordering::SeqCst));
+}
+
+#[test]
+fn successful_refine_is_not_requested_again_when_idle() {
+    if skip() {
+        return;
+    }
+    let count = Arc::new(AtomicUsize::new(0));
+    let last_req = Arc::new(Mutex::new(None));
+    let service =
+        CountingService { inner: FakeService { fail_refine: None, ..Default::default() }, refine_count: count.clone(), last_request: last_req.clone() };
+    let (mut h, _) = ready_any(Box::new(service));
+    to_review(&mut h);
+
+    // Untick sentences of span_0 to cause refine to be needed
+    h.state_mut().perform(Action::KeepLastOnly("span_0".into()));
+    h.step();
+
+    // Idle for 3 seconds of frames
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(3000);
+    while std::time::Instant::now() < deadline {
+        h.step();
+        std::thread::sleep(std::time::Duration::from_millis(16));
+    }
+
+    assert_eq!(count.load(Ordering::SeqCst), 1, "successful refine requested multiple times: got {} calls", count.load(Ordering::SeqCst));
+}
+
+#[test]
+fn failing_refine_retries_once_when_tick_changes() {
+    if skip() {
+        return;
+    }
+    let count = Arc::new(AtomicUsize::new(0));
+    let last_req = Arc::new(Mutex::new(None));
+    let service = CountingService {
+        inner: FakeService { fail_refine: Some("Model failed".into()), ..Default::default() },
+        refine_count: count.clone(),
+        last_request: last_req.clone(),
+    };
+    let (mut h, _) = ready_any(Box::new(service));
+    to_review(&mut h);
+
+    // Untick sentences of span_0 to cause refine to be needed
+    h.state_mut().perform(Action::KeepLastOnly("span_0".into()));
+    h.step();
+
+    // Wait until the first request completes (fails)
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(1500);
+    while std::time::Instant::now() < deadline {
+        h.step();
+        std::thread::sleep(std::time::Duration::from_millis(16));
+    }
+    assert_eq!(count.load(Ordering::SeqCst), 1);
+
+    // Change a tick: untick sentence "18:0" in another group
+    h.state_mut().perform(Action::SetKeep { sentence: "18:0".into(), keep: false });
+    h.step();
+
+    // Idle for 2 seconds
+    let deadline2 = std::time::Instant::now() + std::time::Duration::from_millis(2000);
+    while std::time::Instant::now() < deadline2 {
+        h.step();
+        std::thread::sleep(std::time::Duration::from_millis(16));
+    }
+
+    // Exactly one more request for the new key, not a loop
+    assert_eq!(count.load(Ordering::SeqCst), 2, "changing tick caused {} refine calls, expected 2", count.load(Ordering::SeqCst));
+}
+
+#[test]
+fn failing_refine_retries_once_when_remove_pressed_and_shows_banner() {
+    if skip() {
+        return;
+    }
+    let count = Arc::new(AtomicUsize::new(0));
+    let last_req = Arc::new(Mutex::new(None));
+    let service = CountingService {
+        inner: FakeService { fail_refine: Some("Model failed".into()), ..Default::default() },
+        refine_count: count.clone(),
+        last_request: last_req.clone(),
+    };
+    let (mut h, _) = ready_any(Box::new(service));
+    to_review(&mut h);
+
+    // Untick sentences of span_0
+    h.state_mut().perform(Action::KeepLastOnly("span_0".into()));
+    h.step();
+
+    // Wait for the background request to fail silently
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(1500);
+    while std::time::Instant::now() < deadline {
+        h.step();
+        std::thread::sleep(std::time::Duration::from_millis(16));
+    }
+    assert_eq!(count.load(Ordering::SeqCst), 1);
+    assert!(h.state().banner().is_none_or(|b| !b.error), "background failure must stay silent (no error banner)");
+
+    // User clicks Remove
+    h.state_mut().perform(Action::ApplyRetakes);
+    step_until(&mut h, "failed with banner", |a| a.banner().is_some_and(|b| b.error));
+
+    // Exactly one more request was made (total 2)
+    assert_eq!(count.load(Ordering::SeqCst), 2);
+
+    let banner = h.state().banner().expect("banner");
+    assert!(banner.text.contains("Model failed"));
+    assert_eq!(banner.action.as_ref().map(|(l, _)| l.as_str()), Some("Cut whole sentences instead"));
 }

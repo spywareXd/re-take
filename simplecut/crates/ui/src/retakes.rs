@@ -120,6 +120,7 @@ pub(crate) struct Review {
     pub pending_apply: bool,
     pub plan_cache: Option<(PlanKey, String)>,
     pub debounce: Option<(PlanKey, std::time::Instant)>,
+    pub refine_failed_for: Option<PlanKey>,
 }
 
 impl Review {
@@ -484,7 +485,10 @@ impl SimpleCutApp {
                     }
                     if g.start <= c.end && c.start <= g.end {
                         let touched_s: Vec<&Sentence> = g.sentences.iter().filter(|s| s.start <= c.end && c.start <= s.end).collect();
-                        let sid = if touched_s.len() == 1 { Some(touched_s[0].id.clone()) } else { None };
+                        let sid = match touched_s.as_slice() {
+                            [only] => Some(only.id.clone()),
+                            _ => None,
+                        };
                         return Some((i % theme::GROUP_COLORS.len(), sid));
                     }
                     None
@@ -757,6 +761,7 @@ impl SimpleCutApp {
             pending_apply: false,
             plan_cache: None,
             debounce: None,
+            refine_failed_for: None,
         };
         self.review_tick(&mut r);
         let handled = r.groups.iter().filter(|g| !self.actionable(item, g)).count();
@@ -782,6 +787,10 @@ impl SimpleCutApp {
                     r.seen_on.insert(s.id.clone());
                 }
             }
+        }
+        let current_key = self.plan_key(r);
+        if r.refine_failed_for.as_ref().is_some_and(|k| k != &current_key) {
+            r.refine_failed_for = None;
         }
         self.poll_advice(r);
         self.poll_refine(r);
@@ -1041,6 +1050,9 @@ impl SimpleCutApp {
     }
 
     fn apply_retakes(&mut self) {
+        if let Some(Stage::Review(r)) = &mut self.retakes.stage {
+            r.refine_failed_for = None;
+        }
         let (key, has_cache, refine_avail, already_refining) = {
             let Some(Stage::Review(r)) = &self.retakes.stage else { return };
             let key = self.plan_key(r);
@@ -1076,6 +1088,7 @@ impl SimpleCutApp {
         self.banner = None;
         if let Some(Stage::Review(r)) = &mut self.retakes.stage {
             r.plan_cache = None;
+            r.refine_failed_for = None;
         }
         let Some(Stage::Review(r)) = &self.retakes.stage else { return };
         let planned = self.planned_cuts(r);
@@ -1102,6 +1115,7 @@ impl SimpleCutApp {
         match state {
             JobState::Done(reply) => {
                 if started_key.as_ref() == Some(&current_key) {
+                    r.refine_failed_for = None;
                     r.plan_cache = Some((current_key, reply));
                     if was_pending {
                         r.pending_apply = false;
@@ -1111,11 +1125,17 @@ impl SimpleCutApp {
                     }
                 } else {
                     // key changed meanwhile: discard reply and stop!
+                    if was_pending {
+                        self.info_text("The selection changed while the cuts were being refined. Press Remove again.");
+                    }
                     r.pending_apply = false;
                 }
             }
             JobState::Failed(why) => {
                 r.pending_apply = false;
+                if let Some(k) = started_key {
+                    r.refine_failed_for = Some(k);
+                }
                 if was_pending {
                     self.banner = Some(crate::app::Banner {
                         text: why,
@@ -1140,6 +1160,10 @@ impl SimpleCutApp {
         }
         let current_key = self.plan_key(r);
         if current_key.removed.is_empty() {
+            r.debounce = None;
+            return;
+        }
+        if r.refine_failed_for.as_ref() == Some(&current_key) {
             r.debounce = None;
             return;
         }
