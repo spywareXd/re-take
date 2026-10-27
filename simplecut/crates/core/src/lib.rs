@@ -25,7 +25,9 @@ pub use player::{AudioOutput, FillFn, PlayState, Player};
 pub use refine::{CutMode, RefinedCuts, WIDEN_SECS, ids_to_refine, plan_cuts};
 pub use renderer::{PreviewRenderer, RenderedFrame};
 pub use retake::{Analysis, ApplyReport, CutProposal, CutScope, Decision, Group, Presence, Rejected, RetakeDocument, groups, groups_with_offset};
-pub use review::{Advice, Candidates, Capabilities, Checked, Groups, Label, LabelsRequest, Pair, PairClass, ReviewGroup, Sentence, Stage, Verdict};
+pub use review::{
+    Advice, Candidates, Capabilities, Checked, Groups, KeeperInfo, KeeperProvider, Label, LabelsRequest, Pair, PairClass, ReviewGroup, Sentence, Stage, Verdict,
+};
 pub use snapshot::{PreviewFrame, Snapshot, Target};
 pub use thumbnails::Thumbnails;
 pub use view::{ClipView, ImportReport, MediaEntry, SequenceView, TrackView};

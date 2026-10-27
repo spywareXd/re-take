@@ -11,7 +11,9 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use serde_json::{Value, json};
-use simplecut_core::{AdjudicateRequest, AnalysisJob, AnalysisRequest, Capabilities, ItemId, JobState, RefineRequest, ResolveRequest, RetakeService, Tick};
+use simplecut_core::{
+    AdjudicateRequest, AnalysisJob, AnalysisRequest, Capabilities, ItemId, JobState, KeeperInfo, RefineRequest, ResolveRequest, RetakeService, Tick,
+};
 
 /// The address the service listens on unless told otherwise.
 pub const DEFAULT_URL: &str = "http://127.0.0.1:8765";
@@ -29,6 +31,8 @@ pub struct HttpService {
     base: String,
     agent: ureq::Agent,
     capabilities: Arc<Mutex<Capabilities>>,
+    /// The keepers the service offers, as last reported (None: not reported, e.g. an older service).
+    keeper: Arc<Mutex<Option<KeeperInfo>>>,
     reachable: Arc<AtomicBool>,
     /// Where each analysed file is: `resolve` does not carry the path, the service needs it.
     paths: Arc<Mutex<Vec<(ItemId, String)>>>,
@@ -43,6 +47,7 @@ impl HttpService {
             base: base_url.trim().trim_end_matches('/').to_string(),
             agent: agent(),
             capabilities: Arc::new(Mutex::new(Capabilities::default())),
+            keeper: Arc::new(Mutex::new(None)),
             reachable: Arc::new(AtomicBool::new(false)),
             paths: Arc::new(Mutex::new(Vec::new())),
         };
@@ -53,7 +58,7 @@ impl HttpService {
     /// Ask the service again what it can do (after it was started late, for instance). Every
     /// request also does this first, in its own thread.
     pub fn refresh(&self) {
-        refresh_capabilities(&self.agent, &self.base, &self.capabilities, &self.reachable);
+        refresh_capabilities(&self.agent, &self.base, &self.capabilities, &self.keeper, &self.reachable);
     }
 
     /// Whether the last attempt to reach the service worked.
@@ -67,24 +72,31 @@ impl HttpService {
     }
 
     fn start(&self, endpoint: &str, body: String) -> Box<dyn AnalysisJob> {
-        self.start_as(endpoint, body, false)
+        self.start_as(Method::Post, endpoint, body, false)
     }
 
     /// `immediate`: the service answers in one reply (no job to follow), so Cancel cannot reach it;
     /// the job reads as cancelled at once and the late answer is dropped.
-    fn start_as(&self, endpoint: &str, body: String, immediate: bool) -> Box<dyn AnalysisJob> {
+    fn start_as(&self, method: Method, endpoint: &str, body: String, immediate: bool) -> Box<dyn AnalysisJob> {
         let state = Arc::new(Mutex::new(JobState::Running { fraction: 0.0, status: "Contacting the retake service".into() }));
         let cancel = Arc::new(AtomicBool::new(false));
         let (agent, base, endpoint) = (self.agent.clone(), self.base.clone(), endpoint.to_string());
         let (thread_state, thread_cancel) = (Arc::clone(&state), Arc::clone(&cancel));
-        let (caps, reachable) = (Arc::clone(&self.capabilities), Arc::clone(&self.reachable));
+        let (caps, keeper, reachable) = (Arc::clone(&self.capabilities), Arc::clone(&self.keeper), Arc::clone(&self.reachable));
         let spawned = std::thread::Builder::new().name("retake-http".into()).spawn(move || {
-            refresh_capabilities(&agent, &base, &caps, &reachable);
+            refresh_capabilities(&agent, &base, &caps, &keeper, &reachable);
             let end = if immediate {
-                run_once(&agent, &base, &endpoint, &body, &thread_state)
+                run_once(&agent, method, &base, &endpoint, &body, &thread_state)
             } else {
                 run_job(&agent, &base, &endpoint, &body, &thread_state, &thread_cancel)
             };
+            if let JobState::Done(reply) = &end
+                && method == Method::Put
+                && let Some(info) = serde_json::from_str::<Value>(reply).ok().as_ref().and_then(KeeperInfo::from_json)
+            {
+                *keeper.lock().unwrap_or_else(PoisonError::into_inner) = Some(info);
+                refresh_capabilities(&agent, &base, &caps, &keeper, &reachable);
+            }
             if !(immediate && thread_cancel.load(Ordering::SeqCst)) {
                 set(&thread_state, end);
             }
@@ -107,6 +119,16 @@ impl RetakeService for HttpService {
 
     fn capabilities(&self) -> Capabilities {
         *self.capabilities.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn keeper(&self) -> Option<KeeperInfo> {
+        self.keeper.lock().unwrap_or_else(PoisonError::into_inner).clone()
+    }
+
+    fn set_keeper(&self, id: &str) -> Option<Box<dyn AnalysisJob>> {
+        // an older service has no /v1/keeper: do not offer a switch it cannot make
+        self.keeper()?;
+        Some(self.start_as(Method::Put, "/v1/keeper", json!({ "provider": id }).to_string(), true))
     }
 
     fn analyze(&self, request: AnalysisRequest) -> Box<dyn AnalysisJob> {
@@ -176,7 +198,7 @@ impl RetakeService for HttpService {
             return Some(failed("The retake service does not know this file yet. Run Remove Retakes again."));
         };
         let body = json!({ "path": path, "job": request.job, "remove": request.remove, "mode": request.mode.as_str() });
-        Some(self.start_as("/v1/refine", body.to_string(), true))
+        Some(self.start_as(Method::Post, "/v1/refine", body.to_string(), true))
     }
 }
 
@@ -204,11 +226,13 @@ impl AnalysisJob for HttpJob {
     }
 }
 
-fn refresh_capabilities(agent: &ureq::Agent, base: &str, into: &Mutex<Capabilities>, reachable: &AtomicBool) {
+fn refresh_capabilities(agent: &ureq::Agent, base: &str, into: &Mutex<Capabilities>, keeper: &Mutex<Option<KeeperInfo>>, reachable: &AtomicBool) {
+    let mut info = None;
     let caps = match send(agent, Method::Get, &format!("{base}/v1/capabilities"), None) {
-        Ok(r) if r.status == 200 => serde_json::from_str::<Value>(&r.body)
-            .ok()
-            .map(|v| Capabilities { adjudicate: v["adjudicate"].as_bool().unwrap_or(false), refine: v["refine"].as_bool().unwrap_or(false) }),
+        Ok(r) if r.status == 200 => serde_json::from_str::<Value>(&r.body).ok().map(|v| {
+            info = v.get("keeper").and_then(KeeperInfo::from_json);
+            Capabilities { adjudicate: v["adjudicate"].as_bool().unwrap_or(false), refine: v["refine"].as_bool().unwrap_or(false) }
+        }),
         Ok(r) => {
             log::warn!("capabilities: HTTP {}", r.status);
             None
@@ -220,6 +244,7 @@ fn refresh_capabilities(agent: &ureq::Agent, base: &str, into: &Mutex<Capabiliti
     };
     reachable.store(caps.is_some(), Ordering::SeqCst);
     *into.lock().unwrap_or_else(PoisonError::into_inner) = caps.unwrap_or_default();
+    *keeper.lock().unwrap_or_else(PoisonError::into_inner) = info;
 }
 
 fn failed(why: &str) -> Box<dyn AnalysisJob> {
@@ -227,9 +252,10 @@ fn failed(why: &str) -> Box<dyn AnalysisJob> {
 }
 
 /// One request, one reply (`/v1/refine`): the reply body is the result.
-fn run_once(agent: &ureq::Agent, base: &str, endpoint: &str, body: &str, state: &Mutex<JobState>) -> JobState {
-    set(state, JobState::Running { fraction: 0.5, status: "Refining the cuts".into() });
-    match send(agent, Method::Post, &format!("{base}{endpoint}"), Some(body)) {
+fn run_once(agent: &ureq::Agent, method: Method, base: &str, endpoint: &str, body: &str, state: &Mutex<JobState>) -> JobState {
+    let status = if method == Method::Put { "Switching the keeper" } else { "Refining the cuts" };
+    set(state, JobState::Running { fraction: 0.5, status: status.into() });
+    match send(agent, method, &format!("{base}{endpoint}"), Some(body)) {
         Ok(r) if r.status == 200 => JobState::Done(r.body),
         Ok(r) => JobState::Failed(error_of(&r)),
         Err(e) => JobState::Failed(e),
@@ -307,10 +333,11 @@ fn read_state(body: &str) -> Option<JobState> {
 
 // ── http ───────────────────────────────────────────────────────────────────
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum Method {
     Get,
     Post,
+    Put,
     Delete,
 }
 
@@ -331,6 +358,7 @@ fn send(agent: &ureq::Agent, method: Method, url: &str, body: Option<&str>) -> R
     let result = match method {
         Method::Get => agent.get(url).call(),
         Method::Delete => agent.delete(url).call(),
+        Method::Put => agent.put(url).header("Content-Type", "application/json").send(body.unwrap_or("{}")),
         Method::Post => agent.post(url).header("Content-Type", "application/json").send(body.unwrap_or("{}")),
     };
     let mut response = result.map_err(|e| unreachable(&e))?;

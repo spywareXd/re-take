@@ -426,3 +426,79 @@ fn a_service_cancelling_the_job_ends_cancelled() {
     let s = HttpService::connect(&m.url);
     assert_eq!(wait(&mut *s.analyze(request())), JobState::Cancelled);
 }
+
+// ── keeper choice ──────────────────────────────────────────────────────────
+
+const KEEPER_CAPS: &str = r#"{"adjudicate": true, "refine": true, "keeper": {"current": "finetuned", "default": "finetuned", "providers": {
+    "finetuned": {"available": true, "reason": "decision model"},
+    "gpt-oss": {"available": false, "reason": "no LLM key is configured"},
+    "keep-last": {"available": true, "reason": "always available"}}}}"#;
+
+fn keeper_service() -> Mock {
+    mock(|method, path, body| match (method, path) {
+        ("GET", "/v1/capabilities") => (200, KEEPER_CAPS.into()),
+        ("PUT", "/v1/keeper") if body.contains("keep-last") => {
+            (200, r#"{"current": "keep-last", "default": "finetuned", "providers": {"keep-last": {"available": true, "reason": "always available"}}}"#.into())
+        }
+        ("PUT", "/v1/keeper") => (400, r#"{"error": "Keeper 'gpt-oss' is not available: no LLM key is configured."}"#.into()),
+        _ => (404, "{}".into()),
+    })
+}
+
+#[test]
+fn the_keepers_are_read_from_the_capabilities() {
+    let server = keeper_service();
+    let service = HttpService::connect(&server.url);
+    let info = service.keeper().unwrap();
+    assert_eq!(info.current, "finetuned");
+    assert_eq!(info.providers.len(), 3);
+    assert!(info.provider("finetuned").unwrap().available);
+    let off = info.provider("gpt-oss").unwrap();
+    assert!(!off.available);
+    assert_eq!(off.reason, "no LLM key is configured");
+}
+
+#[test]
+fn an_older_service_has_no_keepers_and_cannot_switch() {
+    let server = mock(|_, _, _| (200, r#"{"adjudicate": true, "refine": true}"#.into()));
+    let service = HttpService::connect(&server.url);
+    assert!(service.keeper().is_none());
+    assert!(service.set_keeper("keep-last").is_none());
+    assert!(server.seen.lock().unwrap().iter().all(|(m, _, _)| m != "PUT"));
+}
+
+#[test]
+fn switching_the_keeper_sends_the_id_and_updates_the_state() {
+    let server = keeper_service();
+    let service = HttpService::connect(&server.url);
+    let mut job = service.set_keeper("keep-last").unwrap();
+    assert!(matches!(wait(job.as_mut()), JobState::Done(_)));
+    let seen = server.seen.lock().unwrap().clone();
+    let put = seen.iter().find(|(m, p, _)| m == "PUT" && p == "/v1/keeper").unwrap();
+    assert_eq!(serde_json::from_str::<Value>(&put.2).unwrap()["provider"], "keep-last");
+}
+
+#[test]
+fn a_refused_switch_shows_the_services_sentence_and_changes_nothing() {
+    let server = keeper_service();
+    let service = HttpService::connect(&server.url);
+    let mut job = service.set_keeper("gpt-oss").unwrap();
+    let JobState::Failed(why) = wait(job.as_mut()) else { panic!("should have failed") };
+    assert!(why.contains("no LLM key is configured"), "{why}");
+    assert_eq!(service.keeper().unwrap().current, "finetuned");
+}
+
+#[test]
+fn hostile_keeper_text_is_cut_and_junk_is_skipped() {
+    let long = "x".repeat(5000);
+    let caps = format!(
+        r#"{{"adjudicate": true, "keeper": {{"current": "{long}", "providers": {{"": {{"available": true}}, "a": {{"available": "yes", "reason": "{long}"}}}}}}}}"#
+    );
+    let server = mock(move |_, _, _| (200, caps.clone()));
+    let service = HttpService::connect(&server.url);
+    let info = service.keeper().unwrap();
+    assert_eq!(info.current.chars().count(), 300);
+    assert_eq!(info.providers.len(), 1);
+    assert!(!info.providers[0].available);
+    assert_eq!(info.providers[0].reason.chars().count(), 300);
+}

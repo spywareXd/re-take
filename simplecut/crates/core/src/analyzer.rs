@@ -22,7 +22,7 @@ use filmcraft_time::Tick;
 use crate::editor::{Editor, ItemId};
 use crate::error::{EditorError, Result};
 use crate::refine::CutMode;
-use crate::review::{self, Capabilities, DocV2, LabelsRequest, PairClass, ReviewGroup, Verdict};
+use crate::review::{self, Capabilities, DocV2, KeeperInfo, LabelsRequest, PairClass, ReviewGroup, Verdict};
 
 /// One file to analyse.
 #[derive(Debug, Clone, PartialEq)]
@@ -110,6 +110,19 @@ pub trait RetakeService: Send + Sync {
 
     /// Ask an LLM which sentences to keep. None when the service cannot.
     fn adjudicate(&self, _request: AdjudicateRequest) -> Option<Box<dyn AnalysisJob>> {
+        None
+    }
+
+    /// The keepers this service offers and the one it uses now. None when it does not say (an
+    /// older service, or one that cannot be reached).
+    fn keeper(&self) -> Option<KeeperInfo> {
+        None
+    }
+
+    /// Use keeper `id` for the next AI suggestions. The job's result is the new keeper state
+    /// (`GET /v1/keeper` form); a refusal fails the job with the service's sentence and changes
+    /// nothing. None when the service cannot switch.
+    fn set_keeper(&self, _id: &str) -> Option<Box<dyn AnalysisJob>> {
         None
     }
 

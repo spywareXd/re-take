@@ -485,12 +485,73 @@ pub struct Capabilities {
     pub refine: bool,
 }
 
+/// One way the service can choose which sentences to keep (`GET /v1/keeper`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KeeperProvider {
+    /// The id to send back, exactly as the service wrote it (`finetuned`, `gpt-oss`, `keep-last`).
+    pub id: String,
+    pub available: bool,
+    /// A plain sentence: why it can or cannot run now. Shown to the user.
+    pub reason: String,
+}
+
+/// The keepers the service offers and the one it uses now.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct KeeperInfo {
+    pub current: String,
+    pub default: String,
+    pub providers: Vec<KeeperProvider>,
+}
+
+/// Longest keeper id or reason read from the service.
+const MAX_KEEPER_TEXT: usize = 300;
+/// Most keepers read from one reply.
+const MAX_KEEPERS: usize = 16;
+
+impl KeeperInfo {
+    /// Read the `keeper` object of the capabilities reply, or the reply of `GET`/`PUT /v1/keeper`.
+    /// None when it is not in the expected form; an entry without an id is skipped. Text from the
+    /// service is cut to a sane length.
+    pub fn from_json(value: &serde_json::Value) -> Option<Self> {
+        let text = |v: &serde_json::Value| v.as_str().map(|s| s.chars().take(MAX_KEEPER_TEXT).collect::<String>());
+        let providers = value.get("providers")?.as_object()?;
+        let mut list: Vec<KeeperProvider> = Vec::new();
+        for (id, p) in providers.iter().take(MAX_KEEPERS) {
+            if id.trim().is_empty() || id.chars().count() > MAX_KEEPER_TEXT {
+                continue;
+            }
+            list.push(KeeperProvider {
+                id: id.clone(),
+                available: p.get("available").and_then(|a| a.as_bool()).unwrap_or(false),
+                reason: p.get("reason").and_then(text).unwrap_or_default(),
+            });
+        }
+        Some(Self {
+            current: value.get("current").and_then(text).unwrap_or_default(),
+            default: value.get("default").and_then(text).unwrap_or_default(),
+            providers: list,
+        })
+    }
+
+    /// The entry for `id`.
+    pub fn provider(&self, id: &str) -> Option<&KeeperProvider> {
+        self.providers.iter().find(|p| p.id == id)
+    }
+}
+
 /// The AI's advice for one group: which sentences to keep.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Advice {
     pub group: String,
+    /// Every sentence to keep. More than one when a keeper keeps several parts of a group.
     pub keep: Vec<String>,
     pub reason: String,
+    /// The keeper is not sure: the user should check this group. The suggestion is the last take.
+    pub unclear: bool,
+    /// Which keeper answered (`finetuned`, `keep-last`); None for the older hosted reply.
+    pub provider: Option<String>,
+    /// How the answer was reached (`model`, `exact_gate`, `empty_fallback`, ...).
+    pub decided_by: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -499,6 +560,12 @@ struct RawAdvice {
     keep: Vec<String>,
     #[serde(default)]
     reason: String,
+    #[serde(default)]
+    unclear: bool,
+    #[serde(default)]
+    provider: Option<String>,
+    #[serde(default)]
+    decided_by: Option<String>,
 }
 
 /// Read the AI's reply for `groups`. Strict: a reply for an unknown group, one that keeps nothing,
@@ -530,7 +597,8 @@ pub fn parse_advice(json: &str, groups: &[ReviewGroup]) -> Result<(Vec<Advice>, 
         }
         let mut keep = r.keep;
         keep.dedup();
-        advice.push(Advice { group: r.group, keep, reason: r.reason });
+        let short = |s: Option<String>| s.map(|s| s.chars().take(MAX_KEEPER_TEXT).collect::<String>()).filter(|s| !s.trim().is_empty());
+        advice.push(Advice { group: r.group, keep, reason: r.reason, unclear: r.unclear, provider: short(r.provider), decided_by: short(r.decided_by) });
     }
     Ok((advice, notes))
 }
@@ -675,11 +743,54 @@ mod tests {
         let Checked::Groups(g) = checked(GROUPS) else { panic!("not groups") };
         let (advice, notes) = parse_advice(ADVICE, &g.groups).unwrap();
         assert!(notes.is_empty(), "{notes:?}");
-        assert_eq!(advice, vec![Advice { group: "span_4".into(), keep: vec!["18:0".into()], reason: advice[0].reason.clone() }]);
+        assert_eq!(
+            advice,
+            vec![Advice {
+                group: "span_4".into(),
+                keep: vec!["18:0".into()],
+                reason: advice[0].reason.clone(),
+                unclear: false,
+                provider: None,
+                decided_by: None
+            }]
+        );
         assert!(!advice[0].reason.is_empty());
 
         assert!(serde_json::from_str::<Capabilities>(CAPS).unwrap().adjudicate);
         assert!(!serde_json::from_str::<Capabilities>("{}").unwrap().adjudicate, "a service that says nothing offers nothing");
+    }
+
+    #[test]
+    fn advice_from_the_keeper_models_may_keep_several_sentences_and_flag_a_group_to_check() {
+        let Checked::Groups(g) = checked(GROUPS) else { panic!("not groups") };
+        let group = g.groups.iter().find(|x| x.sentences.len() >= 2).unwrap();
+        let (a, b) = (group.sentences[0].id.clone(), group.sentences[1].id.clone());
+        let reply = format!(
+            r#"[{{"group":"{}","keep":["{a}","{b}"],"reason":"r","provider":"finetuned","decided_by":"model","model":"m","unclear":true,"probs":{{"{a}":1.0}}}}]"#,
+            group.id
+        );
+        let (advice, notes) = parse_advice(&reply, &g.groups).unwrap();
+        assert!(notes.is_empty(), "{notes:?}");
+        assert_eq!(advice[0].keep, vec![a, b]);
+        assert!(advice[0].unclear);
+        assert_eq!(advice[0].provider.as_deref(), Some("finetuned"));
+        assert_eq!(advice[0].decided_by.as_deref(), Some("model"));
+        // a sentence outside the group still voids the answer, even when others are fine
+        let bad = format!(r#"[{{"group":"{}","keep":["{}","nope"]}}]"#, group.id, group.sentences[0].id);
+        let (advice, notes) = parse_advice(&bad, &g.groups).unwrap();
+        assert!(advice.is_empty() && notes.len() == 1);
+    }
+
+    #[test]
+    fn the_keeper_state_is_read_strictly() {
+        let v: serde_json::Value = serde_json::from_str(r#"{"current":"keep-last","default":"finetuned","providers":{"finetuned":{"available":false,"reason":"Studio is not running"},"keep-last":{"available":true}}}"#).unwrap();
+        let info = KeeperInfo::from_json(&v).unwrap();
+        assert_eq!((info.current.as_str(), info.default.as_str()), ("keep-last", "finetuned"));
+        assert!(!info.provider("finetuned").unwrap().available);
+        assert_eq!(info.provider("finetuned").unwrap().reason, "Studio is not running");
+        assert_eq!(info.provider("keep-last").unwrap().reason, "");
+        assert!(KeeperInfo::from_json(&serde_json::json!({"current": "x"})).is_none(), "no providers: not a keeper state");
+        assert!(KeeperInfo::from_json(&serde_json::json!({"providers": []})).is_none(), "providers must be an object");
     }
 
     #[test]
