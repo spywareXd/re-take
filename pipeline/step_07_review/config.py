@@ -20,6 +20,6 @@ class ReviewConfig:
     unsure_band_enabled: bool = True                  # False reproduces the old single-threshold (t_amb) behaviour
     scorer_model_dir: Optional[str] = None            # default models/final
     scorer_device: Optional[str] = None
-    transcription: dict[str, Any] = field(default_factory=lambda: {"provider": "whisperx", "model_name": "large-v2", "device": "cuda", "compute_type": "float16"})
+    transcription: dict[str, Any] = field(default_factory=lambda: {"provider": "whisperx", "model_name": "large-v2", "device": "cuda", "compute_type": "int8_float16"})
     generator_name: str = GENERATOR_NAME
     generator_version: str = GENERATOR_VERSION
