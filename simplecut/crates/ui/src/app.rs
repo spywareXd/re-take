@@ -116,6 +116,8 @@ pub enum Action {
     AskAi,
     ConfirmAi,
     DeclineAi,
+    /// Use another keeper (`finetuned`, `gpt-oss`, `keep-last`) for the next AI suggestions.
+    SetKeeper(String),
     RedoQuestions,
     GoToSentence(ItemId, Tick),
     PlaySentence(ItemId, Tick),
@@ -412,6 +414,7 @@ impl SimpleCutApp {
             | Action::AskAi
             | Action::ConfirmAi
             | Action::DeclineAi
+            | Action::SetKeeper(_)
             | Action::RedoQuestions
             | Action::GoToSentence(..)
             | Action::PlaySentence(..)

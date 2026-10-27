@@ -1383,3 +1383,134 @@ fn failing_refine_retries_once_when_remove_pressed_and_shows_banner() {
     assert!(banner.text.contains("Model failed"));
     assert_eq!(banner.action.as_ref().map(|(l, _)| l.as_str()), Some("Cut whole sentences instead"));
 }
+
+// ── keeper choice ──────────────────────────────────────────────────────────
+
+struct DoneJob(Option<simplecut_core::JobState>);
+
+impl simplecut_core::AnalysisJob for DoneJob {
+    fn poll(&mut self) -> simplecut_core::JobState {
+        self.0.take().unwrap_or(simplecut_core::JobState::Cancelled)
+    }
+    fn cancel(&mut self) {}
+}
+
+/// A stand-in service with a keeper choice. Its AI answers: keep the last sentence of the first
+/// group asked about, say so is unclear, and name the keeper that answered.
+struct KeeperService {
+    inner: FakeService,
+    current: Mutex<String>,
+    asked: Arc<Mutex<Vec<String>>>,
+}
+
+impl KeeperService {
+    fn info(&self) -> simplecut_core::KeeperInfo {
+        let current = self.current.lock().unwrap().clone();
+        let p = |id: &str, available: bool, reason: &str| simplecut_core::KeeperProvider { id: id.into(), available, reason: reason.into() };
+        simplecut_core::KeeperInfo {
+            current,
+            default: "finetuned".into(),
+            providers: vec![p("finetuned", true, "local model"), p("gpt-oss", false, "no LLM key is configured"), p("keep-last", true, "always available")],
+        }
+    }
+}
+
+impl simplecut_core::RetakeService for KeeperService {
+    fn name(&self) -> String {
+        self.inner.name()
+    }
+    fn capabilities(&self) -> simplecut_core::Capabilities {
+        self.inner.capabilities()
+    }
+    fn analyze(&self, request: simplecut_core::AnalysisRequest) -> Box<dyn simplecut_core::AnalysisJob> {
+        self.inner.analyze(request)
+    }
+    fn resolve(&self, request: simplecut_core::ResolveRequest) -> Box<dyn simplecut_core::AnalysisJob> {
+        self.inner.resolve(request)
+    }
+    fn keeper(&self) -> Option<simplecut_core::KeeperInfo> {
+        Some(self.info())
+    }
+    fn set_keeper(&self, id: &str) -> Option<Box<dyn simplecut_core::AnalysisJob>> {
+        let ok = self.info().provider(id).is_some_and(|p| p.available);
+        let state = if ok {
+            *self.current.lock().unwrap() = id.to_string();
+            simplecut_core::JobState::Done("{}".into())
+        } else {
+            simplecut_core::JobState::Failed(format!("Keeper '{id}' is not available."))
+        };
+        Some(Box::new(DoneJob(Some(state))))
+    }
+    fn adjudicate(&self, request: simplecut_core::AdjudicateRequest) -> Option<Box<dyn simplecut_core::AnalysisJob>> {
+        let current = self.current.lock().unwrap().clone();
+        self.asked.lock().unwrap().push(current.clone());
+        let g = request.groups.first()?;
+        let last = g.sentences.last()?.id.clone();
+        let reply = format!(r#"[{{"group":"{}","keep":["{last}"],"reason":"r","provider":"{current}","decided_by":"empty_fallback","unclear":true}}]"#, g.id);
+        Some(Box::new(DoneJob(Some(simplecut_core::JobState::Done(reply)))))
+    }
+}
+
+fn keeper_window(current: &str) -> (Win, Arc<Mutex<Vec<String>>>) {
+    let asked = Arc::new(Mutex::new(Vec::new()));
+    let service = KeeperService { inner: FakeService { adjudicate: true, ..Default::default() }, current: Mutex::new(current.into()), asked: asked.clone() };
+    let (mut h, _) = ready_any(Box::new(service));
+    to_review(&mut h);
+    (h, asked)
+}
+
+#[test]
+fn the_local_keeper_asks_no_consent_and_a_group_it_doubts_is_flagged_for_a_check() {
+    if skip() {
+        return;
+    }
+    let (mut h, asked) = keeper_window("finetuned");
+    h.get_by_label("Keeper");
+    click(&mut h, "Ask AI to choose");
+    assert!(h.query_by_label("Continue").is_none(), "nothing leaves the machine, so no consent is asked");
+    step_until(&mut h, "the AI", |a| !a.is_analyzing() && a.banner().is_some_and(|b| b.text.contains("AI chose")));
+    assert_eq!(asked.lock().unwrap().as_slice(), ["finetuned"]);
+    assert!(h.state().banner().is_some_and(|b| b.text.contains("1 group needs a check")), "{:?}", h.state().banner());
+    let unclear = h.state().review_unclear();
+    assert_eq!(unclear.len(), 1);
+    // the suggestion is only a tick; nothing was cut
+    let tagged = h.state().review_groups().iter().flat_map(|g| g.3.clone()).filter(|id| h.state().review_origin(id) == Some("ai")).count();
+    assert!(tagged >= 2, "the suggestion fills in ticks");
+}
+
+#[test]
+fn the_hosted_keeper_still_asks_for_consent() {
+    if skip() {
+        return;
+    }
+    let (mut h, asked) = keeper_window("gpt-oss");
+    click(&mut h, "Ask AI to choose");
+    h.get_by_label("Continue");
+    assert!(asked.lock().unwrap().is_empty(), "nothing was asked before the user agreed");
+}
+
+#[test]
+fn switching_the_keeper_works_and_a_refused_switch_says_why_and_changes_nothing() {
+    if skip() {
+        return;
+    }
+    let (mut h, _) = keeper_window("finetuned");
+    h.state_mut().perform(Action::SetKeeper("keep-last".into()));
+    step_until(&mut h, "the switch", |a| a.keeper_info().is_some_and(|k| k.current == "keep-last"));
+    assert!(h.state().banner().is_some_and(|b| !b.error && b.text.contains("Keep last take")), "{:?}", h.state().banner());
+
+    h.state_mut().perform(Action::SetKeeper("gpt-oss".into()));
+    step_until(&mut h, "the refusal", |a| a.banner().is_some_and(|b| b.error && b.text.contains("not available")));
+    assert_eq!(h.state().keeper_info().unwrap().current, "keep-last");
+}
+
+#[test]
+fn a_service_that_does_not_report_keepers_shows_no_selector() {
+    if skip() {
+        return;
+    }
+    let (mut h, _) = ready(FakeService { adjudicate: true, ..Default::default() });
+    to_review(&mut h);
+    assert!(h.query_by_label("Keeper").is_none());
+    assert!(h.state().keeper_info().is_none());
+}

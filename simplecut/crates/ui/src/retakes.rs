@@ -15,6 +15,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use egui::{Color32, CornerRadius, RichText, WidgetInfo, WidgetType, vec2};
+use simplecut_core::KeeperInfo;
 use simplecut_core::retake::{CutScope, MAX_DOCUMENT_BYTES, Presence};
 use simplecut_core::review::parse_advice;
 use simplecut_core::{
@@ -113,6 +114,10 @@ pub(crate) struct Review {
     /// AI reasons by group id.
     pub reasons: HashMap<String, String>,
     pub ai_consent_pending: bool,
+    /// Groups the keeper was not sure about; the user should look at them.
+    pub unclear: HashSet<String>,
+    /// A switch of keeper in flight.
+    pub keeper_switch: Option<Running>,
     pub skip_unticked: bool,
     pub mode: CutMode,
     pub refine: Option<Running>,
@@ -195,6 +200,16 @@ pub(crate) struct Mark {
 }
 
 /// A group's place in the list: its label.
+/// What the user reads for a keeper id; an id this editor does not know is shown as sent.
+fn keeper_label(id: &str) -> String {
+    match id {
+        "finetuned" => "Qwen3-4B (fine-tuned, local)".into(),
+        "gpt-oss" => "gpt-oss-120b (cloud)".into(),
+        "keep-last" => "Keep last take".into(),
+        other => other.into(),
+    }
+}
+
 fn label_of(index: usize) -> String {
     format!("Retake {}", index + 1)
 }
@@ -241,6 +256,20 @@ impl SimpleCutApp {
     /// Whether the service offers the optional AI extension.
     pub fn ai_available(&self) -> bool {
         self.service.as_ref().is_some_and(|s| s.capabilities().adjudicate)
+    }
+
+    /// The keepers the service offers (None for a service that does not say).
+    pub fn keeper_info(&self) -> Option<KeeperInfo> {
+        self.service.as_ref().and_then(|s| s.keeper())
+    }
+
+    /// Sentences leave this machine only for the hosted keeper. The local model and keep-last send
+    /// nothing anywhere, so asking for consent there would be wrong. An unknown keeper asks.
+    fn keeper_needs_consent(&self) -> bool {
+        match self.keeper_info() {
+            Some(k) => !matches!(k.current.as_str(), "finetuned" | "keep-last"),
+            None => true,
+        }
     }
 
     /// True while a request to the service is running.
@@ -321,6 +350,12 @@ impl SimpleCutApp {
     pub fn review_origin(&self, id: &str) -> Option<&'static str> {
         let Some(Stage::Review(r)) = &self.retakes.stage else { return None };
         r.origin(id).map(|o| if o == Origin::Ai { "ai" } else { "user" })
+    }
+
+    /// Groups the keeper was not sure about, in group order.
+    pub fn review_unclear(&self) -> Vec<String> {
+        let Some(Stage::Review(r)) = &self.retakes.stage else { return Vec::new() };
+        r.groups.iter().filter(|g| r.unclear.contains(&g.id)).map(|g| g.id.clone()).collect()
     }
 
     /// How many sentences Remove would cut now.
@@ -568,6 +603,7 @@ impl SimpleCutApp {
             }
             Action::AskAi => self.ask_ai(false),
             Action::ConfirmAi => self.ask_ai(true),
+            Action::SetKeeper(id) => self.set_keeper(&id),
             Action::DeclineAi => {
                 if let Some(Stage::Review(r)) = &mut self.retakes.stage {
                     r.ai_consent_pending = false;
@@ -754,6 +790,8 @@ impl SimpleCutApp {
             notes: Vec::new(),
             reasons: HashMap::new(),
             ai_consent_pending: false,
+            unclear: HashSet::new(),
+            keeper_switch: None,
             skip_unticked: true,
             mode: CutMode::Anchored,
             refine: None,
@@ -793,6 +831,7 @@ impl SimpleCutApp {
             r.refine_failed_for = None;
         }
         self.poll_advice(r);
+        self.poll_keeper_switch(r);
         self.poll_refine(r);
         self.pump_refine_debounce(r);
     }
@@ -806,7 +845,14 @@ impl SimpleCutApp {
                 Err(e) => self.fail_text(&e.to_string()),
                 Ok((advice, notes)) => {
                     let n = advice.len();
+                    let mut check = 0usize;
                     for a in advice {
+                        if a.unclear {
+                            check += 1;
+                            r.unclear.insert(a.group.clone());
+                        } else {
+                            r.unclear.remove(&a.group);
+                        }
                         let ids: Vec<String> =
                             r.groups.iter().find(|g| g.id == a.group).map(|g| g.sentences.iter().map(|s| s.id.clone()).collect()).unwrap_or_default();
                         for id in ids {
@@ -818,12 +864,45 @@ impl SimpleCutApp {
                         }
                     }
                     r.notes = notes;
-                    self.info_text(format!("The AI chose what to keep in {n} group{}. Nothing is cut until you press Remove.", if n == 1 { "" } else { "s" }));
+                    let check_note = match check {
+                        0 => String::new(),
+                        1 => " 1 group needs a check.".to_string(),
+                        c => format!(" {c} groups need a check."),
+                    };
+                    self.info_text(format!(
+                        "The AI chose what to keep in {n} group{}.{check_note} Nothing is cut until you press Remove.",
+                        if n == 1 { "" } else { "s" }
+                    ));
                 }
             },
             JobState::Failed(why) => self.fail_text(&format!("The AI could not finish: {why}")),
             _ => self.info_text("Cancelled the AI request."),
         }
+    }
+
+    fn poll_keeper_switch(&mut self, r: &mut Review) {
+        let Some(run) = &mut r.keeper_switch else { return };
+        let Some(state) = run.poll() else { return };
+        r.keeper_switch = None;
+        match state {
+            JobState::Done(_) => {
+                let name = self.keeper_info().map(|k| keeper_label(&k.current)).unwrap_or_default();
+                self.info_text(format!("Keeper: {name}."));
+            }
+            JobState::Failed(why) => self.fail_text(&why),
+            _ => {}
+        }
+    }
+
+    fn set_keeper(&mut self, id: &str) {
+        let Some(Stage::Review(mut r)) = self.retakes.stage.take() else { return };
+        if r.advice.is_none() && r.keeper_switch.is_none() {
+            match self.service.as_ref().and_then(|s| s.set_keeper(id)) {
+                Some(job) => r.keeper_switch = Some(Running::new(job, r.item, "Switching the keeper…")),
+                None => self.fail_text("This service cannot switch the keeper."),
+            }
+        }
+        self.retakes.stage = Some(Stage::Review(r));
     }
 
     // ── questions ──────────────────────────────────────────────────────────
@@ -987,7 +1066,7 @@ impl SimpleCutApp {
         if consented {
             self.retakes.ai_consented = true;
         }
-        let consent = self.retakes.ai_consented;
+        let consent = self.retakes.ai_consented || !self.keeper_needs_consent();
         let Some(Stage::Review(mut r)) = self.retakes.stage.take() else { return };
         if r.advice.is_some() {
             self.retakes.stage = Some(Stage::Review(r));
@@ -1537,12 +1616,16 @@ struct GroupView {
     end: Tick,
     rows: Vec<SentenceRow>,
     reason: Option<String>,
+    /// The keeper was not sure and the user has not touched the group since.
+    check: bool,
     seen_off: bool,
 }
 
 fn review_panel(app: &mut SimpleCutApp, ui: &mut egui::Ui, fps: f64) {
     let t = theme::tokens();
     let ai = app.ai_available();
+    let keeper = app.keeper_info();
+    let switching = matches!(&app.retakes.stage, Some(Stage::Review(r)) if r.keeper_switch.is_some());
     let (item, groups, pending, advice_running, notes, can_redo, ignored, current_mode, refine_running, pending_apply) = {
         let Some(Stage::Review(r)) = &app.retakes.stage else { return };
         let groups: Vec<GroupView> = r
@@ -1568,6 +1651,7 @@ fn review_panel(app: &mut SimpleCutApp, ui: &mut egui::Ui, fps: f64) {
                     })
                     .collect(),
                 reason: r.reasons.get(&g.id).cloned(),
+                check: r.unclear.contains(&g.id) && g.sentences.iter().filter(|s| app.on(r.item, s)).all(|s| r.origin(&s.id) == Some(Origin::Ai)),
                 seen_off: g.sentences.iter().any(|s| r.seen_on.contains(&s.id) && !app.on(r.item, s)),
             })
             .collect();
@@ -1589,13 +1673,30 @@ fn review_panel(app: &mut SimpleCutApp, ui: &mut egui::Ui, fps: f64) {
     let group_count = groups.iter().filter(|g| live(g) && g.rows.iter().any(|r| r.on && !r.kept)).count();
 
     ui.horizontal_wrapped(|ui| {
-        if ai
-            && ui
-                .add_enabled(advice_running.is_none(), egui::Button::new("Ask AI to choose"))
-                .on_hover_text("Ask the AI which sentences to keep. It only fills in the ticks; nothing is cut until you press Remove.")
-                .clicked()
-        {
-            app.queue(Action::AskAi);
+        if ai || keeper.is_some() {
+            let busy = advice_running.is_some() || switching;
+            let why_not = keeper.as_ref().and_then(|k| k.provider(&k.current)).map(|p| p.reason.clone()).filter(|r| !r.is_empty());
+            let button = ui.add_enabled(ai && !busy, egui::Button::new("Ask AI to choose"));
+            let clicked = if ai {
+                button.on_hover_text("Ask the AI which sentences to keep. It only fills in the ticks; nothing is cut until you press Remove.").clicked()
+            } else {
+                button.on_disabled_hover_text(why_not.unwrap_or_else(|| "The keeper cannot run now.".into())).clicked()
+            };
+            if clicked {
+                app.queue(Action::AskAi);
+            }
+        }
+        if let Some(k) = &keeper {
+            ui.label(RichText::new("Keeper").small().color(t.text_dim));
+            egui::ComboBox::from_id_salt("keeper-choice").selected_text(keeper_label(&k.current)).show_ui(ui, |ui| {
+                for p in &k.providers {
+                    let choice = ui.add_enabled(p.available && !switching, egui::Button::selectable(p.id == k.current, keeper_label(&p.id)));
+                    let choice = if p.reason.is_empty() { choice } else { choice.on_hover_text(&p.reason).on_disabled_hover_text(&p.reason) };
+                    if choice.clicked() && p.id != k.current {
+                        app.queue(Action::SetKeeper(p.id.clone()));
+                    }
+                }
+            });
         }
         if ui.small_button("Keep last in all likely groups").on_hover_text("Tick only the last sentence of every likely group").clicked() {
             app.queue(Action::KeepLastInLikely);
@@ -1765,6 +1866,10 @@ fn group_card(app: &mut SimpleCutApp, ui: &mut egui::Ui, item: ItemId, g: &Group
             ui.label(RichText::new(title).color(color).strong());
             if !any_kept && on_rows > 0 {
                 ui.label(RichText::new("all removed").color(t.danger).small().strong());
+            }
+            if g.check {
+                ui.label(RichText::new("check").color(t.danger).small().strong())
+                    .on_hover_text("The keeper was not sure about this group. It suggests the last take; please look.");
             }
         });
     });
