@@ -127,7 +127,7 @@ fig.tight_layout(); fig.savefig(OUT / "figures/f3_paired_differences.png"); plt.
 
 # ---- Figure 4: training and evaluation loss
 fig, ax = plt.subplots(1, 2, figsize=(10, 3.7))
-runs = {"iter_01 (DEV model)": "iter_01", "fold-1 model": "holdout1_fold1", "fold-2 model": "holdout1_fold2"}
+runs = {"DEV model (trained on folds 1+2); eval set = 59 natural DEV groups": "iter_01", "fold-1 model; eval set = 22 synthetic groups": "holdout1_fold1", "fold-2 model; eval set = 22 synthetic groups": "holdout1_fold2"}
 for (n, d), c in zip(runs.items(), ("#1f77b4", "#2ca02c", "#9467bd")):
     h = J(LOOP / d / "train_log_history.json")
     tr = [(x["step"], max(x["loss"], 1e-6)) for x in h if "loss" in x and "step" in x]
@@ -136,10 +136,10 @@ for (n, d), c in zip(runs.items(), ("#1f77b4", "#2ca02c", "#9467bd")):
     if ev:
         ax[1].plot(*zip(*ev), "o-", color=c, ms=3, lw=0.9, label=n)
 ax[0].set(xlabel="step", ylabel="training loss (soft cross-entropy)", title="Training loss", yscale="log")
-ax[1].set(xlabel="step", ylabel="loss on the 22-group synthetic eval slice", title="Evaluation loss", yscale="log")
+ax[1].set(xlabel="step", ylabel="evaluation loss (eval set differs by run, see legend)", title="Evaluation loss", yscale="log")
 for a in ax:
-    a.legend(frameon=False, fontsize=7.5)
-fig.tight_layout(); fig.savefig(OUT / "figures/f4_training_loss.png"); plt.close(fig)
+    a.legend(frameon=False, fontsize=6.5)
+fig.tight_layout(); fig.savefig(OUT / "figures/f4_training_loss.png"); fig.savefig(OUT / "figures/f4_training_loss.pdf"); plt.close(fig)
 
 # ---- Figure 5: held-out synthetic accuracy by rule type
 ty = {k: {t[5:]: v for t, v in s["accuracy"].items() if t.startswith("type:")} for k, s in syn.items()}
@@ -153,7 +153,7 @@ for off, (lab, d, c) in zip((-0.27, 0, 0.27), (("fold-1 model", ty["fold1"], "#2
 ax.set(xticks=x, ylim=(0, 1.2), ylabel="exact keeper-set match", title="Held-out synthetic dev (220 groups, 20 per rule type)")
 ax.set_xticklabels([t.replace("->", " -> ").replace("_", " ") for t in types], rotation=35, ha="right", fontsize=7.5)
 ax.legend(frameon=False, ncol=3, loc="upper center", bbox_to_anchor=(0.5, 1.0), fontsize=8)
-fig.tight_layout(); fig.savefig(OUT / "figures/f5_synthetic_by_type.png"); plt.close(fig)
+fig.tight_layout(); fig.savefig(OUT / "figures/f5_synthetic_by_type.png"); fig.savefig(OUT / "figures/f5_synthetic_by_type.pdf"); plt.close(fig)
 
 # ---- Figure 6: p(keep) histogram on HOLDOUT units
 hp = [(p, u in allmeta[g]["gold"]) for g in grp({"fold1", "fold2"}) for u, p in probs_of[g].items()]
@@ -163,7 +163,7 @@ ax.hist([p for p, y in hp if y], bins, alpha=0.7, color="#2ca02c", label="unit i
 ax.hist([p for p, y in hp if not y], bins, alpha=0.7, color="#d62728", label="unit is cut")
 ax.set(xlabel="model p(keep)", ylabel="units (log scale)", yscale="log", title=f"HOLDOUT p(keep), {len(hp)} units")
 ax.legend(frameon=False)
-fig.tight_layout(); fig.savefig(OUT / "figures/f6_probability_histogram.png"); plt.close(fig)
+fig.tight_layout(); fig.savefig(OUT / "figures/f6_probability_histogram.png"); fig.savefig(OUT / "figures/f6_probability_histogram.pdf"); plt.close(fig)
 sat = sum(1 for p, _ in hp if p < 0.05 or p > 0.95) / len(hp)
 
 # ---- tables
