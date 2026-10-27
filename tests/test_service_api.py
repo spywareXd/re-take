@@ -36,8 +36,14 @@ def api(tmp_path):
         time.sleep(0.4)                                                # long enough for the cancel request below to land mid-job
         return Transcript.model_validate(json.loads(FIXTURE.read_text(encoding="utf-8")))
 
-    cfg = ServiceConfig(data_dir=str(tmp_path / "data"), llm_mock=True)
-    app = create_app(cfg, Deps(transcribe_fn=transcribe, scorer=FinalScorer(mock=True), llm_client=MockLLMClient()))
+    class NoStudio:                                                    # the finetuned keeper is not used here; never touch the network
+        model = "fake"
+
+        def availability(self):
+            return False, "test: no decision model"
+
+    cfg = ServiceConfig(data_dir=str(tmp_path / "data"), llm_mock=True, keeper_provider="gpt-oss")      # this flow tests the LLM keeper path
+    app = create_app(cfg, Deps(transcribe_fn=transcribe, scorer=FinalScorer(mock=True), llm_client=MockLLMClient(), keeper_backend=NoStudio()))
     media = tmp_path / "take.mp4"
     media.write_bytes(b"stand-in media bytes")
     return TestClient(app), media, cfg
@@ -45,7 +51,9 @@ def api(tmp_path):
 
 def test_service_flow_with_mock_llm(api):
     client, media, cfg = api
-    assert client.get("/v1/capabilities").json() == {"adjudicate": True, "refine": True}
+    caps = client.get("/v1/capabilities").json()
+    assert {k: caps[k] for k in ("adjudicate", "refine")} == {"adjudicate": True, "refine": True}
+    assert caps["keeper"]["default"] == "gpt-oss" and caps["keeper"]["providers"]["finetuned"]["available"] is False
 
     # analyze -> poll
     r = client.post("/v1/analyze", json={"path": str(media), "name": "take.mp4", "duration_seconds": 25.8, "used": [[0.0, 25.8]]})

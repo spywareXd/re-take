@@ -51,6 +51,8 @@ class PipelineResult:
     error: str = ""
     # Optional: only set when run_full_pipeline(detect_intra_unit=True); None (and absent from to_dict) otherwise
     intra_unit_candidates_count: Optional[int] = None
+    # Keeper provider used in Stage 6 ('finetuned' | 'gpt-oss'); empty for results saved before providers existed
+    keeper_provider: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         d = {
@@ -71,6 +73,8 @@ class PipelineResult:
             "success": self.success,
             "error": self.error,
         }
+        if self.keeper_provider:
+            d["keeper_provider"] = self.keeper_provider
         if self.intra_unit_candidates_count is not None:   # key absent when the feature is off
             d["intra_unit_candidates_count"] = self.intra_unit_candidates_count
         return d
@@ -95,6 +99,7 @@ class PipelineResult:
             success=bool(data.get("success", False)),
             error=str(data.get("error", "")),
             intra_unit_candidates_count=data.get("intra_unit_candidates_count"),
+            keeper_provider=str(data.get("keeper_provider", "")),
         )
 
 
@@ -355,6 +360,9 @@ def run_full_pipeline(
     cut_mode: str = "anchored",
     cut_config: Any = None,
     preview_cut_modes: bool = False,
+    keeper_provider: str | None = None,
+    keeper_config: Any = None,
+    keeper_backend: Any = None,
 ) -> PipelineResult:
     """
     Run the complete retake detection and video editing pipeline.
@@ -381,6 +389,11 @@ def run_full_pipeline(
         cut_config: Optional pipeline.step_08_video_edit.CutConfig overriding the cut-mode defaults (pads, caps, motion threshold, fade).
         preview_cut_modes: Also record the seconds each mode would remove under cutlist 'mode_preview' (extra ffmpeg work).
         scorer_batch_size: Cross-encoder batch size (default 64).
+        keeper_provider: Stage 6 keeper provider: 'finetuned' (default; local decision model + hybrid policy) or 'gpt-oss' (the LLM call
+            configured by llm_provider / llm_model, unchanged). None = keeper_config.provider / RETAKE_KEEPER_PROVIDER / 'finetuned'.
+            An explicitly chosen provider that is not available raises an error; it is never swapped for another one.
+        keeper_config: Optional KeeperConfig (policy flags, Studio URL and model id). Default: KeeperConfig.from_env().
+        keeper_backend: Optional decision backend for 'finetuned' (tests); default: the Studio Decision API on localhost.
         detect_intra_unit: OPTIONAL, default off. If True, also suggest restarts inside single units and save
             them to <video dir>/candidates/intra_unit_candidates.json for the review UI. Suggestions never feed
             candidate generation, span aggregation, adjudication or the cutlist.
@@ -575,18 +588,39 @@ def run_full_pipeline(
             save_adjudicated_spans,
         )
 
+        from pipeline.step_06_llm_adjudication.keeper_policy import KeeperConfig
+        from pipeline.step_06_llm_adjudication.keeper_providers import ProviderUnavailable, choose_provider_name, make_provider, run_keeper_stage
+
         adj_config = AdjudicationConfig(
             provider=llm_provider,
             model=llm_model,
         )
-        adjudicated_spans = run_stage6(retake_spans, all_units_by_id=units, config=adj_config)
+        keeper_cfg = keeper_config or KeeperConfig.from_env()
+        keeper_name = choose_provider_name(keeper_provider, keeper_cfg)
+        result.keeper_provider = keeper_name
+        keeper_model_id = llm_model
+        if keeper_name == "gpt-oss" and not keeper_cfg.rules_with_gpt_oss:
+            adjudicated_spans = run_stage6(retake_spans, all_units_by_id=units, config=adj_config)          # the old path, unchanged
+        else:
+            keeper = make_provider(keeper_name, keeper_cfg, adj_config, backend=keeper_backend)
+            ok, why = keeper.availability()
+            if not ok and keeper_provider:
+                raise ProviderUnavailable(f"keeper provider '{keeper_name}' is not available: {why}")
+            if not ok:
+                logger.error("[Stage 6] keeper provider '%s' is NOT available (%s): every model call will fall back to keeping the last take", keeper_name, why)
+            else:
+                logger.info("[Stage 6] keeper provider '%s': %s", keeper_name, why)
+            if keeper_name == "finetuned":
+                keeper_model_id = keeper.model_id
+                _free_cuda_cache()
+            adjudicated_spans = run_keeper_stage(retake_spans, units, keeper)
 
         if save_intermediates:
             save_adjudicated_spans(
                 adjudicated_spans,
                 output_path=paths.adjudicated_spans,
                 source_spans=str(paths.retake_spans),
-                model=llm_model,
+                model=keeper_model_id,
             )
 
         result.adjudicated_count = sum(
@@ -686,6 +720,20 @@ def run_full_pipeline(
     return result
 
 
+def _free_cuda_cache() -> None:
+    """Release cached GPU memory held by this process (transcription / scorer) before the keeper model is used."""
+    import gc
+
+    gc.collect()
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except Exception:
+        pass
+
+
 def _find_project_root(reference_path: Path) -> Path:
     """Walk up from a reference path to find the project root (contains pyproject.toml)."""
     current = reference_path.resolve()
@@ -709,8 +757,11 @@ def main():
     parser.add_argument("--provider", default="whisperx", choices=["whisperx", "whisper", "assemblyai"], help="ASR provider")
     parser.add_argument("--model", default="large-v2", help="ASR model size")
     parser.add_argument("--device", default="cuda", choices=["cuda", "cpu"], help="Compute device")
-    parser.add_argument("--llm-provider", default="gemini", choices=["gemini", "openai", "mock"], help="LLM provider")
-    parser.add_argument("--llm-model", default="gemini-2.5-flash", help="LLM model name")
+    parser.add_argument("--keeper-provider", default=None, choices=["finetuned", "gpt-oss"],
+                        help="Stage 6 keeper provider (default: RETAKE_KEEPER_PROVIDER or 'finetuned')")
+    parser.add_argument("--llm-provider", default=None, choices=["gemini", "openai", "groq", "mock"],
+                        help="LLM provider for the gpt-oss keeper provider (default: groq)")
+    parser.add_argument("--llm-model", default=None, help="LLM model name (default: openai/gpt-oss-120b for groq, gemini-2.5-flash otherwise)")
     parser.add_argument("--copy-mode", action="store_true", help="Fast FFmpeg stream-copy mode")
     parser.add_argument("--cut-mode", default="anchored", choices=["sentences", "anchored", "retake_only"], help="How discards become keep spans")
     parser.add_argument("--preview-cut-modes", action="store_true", help="Also record removed seconds per cut mode in the cutlist")
@@ -729,8 +780,9 @@ def main():
         provider=args.provider,
         model_name=args.model,
         device=args.device,
-        llm_provider=args.llm_provider,
-        llm_model=args.llm_model,
+        llm_provider=args.llm_provider or "groq",
+        llm_model=args.llm_model or ("openai/gpt-oss-120b" if (args.llm_provider or "groq") == "groq" else "gemini-2.5-flash"),
+        keeper_provider=args.keeper_provider,
         copy_mode=args.copy_mode,
         force_new_id=args.force_new_id,
         cut_mode=args.cut_mode,

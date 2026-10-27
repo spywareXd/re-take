@@ -78,3 +78,62 @@ def adjudicate_groups(groups: list[dict], setup: LLMSetup, ctx: JobContext) -> l
             continue
         out.append({"group": g["id"], "keep": [keeper], "reason": str(res.get("reasoning") or "")[:REASON_MAX]})
     return out
+
+
+def record_decision(path: str, entry: dict) -> None:
+    """Append one keeper decision (advice, never a label) to keeper_decisions.jsonl."""
+    import json
+    from datetime import datetime, timezone
+    from pathlib import Path
+
+    p = Path(path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    with p.open("a", encoding="utf-8") as f:
+        f.write(json.dumps({"time": datetime.now(timezone.utc).isoformat(timespec="seconds"), **entry}, ensure_ascii=False) + "\n")
+
+
+def _context_units(path: str, cache_dir: str) -> Optional[list[dict]]:
+    """The analysed file's units (from the service cache), for the before/after context the decision model was trained with."""
+    from pathlib import Path
+
+    from pipeline.step_07_review.cache import MediaCache, media_fingerprint
+
+    try:
+        p = Path(path)
+        return MediaCache(cache_dir, media_fingerprint(p)).get("units") if p.is_file() else None
+    except Exception:
+        return None
+
+
+def keeper_advice(groups: list[dict], provider: Any, ctx: JobContext, path: str, cache_dir: str, decisions_path: str, job: Optional[str]) -> list[dict]:
+    """/v1/adjudicate with the finetuned provider: [{group, keep, reason} + optional provider / decided_by / model / unclear / probs].
+    Same contract as adjudicate_groups: keep is never empty, so a keep-none decision (cue rule) is left out of the array (and recorded)."""
+    from pipeline.step_06_llm_adjudication.keeper_providers import _neighbours
+
+    units = _context_units(path, cache_dir) or []
+    by_id = {str(u["unit_id"]): u for u in units}
+    ordered = sorted(units, key=lambda u: (float(u["start"]), str(u["unit_id"])))
+    out: list[dict] = []
+    seen: set = set()
+    for i, g in enumerate(groups):
+        ctx.progress("Choosing the takes to keep", i / max(len(groups), 1))
+        if g["id"] in seen:
+            continue
+        seen.add(g["id"])
+        span, members = group_to_span(g)
+        members = [by_id.get(m["unit_id"], m) for m in members]                     # cached units carry the same ids, times and text
+        before, after = _neighbours(members, ordered) if ordered else (None, None)
+        dec = provider.decide(span, members, before, after)
+        fields = dec.span_fields()
+        record_decision(decisions_path, {"job": job, "group": g["id"], "provider": dec.provider, "model": dec.model, "decided_by": dec.decided_by,
+                                         "status": dec.status, "keep": dec.keep, "unit_ids": dec.unit_ids, "probs": fields.get("unit_probs"),
+                                         "reason": dec.reason, "error": dec.error, "source": "keeper_advice"})
+        if dec.status == "failed" or not dec.keep:
+            logger.warning("keeper advice left out group %s: %s", g["id"], "keep none (" + dec.decided_by + ")" if not dec.keep else dec.error)
+            continue
+        item = {"group": g["id"], "keep": list(dec.keep), "reason": dec.reason[:REASON_MAX], "provider": dec.provider, "decided_by": dec.decided_by,
+                "model": dec.model, "unclear": dec.status == "unclear"}
+        if fields.get("unit_probs") is not None:
+            item["probs"] = fields["unit_probs"]
+        out.append(item)
+    return out

@@ -1,0 +1,34 @@
+{
+ "description": "Production cue phrases for the keeper cue rule (a group whose takes are ALL cues keeps none). Matched after normalisation (lowercase, punctuation stripped, spaces collapsed).",
+ "sources": {
+  "bank_cues": "data/training/bank.py CUES (synthetic generator)"
+ },
+ "bank_cues": [
+  "Okay, here we go.",
+  "Alright, from the top.",
+  "Let me start again.",
+  "Take two.",
+  "Okay, rolling.",
+  "Here we go again.",
+  "Let's go.",
+  "Ready, from the beginning.",
+  "One more time.",
+  "Okay, again.",
+  "Take three.",
+  "Sorry, let me redo that.",
+  "And action.",
+  "Okay, let's try that again.",
+  "From the top, one more.",
+  "Starting over.",
+  "Okay, take four.",
+  "Let me do that once more.",
+  "Alright, new take.",
+  "Here we go, take five.",
+  "Okay, going again.",
+  "Reset, and again.",
+  "Alright, rolling now.",
+  "Okay, one more time from the start.",
+  "Ready, here we go.",
+  "Take six, from the top."
+ ]
+}

@@ -18,7 +18,7 @@ from pipeline.step_07_review.labels import record_answers
 
 from .config import ServiceConfig
 from .jobs import JobContext, JobManager, UserError
-from .llm import LLMSetup, adjudicate_groups, detect_llm
+from .llm import LLMSetup, adjudicate_groups, detect_llm, keeper_advice, record_decision
 from .refine import refine_available, refine_ranges
 
 logger = logging.getLogger("service")
@@ -34,6 +34,7 @@ class Deps:
     transcribe_fn: Optional[Callable[[Path], Any]] = None
     scorer: Any = None                      # a FinalScorer; None = build the real one lazily, once
     llm_client: Any = None                  # an LLMClient (e.g. MockLLMClient)
+    keeper_backend: Any = None              # decision backend for the 'finetuned' keeper (tests); None = Studio Decision API on localhost
 
 
 def _num(x: Any) -> bool:
@@ -48,6 +49,21 @@ def create_app(config: Optional[ServiceConfig] = None, deps: Optional[Deps] = No
     review_cfg = ReviewConfig(cache_dir=cfg.cache_dir, labels_path=cfg.labels_path, skipped_path=cfg.skipped_path, max_questions=cfg.max_questions,
                               unsure_band_enabled=cfg.unsure_band_enabled)
     state: dict[str, Any] = {"scorer": deps.scorer}
+    from pipeline.step_06_llm_adjudication.keeper_policy import PROVIDERS, KeeperConfig
+    from pipeline.step_06_llm_adjudication.keeper_providers import FinetunedProvider
+
+    keeper_cfg = KeeperConfig.from_env(provider=cfg.keeper_provider)
+    finetuned = FinetunedProvider(keeper_cfg, deps.keeper_backend)
+
+    def provider_status() -> dict[str, dict]:
+        ok_ft, why_ft = finetuned.availability()
+        return {"finetuned": {"available": ok_ft, "reason": why_ft},
+                "gpt-oss": {"available": bool(llm.available), "reason": f"LLM provider '{llm.provider}'" + ("" if llm.available else ": no LLM key is configured")}}
+
+    def pick_provider(requested: Any) -> str:
+        if requested is not None and requested not in PROVIDERS:
+            raise BadRequest(f"'keeper_provider' must be one of {list(PROVIDERS)}.")
+        return requested or keeper_cfg.provider
 
     def scorer_provider():
         if state["scorer"] is None:
@@ -89,7 +105,10 @@ def create_app(config: Optional[ServiceConfig] = None, deps: Optional[Deps] = No
     # ---- capabilities ----
     @app.get("/v1/capabilities")
     def capabilities():
-        return {"adjudicate": bool(llm.available), "refine": refine_available()}
+        status = provider_status()
+        default = keeper_cfg.provider
+        return {"adjudicate": bool(status.get(default, {}).get("available")), "refine": refine_available(),
+                "keeper": {"default": default, "providers": status}}
 
     # ---- analyze ----
     @app.post("/v1/analyze", status_code=202)
@@ -142,9 +161,12 @@ def create_app(config: Optional[ServiceConfig] = None, deps: Optional[Deps] = No
     @app.post("/v1/adjudicate", status_code=202)
     async def adjudicate(request: Request):
         body = await body_of(request)
-        need_path(body)
-        if not llm.available:
-            raise BadRequest("AI advice is not available: no LLM key is configured.")
+        path = need_path(body)
+        name = pick_provider(body.get("keeper_provider"))
+        ok, why = (finetuned.availability() if name == "finetuned" else (bool(llm.available), "no LLM key is configured"))
+        if not ok:
+            raise BadRequest(f"AI advice is not available: keeper provider '{name}' cannot run ({why})." if name == "finetuned"
+                             else "AI advice is not available: no LLM key is configured.")
         groups = body.get("groups")
         if not isinstance(groups, list) or not groups or not all(
             isinstance(g, dict) and isinstance(g.get("id"), str) and isinstance(g.get("sentences"), list) and len(g["sentences"]) >= 2
@@ -152,7 +174,14 @@ def create_app(config: Optional[ServiceConfig] = None, deps: Optional[Deps] = No
             raise BadRequest("'groups' must be a non-empty list of groups with at least two sentences each.")
 
         def run(ctx: JobContext):
-            return adjudicate_groups(groups, llm, ctx)                                  # a plain JSON array, never wrapped
+            if name == "finetuned":
+                return keeper_advice(groups, finetuned, ctx, path, cfg.cache_dir, cfg.keeper_decisions_path, body.get("job"))
+            advice = adjudicate_groups(groups, llm, ctx)                                # a plain JSON array, never wrapped (unchanged)
+            for a in advice:
+                record_decision(cfg.keeper_decisions_path, {"job": body.get("job"), "group": a["group"], "provider": "gpt-oss", "model": llm.config.model if llm.config else llm.provider,
+                                                            "decided_by": "gpt-oss", "status": "resolved", "keep": a["keep"], "reason": a["reason"],
+                                                            "source": "keeper_advice"})
+            return advice
 
         return {"job": jobs.submit("adjudicate", run)}
 
