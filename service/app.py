@@ -50,20 +50,31 @@ def create_app(config: Optional[ServiceConfig] = None, deps: Optional[Deps] = No
                               unsure_band_enabled=cfg.unsure_band_enabled)
     state: dict[str, Any] = {"scorer": deps.scorer}
     from pipeline.step_06_llm_adjudication.keeper_policy import PROVIDERS, KeeperConfig
-    from pipeline.step_06_llm_adjudication.keeper_providers import FinetunedProvider
+    from pipeline.step_06_llm_adjudication.keeper_providers import FinetunedProvider, KeepLastProvider
 
     keeper_cfg = KeeperConfig.from_env(provider=cfg.keeper_provider)
-    finetuned = FinetunedProvider(keeper_cfg, deps.keeper_backend)
+    if keeper_cfg.provider not in PROVIDERS:
+        raise ValueError(f"keeper provider '{keeper_cfg.provider}' is not one of {list(PROVIDERS)}")
+    finetuned, keep_last = FinetunedProvider(keeper_cfg, deps.keeper_backend), KeepLastProvider()
+    state["keeper"] = keeper_cfg.provider                     # the service-wide keeper; PUT /v1/keeper switches it while the service runs
+
+    def availability(name: str) -> tuple[bool, str]:
+        if name == "finetuned":
+            return finetuned.availability()
+        if name == "keep-last":
+            return keep_last.availability()
+        return bool(llm.available), (f"LLM provider '{llm.provider}'" if llm.available else "no LLM key is configured")
 
     def provider_status() -> dict[str, dict]:
-        ok_ft, why_ft = finetuned.availability()
-        return {"finetuned": {"available": ok_ft, "reason": why_ft},
-                "gpt-oss": {"available": bool(llm.available), "reason": f"LLM provider '{llm.provider}'" + ("" if llm.available else ": no LLM key is configured")}}
+        return {n: dict(zip(("available", "reason"), availability(n))) for n in PROVIDERS}
+
+    def keeper_state() -> dict:
+        return {"current": state["keeper"], "default": keeper_cfg.provider, "providers": provider_status()}
 
     def pick_provider(requested: Any) -> str:
         if requested is not None and requested not in PROVIDERS:
             raise BadRequest(f"'keeper_provider' must be one of {list(PROVIDERS)}.")
-        return requested or keeper_cfg.provider
+        return requested or state["keeper"]
 
     def scorer_provider():
         if state["scorer"] is None:
@@ -105,10 +116,26 @@ def create_app(config: Optional[ServiceConfig] = None, deps: Optional[Deps] = No
     # ---- capabilities ----
     @app.get("/v1/capabilities")
     def capabilities():
-        status = provider_status()
-        default = keeper_cfg.provider
-        return {"adjudicate": bool(status.get(default, {}).get("available")), "refine": refine_available(),
-                "keeper": {"default": default, "providers": status}}
+        keeper = keeper_state()
+        return {"adjudicate": bool(keeper["providers"][keeper["current"]]["available"]), "refine": refine_available(), "keeper": keeper}
+
+    # ---- keeper provider: read / switch (service-wide, until the service restarts) ----
+    @app.get("/v1/keeper")
+    def keeper_get():
+        return keeper_state()
+
+    @app.put("/v1/keeper")
+    async def keeper_put(request: Request):
+        body = await body_of(request)
+        name = body.get("provider")
+        if name not in PROVIDERS:
+            raise BadRequest(f"'provider' must be one of {list(PROVIDERS)}.")
+        ok, why = availability(name)
+        if not ok:
+            raise BadRequest(f"Keeper '{name}' is not available: {why}.")
+        state["keeper"] = name
+        logger.info("keeper provider switched to '%s'", name)
+        return keeper_state()
 
     # ---- analyze ----
     @app.post("/v1/analyze", status_code=202)
@@ -163,9 +190,9 @@ def create_app(config: Optional[ServiceConfig] = None, deps: Optional[Deps] = No
         body = await body_of(request)
         path = need_path(body)
         name = pick_provider(body.get("keeper_provider"))
-        ok, why = (finetuned.availability() if name == "finetuned" else (bool(llm.available), "no LLM key is configured"))
+        ok, why = availability(name)
         if not ok:
-            raise BadRequest(f"AI advice is not available: keeper provider '{name}' cannot run ({why})." if name == "finetuned"
+            raise BadRequest(f"AI advice is not available: keeper provider '{name}' cannot run ({why})." if name != "gpt-oss"
                              else "AI advice is not available: no LLM key is configured.")
         groups = body.get("groups")
         if not isinstance(groups, list) or not groups or not all(
@@ -174,8 +201,9 @@ def create_app(config: Optional[ServiceConfig] = None, deps: Optional[Deps] = No
             raise BadRequest("'groups' must be a non-empty list of groups with at least two sentences each.")
 
         def run(ctx: JobContext):
-            if name == "finetuned":
-                return keeper_advice(groups, finetuned, ctx, path, cfg.cache_dir, cfg.keeper_decisions_path, body.get("job"))
+            if name in ("finetuned", "keep-last"):
+                return keeper_advice(groups, finetuned if name == "finetuned" else keep_last, ctx, path, cfg.cache_dir, cfg.keeper_decisions_path,
+                                     body.get("job"))
             advice = adjudicate_groups(groups, llm, ctx)                                # a plain JSON array, never wrapped (unchanged)
             for a in advice:
                 record_decision(cfg.keeper_decisions_path, {"job": body.get("job"), "group": a["group"], "provider": "gpt-oss", "model": llm.config.model if llm.config else llm.provider,

@@ -389,7 +389,7 @@ def run_full_pipeline(
         cut_config: Optional pipeline.step_08_video_edit.CutConfig overriding the cut-mode defaults (pads, caps, motion threshold, fade).
         preview_cut_modes: Also record the seconds each mode would remove under cutlist 'mode_preview' (extra ffmpeg work).
         scorer_batch_size: Cross-encoder batch size (default 64).
-        keeper_provider: Stage 6 keeper provider: 'finetuned' (default; local decision model + hybrid policy) or 'gpt-oss' (the LLM call
+        keeper_provider: Stage 6 keeper provider: 'finetuned' (default; local decision model + hybrid policy), 'keep-last', or 'gpt-oss' (the LLM call
             configured by llm_provider / llm_model, unchanged). None = keeper_config.provider / RETAKE_KEEPER_PROVIDER / 'finetuned'.
             An explicitly chosen provider that is not available raises an error; it is never swapped for another one.
         keeper_config: Optional KeeperConfig (policy flags, Studio URL and model id). Default: KeeperConfig.from_env().
@@ -757,7 +757,7 @@ def main():
     parser.add_argument("--provider", default="whisperx", choices=["whisperx", "whisper", "assemblyai"], help="ASR provider")
     parser.add_argument("--model", default="large-v2", help="ASR model size")
     parser.add_argument("--device", default="cuda", choices=["cuda", "cpu"], help="Compute device")
-    parser.add_argument("--keeper-provider", default=None, choices=["finetuned", "gpt-oss"],
+    parser.add_argument("--keeper-provider", default=None, choices=["finetuned", "gpt-oss", "keep-last"],
                         help="Stage 6 keeper provider (default: RETAKE_KEEPER_PROVIDER or 'finetuned')")
     parser.add_argument("--llm-provider", default=None, choices=["gemini", "openai", "groq", "mock"],
                         help="LLM provider for the gpt-oss keeper provider (default: groq)")

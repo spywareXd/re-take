@@ -329,3 +329,44 @@ def test_default_provider_makes_no_external_calls(monkeypatch):
 def test_backend_refuses_non_local_hosts():
     with pytest.raises(ValueError, match="localhost"):
         StudioDecisionBackend("https://example.com", "m")
+
+
+# ---------------------------------------------------------------- keep-last provider and the service-wide switch
+
+def test_keep_last_provider_keeps_the_last_take():
+    prov = make_provider("keep-last", KeeperConfig())
+    out = run_keeper_stage([copy.deepcopy(SPAN)], UNITS, prov)
+    assert prov.availability()[0] and out[0]["keeper_unit_id"] == "3:0" and out[0]["units_to_remove"] == ["2:0"]
+    assert out[0]["decided_by"] == "keep_last" and out[0]["keeper_provider"] == "keep-last" and "unit_probs" not in out[0]
+
+
+def test_switch_keeper_provider_endpoint(tmp_path, monkeypatch):
+    monkeypatch.delenv("RETAKE_KEEPER_PROVIDER", raising=False)
+    backend = FakeBackend()
+    client, _ = _service(tmp_path, backend)
+    k = client.get("/v1/keeper").json()
+    assert k["current"] == k["default"] == "finetuned" and set(k["providers"]) == {"finetuned", "gpt-oss", "keep-last"}
+    assert k["providers"]["keep-last"]["available"] is True
+    r = client.put("/v1/keeper", json={"provider": "keep-last"})
+    assert r.status_code == 200 and r.json()["current"] == "keep-last" and r.json()["default"] == "finetuned"
+    assert client.get("/v1/capabilities").json()["keeper"]["current"] == "keep-last"
+    media = tmp_path / "x.mp4"
+    media.write_bytes(b"x")
+    res = _poll(client, client.post("/v1/adjudicate", json={"path": str(media), "job": "j", "groups": GROUPS}).json()["job"])
+    assert backend.calls == 0 and {a["group"]: (a["keep"], a["decided_by"], a["provider"]) for a in res["result"]} == {
+        "g1": (["3:0"], "keep_last", "keep-last"), "g2": (["6:0"], "keep_last", "keep-last")}
+    # a request field still overrides the service-wide choice
+    res = _poll(client, client.post("/v1/adjudicate", json={"path": str(media), "job": "j", "groups": GROUPS, "keeper_provider": "finetuned"}).json()["job"])
+    assert backend.calls == 1 and {a["group"] for a in res["result"]} == {"g1"}
+    assert client.put("/v1/keeper", json={"provider": "rules"}).status_code == 400
+
+
+def test_switch_to_an_unavailable_provider_is_refused(tmp_path, monkeypatch):
+    monkeypatch.delenv("RETAKE_KEEPER_PROVIDER", raising=False)
+    monkeypatch.delenv("GROQ_API_KEY", raising=False)
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    client, _ = _service(tmp_path, FakeBackend())
+    r = client.put("/v1/keeper", json={"provider": "gpt-oss"})
+    assert r.status_code == 400 and "gpt-oss" in r.json()["error"] and client.get("/v1/keeper").json()["current"] == "finetuned"

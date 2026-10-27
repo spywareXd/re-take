@@ -25,7 +25,7 @@ from typing import Any, Callable, Optional, Sequence
 logger = logging.getLogger(__name__)
 
 CUES_PATH = Path(__file__).resolve().parent / "keeper_cues.json"
-PROVIDERS = ("finetuned", "gpt-oss")
+PROVIDERS = ("finetuned", "gpt-oss", "keep-last")
 DEFAULT_PROVIDER = "finetuned"
 DEFAULT_STUDIO_URL = "http://127.0.0.1:8888"
 DEFAULT_STUDIO_MODEL = "clef-ft:Qwen_final"
@@ -155,7 +155,7 @@ class KeeperDecision:
     keep: list[str]                                   # keeper unit ids (empty = keep none)
     status: str                                       # resolved | unclear | failed
     provider: str
-    decided_by: str                                   # cue_rule | exact_gate | model | empty_fallback | model_error_fallback | gpt-oss
+    decided_by: str                                   # cue_rule | exact_gate | model | empty_fallback | model_error_fallback | gpt-oss | keep_last
     reason: str = ""
     model: Optional[str] = None
     probs: Optional[dict[str, float]] = None

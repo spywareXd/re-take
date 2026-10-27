@@ -1,6 +1,6 @@
 """
-Keeper providers for Step 06: `finetuned` (default; the local decision model behind the hybrid policy) and `gpt-oss` (the existing LLM keeper call,
-unchanged). Pick one with KeeperConfig.provider / RETAKE_KEEPER_PROVIDER / --keeper-provider / the request field `keeper_provider`.
+Keeper providers for Step 06: `finetuned` (default; the local decision model behind the hybrid policy), `gpt-oss` (the existing LLM keeper call,
+unchanged) and `keep-last` (the last take of every group, no model). Pick one with KeeperConfig.provider / RETAKE_KEEPER_PROVIDER / --keeper-provider / the request field `keeper_provider`.
 
 The decision model needs Unsloth, which lives in the Studio environment (Python 3.13, torch 2.13), not in this repo's environment (torch 2.5 for
 WhisperX), so it cannot be loaded in-process. `finetuned` therefore calls the Unsloth Studio Decision API on localhost
@@ -130,6 +130,20 @@ class GptOssProvider(KeeperProvider):
                               str(res.get("reasoning") or ""), self.adj_config.model, extra=res)
 
 
+class KeepLastProvider(KeeperProvider):
+    """Keep the last take of every group: no model, no rules, no key, no network."""
+    name = "keep-last"
+
+    def availability(self) -> tuple[bool, str]:
+        return True, "always available (keeps the last take of every group)"
+
+    def decide(self, span: dict, members: list, before: Any, after: Any) -> KeeperDecision:
+        ids = [str(u["unit_id"] if isinstance(u, dict) else u.unit_id)
+               for u in sorted(members, key=lambda u: (float(u["start"] if isinstance(u, dict) else u.start), str(u["unit_id"] if isinstance(u, dict) else u.unit_id)))]
+        ids = ids or [str(u) for u in span.get("unit_ids", [])]
+        return KeeperDecision(str(span.get("span_id")), ids, [ids[-1]], "resolved", "keep-last", "keep_last", "Keeping the last take.", None)
+
+
 def choose_provider_name(explicit: Optional[str], cfg: KeeperConfig) -> str:
     """Request field / CLI flag first, then cfg.provider (which already holds RETAKE_KEEPER_PROVIDER if built with from_env)."""
     name = (explicit or cfg.provider or "").strip().lower()
@@ -144,6 +158,8 @@ def make_provider(name: str, cfg: KeeperConfig, adj_config: Optional[Adjudicatio
         return FinetunedProvider(cfg, backend)
     if name == "gpt-oss":
         return GptOssProvider(cfg, adj_config, llm_client)
+    if name == "keep-last":
+        return KeepLastProvider()
     raise ValueError(f"unknown keeper provider '{name}'; choose one of {list(PROVIDERS)}")
 
 
