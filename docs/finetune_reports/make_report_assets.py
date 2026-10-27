@@ -44,6 +44,16 @@ def jl(p):
     return [json.loads(l) for l in open(p, encoding="utf-8")]
 
 
+def smooth(ys, a=0.08):
+    """Exponential moving average (bias-corrected, in log space so near-zero tails stay readable)."""
+    out, m, w = [], 0.0, 0.0
+    for y in np.log10(ys):
+        m = (1 - a) * m + a * y
+        w = (1 - a) * w + a
+        out.append(10 ** (m / w))
+    return out
+
+
 groq = {d["group_id"]: d for d in jl(LOOP / "baselines/groq_results.jsonl")}
 
 # ---- per-group results: DEV (iter_01 model) and HOLDOUT folds 1, 2 (one model per fold)
@@ -132,10 +142,11 @@ for (n, d), c in zip(runs.items(), ("#1f77b4", "#2ca02c", "#9467bd")):
     h = J(LOOP / d / "train_log_history.json")
     tr = [(x["step"], max(x["loss"], 1e-6)) for x in h if "loss" in x and "step" in x]
     ev = [(x["step"], max(x["eval_loss"], 1e-6)) for x in h if "eval_loss" in x]
-    ax[0].plot(*zip(*tr), color=c, lw=0.9, label=n)
+    ax[0].plot(*zip(*tr), color=c, lw=0.5, alpha=0.2)
+    ax[0].plot([t[0] for t in tr], smooth([t[1] for t in tr]), color=c, lw=1.7, label=n)
     if ev:
         ax[1].plot(*zip(*ev), "o-", color=c, ms=3, lw=0.9, label=n)
-ax[0].set(xlabel="step", ylabel="training loss (soft cross-entropy)", title="Training loss", yscale="log")
+ax[0].set(xlabel="step", ylabel="training loss (soft cross-entropy)", title="Training loss (smoothed; raw faint)", yscale="log")
 ax[1].set(xlabel="step", ylabel="evaluation loss (eval set differs by run, see legend)", title="Evaluation loss", yscale="log")
 for a in ax:
     a.legend(frameon=False, fontsize=6.5)
@@ -199,3 +210,49 @@ print("\n".join(T))
 print("saturated share", round(sat, 4), "of", len(hp))
 print(json.dumps(summary["wrong_groups"], indent=1))
 print(summary["synthetic"], summary["auc3"])
+
+
+# ---- four-fold run: one frozen-recipe model per outer fold (folds 1, 2 clean; folds 3, 4 were the tuning set)
+folds4 = {"fold 1 (clean)": "holdout1_fold1", "fold 2 (clean)": "holdout1_fold2", "fold 3 (tuned on)": "outer_fold3", "fold 4 (tuned on)": "outer_fold4"}
+ok4 = {"model": {}, "groq": {}, "keep_last": {}}
+rows4, per_fold = [], {}
+for lab, d in folds4.items():
+    meta = J(LOOP / d / "data/groups_meta.json")
+    recs = jl(LOOP / d / "eval/dev_probs.jsonl")
+    keys = [r["group_id"] for r in recs]
+    sm = M.score_set(recs, meta)
+    res4 = {"model": sm, "keep_last": M.score_set(M.keep_last_records(keys, meta), meta),
+            "groq": M.score_set([{"group_id": k, "keep": groq[k]["keep"], "probs": None, "error": None if groq[k]["status"] == "resolved" else "f"} for k in keys], meta)}
+    for n, sc in res4.items():
+        for r in sc["rows"]:
+            ok4[n][r["group_id"]] = r["ok"]
+    syn4 = M.score_set(jl(LOOP / d / "eval/synthdev_probs.jsonl"), meta)
+    per_fold[lab] = {n: sum(r["ok"] for r in sc["rows"]) for n, sc in res4.items()} | {"n": len(keys), "auc3": sm["auc_within_3plus"], "auc_groups": sm["auc_groups_3plus"],
+                                                                                         "nuanced": sm["accuracy"].get("informative"), "synth": syn4["accuracy"]["all"]["correct"]}
+ks = sorted(ok4["model"])
+pooled4 = {n: sum(ok4[n][g] for g in ks) for n in ok4}
+ci4 = {}
+for o in ("groq", "keep_last"):
+    d_, lo, hi = C.bootstrap_diff([ok4["model"][g] for g in ks], [ok4[o][g] for g in ks])
+    ci4[o] = [100 * d_, 100 * lo, 100 * hi]
+fig, ax = plt.subplots(figsize=(9, 3.9))
+labs = list(folds4) + ["pooled (131)"]
+for i, sysn in enumerate(("model", "groq", "keep_last")):
+    xs = np.arange(len(labs)) + (i - 1) * w
+    vals = [(per_fold[l][sysn], per_fold[l]["n"]) for l in folds4] + [(pooled4[sysn], len(ks))]
+    ax.bar(xs, [a / b for a, b in vals], w, color=COL[sysn], label=NAME[sysn])
+    for x, (a, b) in zip(xs, vals):
+        ax.text(x, a / b + 0.01, f"{a}/{b}", ha="center", fontsize=7)
+ax.set(xticks=range(len(labs)), xticklabels=labs, ylim=(0.6, 1.08), ylabel="exact keeper-set match")
+ax.legend(frameon=False, ncol=3, loc="upper center", bbox_to_anchor=(0.5, -0.12), fontsize=8)
+ax.set_title("Four-fold run: one model per outer fold, frozen recipe")
+fig.tight_layout(); fig.savefig(OUT / "figures/f7_four_fold.png"); fig.savefig(OUT / "figures/f7_four_fold.pdf"); plt.close(fig)
+T4 = ["| fold | n | 4B fine-tune | Groq | keep-last | nuanced (model) | AUC 3+ (groups) | synthetic dev |", "|---|---|---|---|---|---|---|---|"]
+for l, v in per_fold.items():
+    nu = v["nuanced"]
+    T4.append(f"| {l} | {v['n']} | {v['model']} | {v['groq']} | {v['keep_last']} | {nu['correct']}/{nu['n']} | {v['auc3']:.3f} ({v['auc_groups']}) | {v['synth']}/220 |")
+T4.append(f"| **pooled** | {len(ks)} | **{pooled4['model']}** ({100*pooled4['model']/len(ks):.1f}%) | {pooled4['groq']} ({100*pooled4['groq']/len(ks):.1f}%) | {pooled4['keep_last']} ({100*pooled4['keep_last']/len(ks):.1f}%) | | | |")
+T4.append(f"\nPooled 131, model minus Groq: {ci4['groq'][0]:+.1f} points, 95% interval [{ci4['groq'][1]:+.1f}, {ci4['groq'][2]:+.1f}]. Model minus keep-last: {ci4['keep_last'][0]:+.1f} points, [{ci4['keep_last'][1]:+.1f}, {ci4['keep_last'][2]:+.1f}].")
+(OUT / "data/tables_four_fold.md").write_text("\n".join(T4) + "\n", encoding="utf-8")
+(OUT / "data/summary_four_fold.json").write_text(json.dumps({"per_fold": per_fold, "pooled": pooled4, "n": len(ks), "ci_points": ci4}, indent=1), encoding="utf-8")
+print("\n".join(T4))
