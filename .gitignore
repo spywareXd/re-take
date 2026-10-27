@@ -249,7 +249,15 @@ data/processed/
 data/raw/videos/
 data/raw/audio/
 data/**/extracted_audio/
+data/training/sft_v2/
+data/training/sft_v3/
+data/training/sft_decision_v2/
+data/training/sft_decision_v3/
+data/training/sft_decision_v3_rich
+data/training/sft
+data/training/sft_decision
 
+unsloth_compiled_cache/
 # trained final cross-encoder weights (about 264 MB; publish via a release or the Hub, do not commit)
 models/final/ce_seed*/
 
@@ -260,3 +268,11 @@ labels_skipped.jsonl
 
 # local service state (labels, cache)
 /service/data/
+
+# model weights archives (shared out of band, never committed)
+models/final/final.rar
+*.rar
+
+/.claude
+# keeper-decision training loop (local only)
+runs/keeper_loop/
