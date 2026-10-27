@@ -18,7 +18,7 @@ from pipeline.step_07_review.labels import record_answers
 
 from .config import ServiceConfig
 from .jobs import JobContext, JobManager, UserError
-from .llm import LLMSetup, adjudicate_groups, detect_llm
+from .llm import LLMSetup, adjudicate_groups, detect_llm, keeper_advice, record_decision
 from .refine import refine_available, refine_ranges
 
 logger = logging.getLogger("service")
@@ -34,6 +34,7 @@ class Deps:
     transcribe_fn: Optional[Callable[[Path], Any]] = None
     scorer: Any = None                      # a FinalScorer; None = build the real one lazily, once
     llm_client: Any = None                  # an LLMClient (e.g. MockLLMClient)
+    keeper_backend: Any = None              # decision backend for the 'finetuned' keeper (tests); None = Studio Decision API on localhost
 
 
 def _num(x: Any) -> bool:
@@ -48,6 +49,32 @@ def create_app(config: Optional[ServiceConfig] = None, deps: Optional[Deps] = No
     review_cfg = ReviewConfig(cache_dir=cfg.cache_dir, labels_path=cfg.labels_path, skipped_path=cfg.skipped_path, max_questions=cfg.max_questions,
                               unsure_band_enabled=cfg.unsure_band_enabled)
     state: dict[str, Any] = {"scorer": deps.scorer}
+    from pipeline.step_06_llm_adjudication.keeper_policy import PROVIDERS, KeeperConfig
+    from pipeline.step_06_llm_adjudication.keeper_providers import FinetunedProvider, KeepLastProvider
+
+    keeper_cfg = KeeperConfig.from_env(provider=cfg.keeper_provider)
+    if keeper_cfg.provider not in PROVIDERS:
+        raise ValueError(f"keeper provider '{keeper_cfg.provider}' is not one of {list(PROVIDERS)}")
+    finetuned, keep_last = FinetunedProvider(keeper_cfg, deps.keeper_backend), KeepLastProvider()
+    state["keeper"] = keeper_cfg.provider                     # the service-wide keeper; PUT /v1/keeper switches it while the service runs
+
+    def availability(name: str) -> tuple[bool, str]:
+        if name == "finetuned":
+            return finetuned.availability()
+        if name == "keep-last":
+            return keep_last.availability()
+        return bool(llm.available), (f"LLM provider '{llm.provider}'" if llm.available else "no LLM key is configured")
+
+    def provider_status() -> dict[str, dict]:
+        return {n: dict(zip(("available", "reason"), availability(n))) for n in PROVIDERS}
+
+    def keeper_state() -> dict:
+        return {"current": state["keeper"], "default": keeper_cfg.provider, "providers": provider_status()}
+
+    def pick_provider(requested: Any) -> str:
+        if requested is not None and requested not in PROVIDERS:
+            raise BadRequest(f"'keeper_provider' must be one of {list(PROVIDERS)}.")
+        return requested or state["keeper"]
 
     def scorer_provider():
         if state["scorer"] is None:
@@ -89,7 +116,26 @@ def create_app(config: Optional[ServiceConfig] = None, deps: Optional[Deps] = No
     # ---- capabilities ----
     @app.get("/v1/capabilities")
     def capabilities():
-        return {"adjudicate": bool(llm.available), "refine": refine_available()}
+        keeper = keeper_state()
+        return {"adjudicate": bool(keeper["providers"][keeper["current"]]["available"]), "refine": refine_available(), "keeper": keeper}
+
+    # ---- keeper provider: read / switch (service-wide, until the service restarts) ----
+    @app.get("/v1/keeper")
+    def keeper_get():
+        return keeper_state()
+
+    @app.put("/v1/keeper")
+    async def keeper_put(request: Request):
+        body = await body_of(request)
+        name = body.get("provider")
+        if name not in PROVIDERS:
+            raise BadRequest(f"'provider' must be one of {list(PROVIDERS)}.")
+        ok, why = availability(name)
+        if not ok:
+            raise BadRequest(f"Keeper '{name}' is not available: {why}.")
+        state["keeper"] = name
+        logger.info("keeper provider switched to '%s'", name)
+        return keeper_state()
 
     # ---- analyze ----
     @app.post("/v1/analyze", status_code=202)
@@ -142,9 +188,12 @@ def create_app(config: Optional[ServiceConfig] = None, deps: Optional[Deps] = No
     @app.post("/v1/adjudicate", status_code=202)
     async def adjudicate(request: Request):
         body = await body_of(request)
-        need_path(body)
-        if not llm.available:
-            raise BadRequest("AI advice is not available: no LLM key is configured.")
+        path = need_path(body)
+        name = pick_provider(body.get("keeper_provider"))
+        ok, why = availability(name)
+        if not ok:
+            raise BadRequest(f"AI advice is not available: keeper provider '{name}' cannot run ({why})." if name != "gpt-oss"
+                             else "AI advice is not available: no LLM key is configured.")
         groups = body.get("groups")
         if not isinstance(groups, list) or not groups or not all(
             isinstance(g, dict) and isinstance(g.get("id"), str) and isinstance(g.get("sentences"), list) and len(g["sentences"]) >= 2
@@ -152,7 +201,15 @@ def create_app(config: Optional[ServiceConfig] = None, deps: Optional[Deps] = No
             raise BadRequest("'groups' must be a non-empty list of groups with at least two sentences each.")
 
         def run(ctx: JobContext):
-            return adjudicate_groups(groups, llm, ctx)                                  # a plain JSON array, never wrapped
+            if name in ("finetuned", "keep-last"):
+                return keeper_advice(groups, finetuned if name == "finetuned" else keep_last, ctx, path, cfg.cache_dir, cfg.keeper_decisions_path,
+                                     body.get("job"))
+            advice = adjudicate_groups(groups, llm, ctx)                                # a plain JSON array, never wrapped (unchanged)
+            for a in advice:
+                record_decision(cfg.keeper_decisions_path, {"job": body.get("job"), "group": a["group"], "provider": "gpt-oss", "model": llm.config.model if llm.config else llm.provider,
+                                                            "decided_by": "gpt-oss", "status": "resolved", "keep": a["keep"], "reason": a["reason"],
+                                                            "source": "keeper_advice"})
+            return advice
 
         return {"job": jobs.submit("adjudicate", run)}
 

@@ -60,7 +60,7 @@ REFRESH_FEATURE_COLUMNS: list[str] = [
     "feature_version",
 ]
 
-# Groups CSV column specification (18 columns)
+# Groups CSV column specification (20 columns; `source` and `synth_type` were added when the synthetic groups were merged in)
 GROUPS_CSV_COLUMNS: list[str] = [
     "group_id",
     "video_id",
@@ -80,6 +80,8 @@ GROUPS_CSV_COLUMNS: list[str] = [
     "n_pos_pairs",
     "n_exempt_pairs",
     "feature_version",
+    "source",
+    "synth_type",
 ]
 
 # Old groups header (pre-migration) — used to detect and migrate legacy files

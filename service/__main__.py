@@ -31,6 +31,11 @@ def main() -> None:
     logging.getLogger("service").info("log file: %s", logfile)
     logging.getLogger("service").info("thresholds version %s (unsure band %s..%s) | adjudicate: %s (%s) | refine: %s | listening on http://%s:%d",
                                       thr.thresholds_version, thr.t_lo, thr.t_hi, app.state.llm.available, app.state.llm.provider, refine_available(), cfg.host, cfg.port)
+    from pipeline.step_06_llm_adjudication.keeper_policy import KeeperConfig
+    from pipeline.step_06_llm_adjudication.keeper_providers import FinetunedProvider
+    kcfg = KeeperConfig.from_env(provider=cfg.keeper_provider)
+    ok, why = FinetunedProvider(kcfg).availability()
+    logging.getLogger("service").info("keeper default '%s' | finetuned available: %s (%s)", kcfg.provider, ok, why)
     uvicorn.run(app, host=cfg.host, port=cfg.port, log_level="info")
 
 

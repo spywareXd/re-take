@@ -20,13 +20,14 @@ class ServiceConfig:
     llm_model: Optional[str] = None
     llm_mock: bool = False                              # RETAKE_LLM_MOCK=1: the mock keeper client (no key, no network)
     max_jobs_kept: int = 100
+    keeper_provider: Optional[str] = None               # finetuned | gpt-oss; None = RETAKE_KEEPER_PROVIDER or 'finetuned' (KeeperConfig.from_env)
 
     @classmethod
     def from_env(cls) -> "ServiceConfig":
         e = os.environ.get
         return cls(host=e("RETAKE_HOST", "127.0.0.1"), port=int(e("RETAKE_PORT", "8765")), data_dir=e("RETAKE_DATA_DIR", str(SERVICE_DIR / "data")),
                    llm_provider=e("RETAKE_LLM_PROVIDER") or None, llm_model=e("RETAKE_LLM_MODEL") or None,
-                   llm_mock=e("RETAKE_LLM_MOCK", "").lower() in ("1", "true", "yes"))
+                   llm_mock=e("RETAKE_LLM_MOCK", "").lower() in ("1", "true", "yes"), keeper_provider=e("RETAKE_KEEPER_PROVIDER") or None)
 
     @property
     def labels_path(self) -> str:
@@ -35,6 +36,10 @@ class ServiceConfig:
     @property
     def skipped_path(self) -> str:
         return str(Path(self.data_dir) / "labels_skipped.jsonl")
+
+    @property
+    def keeper_decisions_path(self) -> str:
+        return str(Path(self.data_dir) / "keeper_decisions.jsonl")
 
     @property
     def cache_dir(self) -> str:
