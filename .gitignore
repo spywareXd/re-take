@@ -276,3 +276,4 @@ models/final/final.rar
 /.claude
 # keeper-decision training loop (local only)
 runs/keeper_loop/
+/filmcraft
