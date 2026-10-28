@@ -7,7 +7,8 @@ Layers, in order (each behind its own KeeperConfig flag, all on by default):
   c. model           the decision model's p(keep) per take, keep = p >= 0.5              -> its keep set     decided_by=model
   d. empty fallback  the model keeps nothing (and the cue rule did not apply)           -> keep the last    decided_by=empty_fallback
   e. unclear         top two p within 0.15 or max p below 0.6 (training/decision_eval)  -> keep the last, flagged unclear
-  model error        the model cannot answer                                            -> keep the last    decided_by=model_error_fallback (flagged unclear)
+  model error        the model cannot answer: on_model_error="fail_closed" (default) -> the group FAILS (nothing is cut), decided_by=model_error
+                     on_model_error="keep_last" -> keep the last take, decided_by=model_error_fallback (flagged unclear)
 
 The model's input is built with the training-time builders, unchanged: keeper_prompt.build_keeper_messages("short", ...) ->
 training/build_decision_data.to_row (rules from decision_rules()) -> training/build_decision_data_v2.rich_questions.
@@ -29,6 +30,9 @@ PROVIDERS = ("finetuned", "gpt-oss", "keep-last")
 DEFAULT_PROVIDER = "finetuned"
 DEFAULT_STUDIO_URL = "http://127.0.0.1:8888"
 DEFAULT_STUDIO_MODEL = "clef-ft:Qwen_final"
+DEFAULT_MODEL_PATH = Path(__file__).resolve().parents[2] / "models" / "decision_standalone"
+ON_MODEL_ERROR = ("fail_closed", "keep_last")
+LOCAL_MODES = ("4bit", "fp16")                      # 4bit_requant exists in the loader for measurement only and is not offered here
 
 
 def _flag(name: str, default: bool) -> bool:
@@ -50,6 +54,12 @@ class KeeperConfig:
     studio_url: str = DEFAULT_STUDIO_URL                # the Unsloth Studio Decision API (localhost only)
     studio_model: str = DEFAULT_STUDIO_MODEL            # runs/keeper_loop/final_all/model, loaded in Studio
     timeout_seconds: float = 60.0
+    model_path: str = str(DEFAULT_MODEL_PATH)           # the standalone decision model folder (models/decision_standalone, see export_manifest.json)
+    model_repo: Optional[str] = None                    # optional Hugging Face repo id to download the model from when model_path is empty or missing
+    mode: str = "4bit"                                  # 4bit (about 5.4 GB VRAM) | fp16 (needs >= 10 GB free)
+    verify_model: bool = False                          # check SHA-256 of the files in use against export_manifest.json on load (always done after a download)
+    unload_after: bool = True                           # free the decision model (and its VRAM) after the keeper step
+    on_model_error: str = "fail_closed"                 # fail_closed: the group fails, nothing is cut | keep_last: keep the last take, flagged unclear
     extra_cues: Optional[list[str]] = None              # None = the cues in keeper_cues.json
 
     @classmethod
@@ -59,11 +69,21 @@ class KeeperConfig:
                   cue_rule=_flag("RETAKE_KEEPER_CUE_RULE", True), cue_threshold=float(e("RETAKE_KEEPER_CUE_THRESHOLD") or 0.8), exact_gate=_flag("RETAKE_KEEPER_EXACT_GATE", True),
                   empty_fallback=_flag("RETAKE_KEEPER_EMPTY_FALLBACK", True), unclear_default=_flag("RETAKE_KEEPER_UNCLEAR_DEFAULT", True),
                   rules_with_gpt_oss=_flag("RETAKE_KEEPER_RULES_WITH_GPT_OSS", False),
-                  studio_url=e("RETAKE_KEEPER_STUDIO_URL") or DEFAULT_STUDIO_URL, studio_model=e("RETAKE_KEEPER_MODEL") or DEFAULT_STUDIO_MODEL)
+                  studio_url=e("RETAKE_KEEPER_STUDIO_URL") or DEFAULT_STUDIO_URL, studio_model=e("RETAKE_KEEPER_MODEL") or DEFAULT_STUDIO_MODEL,
+                  model_path=e("RETAKE_KEEPER_MODEL_PATH") or str(DEFAULT_MODEL_PATH), model_repo=e("RETAKE_KEEPER_MODEL_REPO") or None,
+                  mode=(e("RETAKE_KEEPER_MODE") or "4bit").strip().lower(), verify_model=_flag("RETAKE_KEEPER_VERIFY_MODEL", False),
+                  unload_after=_flag("RETAKE_KEEPER_UNLOAD_AFTER", True), on_model_error=(e("RETAKE_KEEPER_ON_MODEL_ERROR") or "fail_closed").strip().lower())
         for k, v in overrides.items():
             if v is not None:
                 setattr(cfg, k, v)
+        cfg.validate()
         return cfg
+
+    def validate(self) -> None:
+        if self.mode not in LOCAL_MODES:
+            raise ValueError(f"keeper.mode must be one of {list(LOCAL_MODES)}, got '{self.mode}'")
+        if self.on_model_error not in ON_MODEL_ERROR:
+            raise ValueError(f"keeper.on_model_error must be one of {list(ON_MODEL_ERROR)}, got '{self.on_model_error}'")
 
 
 # ---------------------------------------------------------------- rules
@@ -212,7 +232,10 @@ def decide_finetuned(span_id: str, members: Sequence[Any], before: Any, after: A
         probs = {(k[len("keep_"):] if k.startswith("keep_") else k): float(v) for k, v in raw.items()}
         if set(probs) != set(ids):
             raise ValueError(f"model answered {sorted(probs)} for takes {ids}")
-    except Exception as exc:                                                     # layer f: keep the last take, loudly
+    except Exception as exc:                                                     # layer f
+        if cfg.on_model_error != "keep_last":                                    # fail closed (default): the group fails and nothing is cut
+            logger.error("[Keeper] MODEL ERROR on group %s (%s): the group fails, nothing is cut", span_id, exc)
+            return KeeperDecision(span_id, ids, [], "failed", "finetuned", "model_error", "", model, None, f"{type(exc).__name__}: {exc}")
         logger.error("[Keeper] MODEL ERROR on group %s (%s): keeping the last take %s", span_id, exc, ids[-1])
         return KeeperDecision(span_id, ids, [ids[-1]], "unclear", "finetuned", "model_error_fallback",
                               "The keeper model could not answer: keeping the last take.", model, None, str(exc))

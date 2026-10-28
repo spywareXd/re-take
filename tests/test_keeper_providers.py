@@ -105,7 +105,7 @@ def test_unclear_keeps_the_last_and_flags():
 def test_model_error_falls_back_to_keep_last():
     def boom(state, questions):
         raise ConnectionError("studio down")
-    d, _ = decide(UNITS[1:3], predict=boom)
+    d, _ = decide(UNITS[1:3], predict=boom, cfg=KeeperConfig(on_model_error="keep_last"))      # the opt-in; the default is fail_closed
     assert d.keep == ["3:0"] and d.decided_by == "model_error_fallback" and "studio down" in d.error
     assert d.span_fields()["adjudication_status"] == "resolved" and d.span_fields()["keeper_error"]
 
@@ -317,7 +317,7 @@ def test_default_provider_makes_no_external_calls(monkeypatch):
     monkeypatch.setattr(socket.socket, "connect", guarded)
     try:
         cfg = KeeperConfig.from_env(studio_url=f"http://127.0.0.1:{server.server_port}", studio_model="clef-ft:test")
-        prov = make_provider(choose_provider_name(None, cfg), cfg)
+        prov = make_provider(choose_provider_name(None, cfg), cfg, backend=StudioDecisionBackend(cfg.studio_url, cfg.studio_model))      # the Studio backend is no longer the default
         assert isinstance(prov, FinetunedProvider) and prov.availability()[0]
         out = run_keeper_stage([copy.deepcopy(SPAN)], UNITS, prov)
     finally:

@@ -459,6 +459,7 @@ def run_full_pipeline(
                 except Exception:
                     pass
 
+        generator = None
         if transcript is None:
             generator = TimestampGenerator(
                 provider=provider,
@@ -604,7 +605,7 @@ def run_full_pipeline(
         else:
             keeper = make_provider(keeper_name, keeper_cfg, adj_config, backend=keeper_backend)
             ok, why = keeper.availability()
-            if not ok and keeper_provider:
+            if not ok and (keeper_provider or (keeper_name == "finetuned" and keeper_cfg.on_model_error == "fail_closed")):
                 raise ProviderUnavailable(f"keeper provider '{keeper_name}' is not available: {why}")
             if not ok:
                 logger.error("[Stage 6] keeper provider '%s' is NOT available (%s): every model call will fall back to keeping the last take", keeper_name, why)
@@ -612,7 +613,9 @@ def run_full_pipeline(
                 logger.info("[Stage 6] keeper provider '%s': %s", keeper_name, why)
             if keeper_name == "finetuned":
                 keeper_model_id = keeper.model_id
-                _free_cuda_cache()
+                _release_gpu_models(generator, locals().get("scorer"))                       # the transcription model and the scorer leave the GPU before the decision model loads
+                if hasattr(keeper.backend, "before_load"):
+                    keeper.backend.before_load = _free_cuda_cache
             adjudicated_spans = run_keeper_stage(retake_spans, units, keeper)
 
         if save_intermediates:
@@ -718,6 +721,16 @@ def run_full_pipeline(
         logger.exception(f"Pipeline failed: {e}")
 
     return result
+
+
+def _release_gpu_models(generator: Any, scorer: Any) -> None:
+    """Drop the transcription model (WhisperX / faster-whisper keep it in `_model`) and the scorer's cross-encoders, then empty the CUDA cache."""
+    transcriber = getattr(generator, "transcriber", None)
+    if transcriber is not None and hasattr(transcriber, "_model"):
+        transcriber._model = None
+    if scorer is not None and getattr(scorer, "_ce", None) is not None:
+        scorer._ce = None                                           # FinalScorer loads its cross-encoders again if it is ever used again
+    _free_cuda_cache()
 
 
 def _free_cuda_cache() -> None:

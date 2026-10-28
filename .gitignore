@@ -284,3 +284,6 @@ target/
 *.pdb
 **/mutants.out*/
 rustc-ice-*.txt
+
+#presentations
+journal/vit_ppt

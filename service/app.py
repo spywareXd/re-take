@@ -56,6 +56,14 @@ def create_app(config: Optional[ServiceConfig] = None, deps: Optional[Deps] = No
     if keeper_cfg.provider not in PROVIDERS:
         raise ValueError(f"keeper provider '{keeper_cfg.provider}' is not one of {list(PROVIDERS)}")
     finetuned, keep_last = FinetunedProvider(keeper_cfg, deps.keeper_backend), KeepLastProvider()
+    if hasattr(finetuned.backend, "before_load"):
+        def _make_room():                                     # the scorer's cross-encoders leave the GPU before the decision model loads
+            sc = state["scorer"]
+            if sc is not None and getattr(sc, "_ce", None) is not None:
+                sc._ce = None
+            from pipeline.run_pipeline import _free_cuda_cache
+            _free_cuda_cache()
+        finetuned.backend.before_load = _make_room
     state["keeper"] = keeper_cfg.provider                     # the service-wide keeper; PUT /v1/keeper switches it while the service runs
 
     def availability(name: str) -> tuple[bool, str]:
@@ -69,7 +77,7 @@ def create_app(config: Optional[ServiceConfig] = None, deps: Optional[Deps] = No
         return {n: dict(zip(("available", "reason"), availability(n))) for n in PROVIDERS}
 
     def keeper_state() -> dict:
-        return {"current": state["keeper"], "default": keeper_cfg.provider, "providers": provider_status()}
+        return {"current": state["keeper"], "default": keeper_cfg.provider, "providers": provider_status(), "finetuned": finetuned.info()}
 
     def pick_provider(requested: Any) -> str:
         if requested is not None and requested not in PROVIDERS:
@@ -202,8 +210,12 @@ def create_app(config: Optional[ServiceConfig] = None, deps: Optional[Deps] = No
 
         def run(ctx: JobContext):
             if name in ("finetuned", "keep-last"):
-                return keeper_advice(groups, finetuned if name == "finetuned" else keep_last, ctx, path, cfg.cache_dir, cfg.keeper_decisions_path,
-                                     body.get("job"))
+                try:
+                    return keeper_advice(groups, finetuned if name == "finetuned" else keep_last, ctx, path, cfg.cache_dir, cfg.keeper_decisions_path,
+                                         body.get("job"))
+                finally:
+                    if name == "finetuned" and keeper_cfg.unload_after:
+                        finetuned.unload()
             advice = adjudicate_groups(groups, llm, ctx)                                # a plain JSON array, never wrapped (unchanged)
             for a in advice:
                 record_decision(cfg.keeper_decisions_path, {"job": body.get("job"), "group": a["group"], "provider": "gpt-oss", "model": llm.config.model if llm.config else llm.provider,

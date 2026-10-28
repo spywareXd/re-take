@@ -2,9 +2,9 @@
 Keeper providers for Step 06: `finetuned` (default; the local decision model behind the hybrid policy), `gpt-oss` (the existing LLM keeper call,
 unchanged) and `keep-last` (the last take of every group, no model). Pick one with KeeperConfig.provider / RETAKE_KEEPER_PROVIDER / --keeper-provider / the request field `keeper_provider`.
 
-The decision model needs Unsloth, which lives in the Studio environment (Python 3.13, torch 2.13), not in this repo's environment (torch 2.5 for
-WhisperX), so it cannot be loaded in-process. `finetuned` therefore calls the Unsloth Studio Decision API on localhost
-(POST <studio_url>/v1/systemone, `state` sent as a JSON object) with the model loaded in Studio. No other host is ever contacted.
+`finetuned` runs the exported decision model in-process (keeper_model.StandaloneBackend: transformers + torch + bitsandbytes, mode 4bit by default),
+wrapped by the hybrid policy in keeper_policy. It needs no Unsloth and no Studio. StudioDecisionBackend (the Studio Decision API on localhost) is kept
+for reference and can still be passed as `backend=`, but it is no longer the default.
 """
 from __future__ import annotations
 
@@ -89,9 +89,21 @@ class FinetunedProvider(KeeperProvider):
     name = "finetuned"
 
     def __init__(self, cfg: KeeperConfig, backend: Any = None):
+        from .keeper_model import StandaloneBackend
+
         self.cfg = cfg
-        self.backend = backend if backend is not None else StudioDecisionBackend(cfg.studio_url, cfg.studio_model, timeout=cfg.timeout_seconds)
-        self.model_id = getattr(self.backend, "model", None) or cfg.studio_model
+        cfg.validate()
+        self.backend = backend if backend is not None else StandaloneBackend(cfg.model_path, cfg.mode, cfg.model_repo, cfg.verify_model)
+        self.model_id = getattr(self.backend, "model", None) or f"standalone-{cfg.mode}"
+
+    def info(self) -> dict:
+        base = self.backend.info() if hasattr(self.backend, "info") else {"backend": type(self.backend).__name__}
+        return {**base, "mode": self.cfg.mode, "model_path": self.cfg.model_path, "on_model_error": self.cfg.on_model_error, "unload_after": self.cfg.unload_after}
+
+    def unload(self) -> None:
+        """Free the model and its VRAM (no-op for backends that hold nothing, e.g. the Studio HTTP backend)."""
+        if hasattr(self.backend, "unload"):
+            self.backend.unload()
 
     def availability(self) -> tuple[bool, str]:
         return self.backend.availability()
@@ -184,6 +196,14 @@ def run_keeper_stage(spans: Sequence[Any], units: Sequence[Any], provider: Keepe
     if isinstance(provider, GptOssProvider):
         provider.all_units = units
     out = []
+    try:
+        return _decide_spans(spans, by_id, ordered, provider, out)
+    finally:
+        if getattr(getattr(provider, "cfg", None), "unload_after", False) and hasattr(provider, "unload"):
+            provider.unload()                                       # keeper.unload_after: give the VRAM back
+
+
+def _decide_spans(spans: Sequence[Any], by_id: dict, ordered: Sequence[Any], provider: KeeperProvider, out: list[dict]) -> list[dict]:
     for item in spans:
         span = _extract_span_dict(item)
         members = [by_id[str(u)] for u in span.get("unit_ids", []) if str(u) in by_id]
