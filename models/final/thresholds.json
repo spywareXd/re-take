@@ -75,9 +75,9 @@
   "model_version": "final-ce-3seed-v2labels+stacker-v1",
   "label_version": "pairs_v2 (sha256 d34ece717418)",
   "unsure_band": {
-    "t_lo": 0.00350482,
+    "t_lo": 0.32,
     "t_hi": 0.96933407,
-    "method": "t_lo = highest value (floored to 8 decimals) such that at most 3% of the true retakes among the ambiguous-band pairs have cross-encoder prob <= t_lo; t_hi = t_amb. Pairs with t_lo < ce < t_hi are escalated to the user. Fitted on out-of-fold scores.",
+    "method": "MANUALLY RAISED to 0.32 (fitted value was 0.00350482) to ask fewer questions; n_retakes_below_t_lo below is for the fitted value. Fitted rule: t_lo = highest value (floored to 8 decimals) such that at most 3% of the true retakes among the ambiguous-band pairs have cross-encoder prob <= t_lo; t_hi = t_amb. Pairs with t_lo < ce < t_hi are escalated to the user. Fitted on out-of-fold scores.",
     "n_pairs": 376,
     "n_retakes": 36,
     "n_retakes_below_t_lo": 1,
