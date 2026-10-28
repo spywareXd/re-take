@@ -26,6 +26,7 @@ dependencies = [
     "uvicorn>=0.30.0",
     "streamlit>=1.30.0",
     "whisperx>=3.4.5",
+    "huggingface>=0.0.1",
 ]
 
 [dependency-groups]
