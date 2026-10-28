@@ -363,6 +363,7 @@ def run_full_pipeline(
     keeper_provider: str | None = None,
     keeper_config: Any = None,
     keeper_backend: Any = None,
+    stop_after: str | None = None,
 ) -> PipelineResult:
     """
     Run the complete retake detection and video editing pipeline.
@@ -392,6 +393,7 @@ def run_full_pipeline(
         keeper_provider: Stage 6 keeper provider: 'finetuned' (default; local decision model + hybrid policy), 'keep-last', or 'gpt-oss' (the LLM call
             configured by llm_provider / llm_model, unchanged). None = keeper_config.provider / RETAKE_KEEPER_PROVIDER / 'finetuned'.
             An explicitly chosen provider that is not available raises an error; it is never swapped for another one.
+        stop_after: None (default, run everything) or "keeper": stop after Stage 6; nothing is cut and no video is written.
         keeper_config: Optional KeeperConfig (policy flags, Studio URL and model id). Default: KeeperConfig.from_env().
         keeper_backend: Optional decision backend for 'finetuned' (tests); default: the Studio Decision API on localhost.
         detect_intra_unit: OPTIONAL, default off. If True, also suggest restarts inside single units and save
@@ -631,6 +633,13 @@ def run_full_pipeline(
         )
         result.stage_timings["llm_adjudication"] = time.time() - t0
         _progress("LLM Adjudication", 1.0)
+
+        if stop_after == "keeper":                       # analysis only: transcript, units, candidates, keeper groups. Nothing is cut or rendered.
+            result.retake_groups_count = len(adjudicated_spans)
+            result.success = True
+            if save_intermediates:
+                paths.pipeline_result.write_text(json.dumps(result.to_dict(), indent=2), encoding="utf-8")
+            return result
 
         # ======================================================================
         # Stage 7: Cutlist Generation (Step 08 cut_generator)
