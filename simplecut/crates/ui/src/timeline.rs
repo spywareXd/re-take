@@ -16,7 +16,7 @@ use crate::retakes::{Mark, MarkKind};
 use crate::theme;
 use crate::tl_math::{self, Axis, ClipGeom, Hit};
 
-const HEADER_W: f32 = 168.0;
+const HEADER_W: f32 = 196.0; // wide enough for the longest name + mute + "-60.0 dB" with no shortening (168 was 26 px too narrow)
 const RULER_H: f32 = 26.0;
 const LANE_H: f32 = 48.0;
 /// How close (in pixels) the pointer must be to a clip's end to grab it.
@@ -349,21 +349,24 @@ fn track_headers(app: &mut SimpleCutApp, ui: &mut egui::Ui, seq: &SequenceView, 
         let top = outer.top() + RULER_H + i as f32 * LANE_H;
         let cell = Rect::from_min_max(pos2(outer.left(), top + 2.0), pos2(outer.left() + HEADER_W - 6.0, top + LANE_H - 2.0));
         ui.painter().rect_filled(cell, CornerRadius::same(4), t.panel_raised);
-        let mut cui = ui.new_child(UiBuilder::new().max_rect(cell.shrink2(vec2(8.0, 4.0))).layout(egui::Layout::left_to_right(egui::Align::Center)));
-        cui.label(egui::RichText::new(&track.name).color(t.text));
-        cui.add_space(2.0);
+        // The controls are placed first, from the right edge inwards, so they can never leave the cell; the name gets what is left and is shortened with "…"
+        // (its full text is the hover text and the accessible name). Clipping to the cell is the last guard against any width the layout did not foresee.
+        let inner = cell.shrink2(vec2(8.0, 4.0));
+        let mut cui = ui.new_child(UiBuilder::new().max_rect(inner).layout(egui::Layout::right_to_left(egui::Align::Center)));
+        cui.set_clip_rect(inner.intersect(ui.clip_rect()));
+        cui.spacing_mut().item_spacing.x = 4.0;
         if track.kind == TrackKind::Audio {
-            let m = cui.add(egui::Button::new("M").selected(track.muted).min_size(vec2(24.0, 0.0))).on_hover_text(if track.muted { "Unmute" } else { "Mute" });
-            m.widget_info(|| WidgetInfo::labeled(WidgetType::Button, true, format!("Mute {}", track.name)));
-            if m.clicked() {
-                app.queue(Action::SetTrackMuted(track.id, !track.muted));
-            }
             let mut db = match app.tl.track_volume {
                 Some((id, v)) if id == track.id => v,
                 _ => track.volume_db,
             };
             let r = cui.add(egui::DragValue::new(&mut db).range(-60.0..=12.0).speed(0.25).suffix(" dB").max_decimals(1));
             r.widget_info(|| WidgetInfo::labeled(WidgetType::DragValue, true, format!("{} volume", track.name)));
+            let m = cui.add(egui::Button::new("M").selected(track.muted).min_size(vec2(22.0, 0.0))).on_hover_text(if track.muted { "Unmute" } else { "Mute" });
+            m.widget_info(|| WidgetInfo::labeled(WidgetType::Button, true, format!("Mute {}", track.name)));
+            if m.clicked() {
+                app.queue(Action::SetTrackMuted(track.id, !track.muted));
+            }
             if r.changed() {
                 app.tl.track_volume = Some((track.id, db));
             }
@@ -375,6 +378,9 @@ fn track_headers(app: &mut SimpleCutApp, ui: &mut egui::Ui, seq: &SequenceView, 
                 app.queue(Action::SetTrackVolume(id, v));
             }
         }
+        cui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |nui| {
+            nui.add(egui::Label::new(egui::RichText::new(&track.name).color(t.text)).truncate()).on_hover_text(&track.name);
+        });
     }
 }
 
