@@ -1,0 +1,241 @@
+{
+ "kinds": [
+  "video",
+  "audio",
+  "subtitles",
+  "cutlist",
+  "transcript"
+ ],
+ "presets": {
+  "Match Source": {
+   "category": "Match Source",
+   "description": "Source size and frame rate, H.264 CRF 18, AAC 192 kbps",
+   "video": {
+    "codec": "h264",
+    "quality": {
+     "preset": "high"
+    },
+    "speed": "medium"
+   },
+   "resolution": {
+    "mode": "source"
+   },
+   "fps": "source",
+   "audio": {
+    "bitrate_kbps": 192
+   },
+   "builtin": true
+  },
+  "YouTube 1080p": {
+   "category": "Web & Social",
+   "description": "1080p, source frame rate, H.264 CRF 18, AAC 192 kbps",
+   "video": {
+    "codec": "h264",
+    "quality": {
+     "preset": "high"
+    },
+    "speed": "slow"
+   },
+   "resolution": {
+    "mode": "preset",
+    "preset": "1080p"
+   },
+   "fps": "source",
+   "audio": {
+    "bitrate_kbps": 192
+   },
+   "builtin": true
+  },
+  "YouTube 4K": {
+   "category": "Web & Social",
+   "description": "2160p, source frame rate, H.264 CRF 18, AAC 256 kbps",
+   "video": {
+    "codec": "h264",
+    "quality": {
+     "preset": "high"
+    },
+    "speed": "medium"
+   },
+   "resolution": {
+    "mode": "preset",
+    "preset": "2160p"
+   },
+   "fps": "source",
+   "audio": {
+    "bitrate_kbps": 256
+   },
+   "builtin": true
+  },
+  "Shorts / Reels / TikTok": {
+   "category": "Web & Social",
+   "description": "Vertical 1080x1920 (cropped to fill), 30 fps, H.264 CRF 20, AAC 128 kbps",
+   "video": {
+    "codec": "h264",
+    "quality": {
+     "crf": 20
+    },
+    "speed": "medium"
+   },
+   "resolution": {
+    "mode": "preset",
+    "preset": "vertical_1080x1920",
+    "fit": "crop"
+   },
+   "fps": 30,
+   "audio": {
+    "bitrate_kbps": 128
+   },
+   "builtin": true
+  },
+  "Draft / Preview": {
+   "category": "Draft",
+   "description": "480p, 30 fps, H.264 CRF 28 on the fastest setting, AAC 96 kbps",
+   "video": {
+    "codec": "h264",
+    "quality": {
+     "preset": "draft"
+    },
+    "speed": "ultrafast"
+   },
+   "resolution": {
+    "mode": "preset",
+    "preset": "480p"
+   },
+   "fps": 30,
+   "audio": {
+    "bitrate_kbps": 96
+   },
+   "builtin": true
+  }
+ },
+ "preset_order": [
+  "Match Source",
+  "YouTube 1080p",
+  "YouTube 4K",
+  "Shorts / Reels / TikTok",
+  "Draft / Preview"
+ ],
+ "resolutions": {
+  "source": true,
+  "heights": [
+   "2160p",
+   "1440p",
+   "1080p",
+   "720p",
+   "480p"
+  ],
+  "canvases": {
+   "vertical_1080x1920": [
+    1080,
+    1920
+   ],
+   "square_1080x1080": [
+    1080,
+    1080
+   ]
+  },
+  "custom": true,
+  "fits": [
+   "letterbox",
+   "crop",
+   "stretch"
+  ],
+  "min": 16,
+  "max": 7680,
+  "must_be_even": true
+ },
+ "fps": {
+  "source": true,
+  "choices": [
+   24,
+   25,
+   30,
+   50,
+   60
+  ],
+  "custom_min": 1.0,
+  "custom_max": 240.0
+ },
+ "video": {
+  "codecs": [
+   "h264",
+   "h265"
+  ],
+  "crf_presets": {
+   "h264": {
+    "draft": 28,
+    "standard": 23,
+    "high": 18
+   },
+   "h265": {
+    "draft": 32,
+    "standard": 28,
+    "high": 23
+   }
+  },
+  "crf_range": [
+   0,
+   51
+  ],
+  "bitrate_kbps_range": [
+   100,
+   200000
+  ],
+  "speeds": [
+   "ultrafast",
+   "superfast",
+   "veryfast",
+   "faster",
+   "fast",
+   "medium",
+   "slow",
+   "slower",
+   "veryslow"
+  ],
+  "hardware": {
+   "h264": true,
+   "h265": true
+  }
+ },
+ "audio": {
+  "codec": "aac",
+  "bitrates_kbps": [
+   64,
+   96,
+   128,
+   160,
+   192,
+   256,
+   320,
+   384,
+   512
+  ],
+  "normalize_loudness_default": false,
+  "fade_ms_default": 15.0,
+  "fade_ms_max": 100.0
+ },
+ "audio_only_formats": [
+  "mp3",
+  "wav"
+ ],
+ "text_formats": {
+  "subtitles": [
+   "srt",
+   "vtt"
+  ],
+  "cutlist": [
+   "edl",
+   "json"
+  ],
+  "transcript": [
+   "txt",
+   "json"
+  ]
+ },
+ "encoders": {
+  "libx264": true,
+  "libx265": true,
+  "aac": true,
+  "libmp3lame": true
+ }
+}

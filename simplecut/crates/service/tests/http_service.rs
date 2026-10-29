@@ -678,3 +678,66 @@ fn project_calls_return_the_status_and_the_body_even_for_a_409() {
     assert!(q.contains("project=C%3A%2Fwork%2FMy%20Film%20%26%20Co"), "the folder is URL-encoded: {q}");
     assert!(seen.iter().any(|(_, p, _)| p.contains("silence_gap_s=0.25")));
 }
+
+// ── exports and user presets ───────────────────────────────────────────────
+
+#[test]
+fn an_export_posts_the_source_the_project_and_the_options_and_follows_the_job() {
+    let m = mock(|method, path, _| match (method, path) {
+        ("GET", "/v1/capabilities") => (200, r#"{"adjudicate":false,"refine":false}"#.into()),
+        ("POST", "/v1/export") => (202, r#"{"job":"x1"}"#.into()),
+        ("GET", "/v1/jobs/x1") => {
+            (200, r#"{"state":"done","fraction":1.0,"status":"Done","result":{"path":"C:/p/data/exports/a.mp4","relative":"data/exports/a.mp4"}}"#.into())
+        }
+        ("GET", p) if p.starts_with("/v1/jobs/x1/events") => {
+            (200, r#"{"events":[{"seq":1,"stage":"export_render","status":"progress","pct":40,"message":"1.8 of 4.5 s"}]}"#.into())
+        }
+        _ => (404, "{}".into()),
+    });
+    let s = HttpService::connect(&m.url);
+    let req = || simplecut_core::ExportRequest {
+        item: ItemId(7),
+        path: "C:/clips/take.mp4".into(),
+        body: serde_json::json!({"kind": "video", "preset": "YouTube 1080p"}),
+    };
+    let Some(mut no_folder) = s.export(req()) else { panic!("a job") };
+    assert!(matches!(wait(&mut *no_folder), JobState::Failed(e) if e.contains("Save the project first")), "no project folder: a plain sentence, no request");
+    assert!(!m.seen.lock().unwrap().iter().any(|(_, p, _)| p == "/v1/export"));
+    s.set_project(Some(std::path::PathBuf::from("C:/p")));
+    let mut job = s.export(req()).unwrap();
+    let (end, events) = drain(&mut *job);
+    assert!(matches!(end, JobState::Done(t) if t.contains("data/exports/a.mp4")));
+    assert_eq!(events.len(), 1);
+    assert_eq!((events[0].stage.as_str(), events[0].pct), ("export_render", Some(40.0)));
+    let sent: Value = serde_json::from_str(&m.seen.lock().unwrap().iter().find(|(me, p, _)| me == "POST" && p == "/v1/export").unwrap().2).unwrap();
+    assert_eq!(
+        (sent["path"].as_str(), sent["project"].as_str(), sent["kind"].as_str(), sent["preset"].as_str()),
+        (Some("C:/clips/take.mp4"), Some("C:/p"), Some("video"), Some("YouTube 1080p"))
+    );
+}
+
+#[test]
+fn user_preset_calls_use_the_right_methods_and_encode_the_name() {
+    let m = mock(|method, path, body| match (method, path) {
+        ("GET", "/v1/capabilities") => (200, r#"{"adjudicate":false,"refine":false}"#.into()),
+        ("GET", "/v1/export/options") => (200, r#"{"presets":{}}"#.into()),
+        ("PUT", p) if p.starts_with("/v1/export/presets/") => (200, body.to_string()),
+        ("DELETE", p) if p.starts_with("/v1/export/presets/") => (204, String::new()),
+        _ => (404, "{}".into()),
+    });
+    let s = HttpService::connect(&m.url);
+    let opts = call_result(&mut *s.user_call(simplecut_core::UserCall::ExportOptions).unwrap());
+    assert_eq!(opts["status"], 200);
+    let put = call_result(
+        &mut *s.user_call(simplecut_core::UserCall::SavePreset { name: "My 720p / draft".into(), preset: serde_json::json!({"fps": 24}) }).unwrap(),
+    );
+    assert_eq!((put["status"].as_u64(), put["body"]["fps"].as_u64()), (Some(200), Some(24)));
+    let del = call_result(&mut *s.user_call(simplecut_core::UserCall::DeletePreset { name: "My 720p / draft".into() }).unwrap());
+    assert_eq!(del["status"], 204);
+    let seen = m.seen.lock().unwrap();
+    assert!(
+        seen.iter().any(|(me, p, _)| me == "PUT" && p == "/v1/export/presets/My%20720p%20%2F%20draft"),
+        "the name is URL-encoded, a slash cannot escape the path"
+    );
+    assert!(seen.iter().any(|(me, p, _)| me == "DELETE" && p == "/v1/export/presets/My%20720p%20%2F%20draft"));
+}

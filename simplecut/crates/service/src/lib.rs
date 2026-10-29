@@ -12,8 +12,8 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 use simplecut_core::{
-    AdjudicateRequest, AnalysisJob, AnalysisRequest, Capabilities, ItemId, JobState, KeeperInfo, ProjectCall, RefineRequest, ResolveRequest, RetakeService,
-    ServiceOptions, StageEvent, Tick,
+    AdjudicateRequest, AnalysisJob, AnalysisRequest, Capabilities, ExportRequest, ItemId, JobState, KeeperInfo, ProjectCall, RefineRequest, ResolveRequest,
+    RetakeService, ServiceOptions, StageEvent, Tick, UserCall,
 };
 
 /// The address the service listens on unless told otherwise.
@@ -174,6 +174,26 @@ impl RetakeService for HttpService {
 
     fn set_project(&self, folder: Option<std::path::PathBuf>) {
         *self.project.lock().unwrap_or_else(PoisonError::into_inner) = folder.map(|f| f.to_string_lossy().into_owned());
+    }
+
+    fn export(&self, request: ExportRequest) -> Option<Box<dyn AnalysisJob>> {
+        let path = request.path;
+        if self.project().is_none() {
+            return Some(failed("Save the project first: exports are written into the project folder."));
+        }
+        let mut body = request.body;
+        if let Some(map) = body.as_object_mut() {
+            map.insert("path".into(), json!(path));
+        }
+        Some(self.start("/v1/export", self.tagged(body)))
+    }
+
+    fn user_call(&self, call: UserCall) -> Option<Box<dyn AnalysisJob>> {
+        Some(match call {
+            UserCall::ExportOptions => self.start_call(Method::Get, "/v1/export/options".into(), String::new()),
+            UserCall::SavePreset { name, preset } => self.start_call(Method::Put, format!("/v1/export/presets/{}", urlencode(&name)), preset.to_string()),
+            UserCall::DeletePreset { name } => self.start_call(Method::Delete, format!("/v1/export/presets/{}", urlencode(&name)), String::new()),
+        })
     }
 
     fn project_call(&self, call: ProjectCall) -> Option<Box<dyn AnalysisJob>> {

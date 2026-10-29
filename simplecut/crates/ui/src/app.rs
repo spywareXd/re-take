@@ -80,6 +80,8 @@ pub enum Action {
     DismissBanner,
     /// A setting or question of the Retake options window.
     Options(crate::retake_options::OptionsAction),
+    /// The Exports window: open, export, cancel, save or delete a preset.
+    Exports(crate::retake_export::ExportAction),
     OpenExportDialog,
     StartExport {
         path: PathBuf,
@@ -206,6 +208,7 @@ pub struct SimpleCutApp {
     pub(crate) service: Option<Box<dyn simplecut_core::RetakeService>>,
     pub(crate) retakes: RetakeUi,
     pub(crate) options_ui: crate::retake_options::OptionsUi,
+    pub(crate) export_ui: crate::retake_export::ExportUi,
 
     pub(crate) source: Source,
     /// Position in the previewed file (the timeline's is the editor's playhead).
@@ -244,6 +247,7 @@ impl SimpleCutApp {
             service: None,
             retakes: RetakeUi::default(),
             options_ui: Default::default(),
+            export_ui: Default::default(),
             source: Source::Timeline,
             media_time: Tick::ZERO,
             thumb_state: HashMap::new(),
@@ -431,6 +435,7 @@ impl SimpleCutApp {
             | Action::SetCutMode(_)
             | Action::ApplyWholeSentences => self.perform_retake(action),
             Action::Options(a) => self.perform_options(a),
+            Action::Exports(a) => self.perform_export(a),
             Action::NewProject => self.guard_unsaved(Then::New),
             Action::OpenProject => {
                 if let Some(path) = self.dialogs.pick_project_to_open() {
@@ -879,6 +884,7 @@ impl SimpleCutApp {
         let state = self.player.tick(&mut self.editor);
         self.pump_retakes();
         self.pump_options();
+        self.pump_exports();
         if matches!(self.player.target(), Some(Target::Media(_))) && matches!(self.source, Source::Media(_)) {
             self.media_time = self.player.position();
         }
@@ -1245,6 +1251,7 @@ impl SimpleCutApp {
 
         self.modal_ui(&ctx);
         crate::retake_options::window(self, &ctx);
+        crate::retake_export::window(self, &ctx);
 
         if let Some(job) = &self.active_export {
             let t = theme::tokens();

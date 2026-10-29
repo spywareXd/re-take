@@ -333,7 +333,8 @@ def create_app(config: Optional[ServiceConfig] = None, deps: Optional[Deps] = No
         """Everything the export dialog needs. Hardware (NVENC) appears only when ffmpeg lists the encoder AND a test encode worked."""
         from . import export_media as xm
         hw = {k: True for k, v in xm.nvenc_support().items() if v}
-        return {"kinds": list(xo.KINDS), "presets": xo.all_presets(),
+        presets = xo.all_presets()
+        return {"kinds": list(xo.KINDS), "presets": presets, "preset_order": list(presets),         # JSON objects have no order: built-ins first, then the user's
                 "resolutions": {"source": True, "heights": list(xo.RESOLUTION_PRESETS), "canvases": {k: list(v) for k, v in xo.CANVAS_PRESETS.items()}, "custom": True,
                                 "fits": list(xo.FITS), "min": xo.MIN_DIM, "max": xo.MAX_DIM, "must_be_even": True},
                 "fps": {"source": True, "choices": list(xo.FPS_CHOICES), "custom_min": xo.FPS_MIN, "custom_max": xo.FPS_MAX},

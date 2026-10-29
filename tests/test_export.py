@@ -458,3 +458,12 @@ def test_nvenc_export_only_if_ffmpeg_reports_it_and_the_test_encode_works(env):
     assert body["state"] == "done", body
     assert body["result"]["plan"]["encoder"] == "h264_nvenc" and body["result"]["plan"]["hardware"] is True
     _check(body, 1280, 720, 30.0)
+
+
+@needs_ffmpeg
+def test_options_carry_the_preset_order_because_json_objects_have_none(env, tmp_path):
+    client, proj, clips = env
+    client.put("/v1/export/presets/My Draft", json={"fps": 24})
+    o = client.get("/v1/export/options").json()
+    assert o["preset_order"] == ["Match Source", "YouTube 1080p", "YouTube 4K", "Shorts / Reels / TikTok", "Draft / Preview", "My Draft"]
+    assert set(o["preset_order"]) == set(o["presets"])

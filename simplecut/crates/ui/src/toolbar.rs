@@ -59,6 +59,14 @@ pub(crate) fn show(app: &mut SimpleCutApp, ui: &mut egui::Ui) {
                     Action::Options(crate::retake_options::OptionsAction::Open),
                     !is_exporting,
                 );
+                button(
+                    app,
+                    ui,
+                    "Exports",
+                    "Cut video with size, frame rate and quality options, audio only, subtitles, cut list, transcript",
+                    Action::Exports(crate::retake_export::ExportAction::Open),
+                    has_timeline && !is_exporting,
+                );
             }
             ui.add_space(8.0);
             let dirty = app.editor.is_dirty();

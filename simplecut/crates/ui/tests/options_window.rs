@@ -93,7 +93,6 @@ fn options() -> ServiceOptions {
             {"name": "large-v3", "downloaded": false, "download_gb": 3.1, "vram_gb": 5.5, "relative_speed": 1.0}
         ]})),
         silence_gap: SilenceInfo::from_json(&json!({"default": 0.7, "min": 0.1, "max": 3.0, "step": 0.05})),
-        export: None,
     }
 }
 

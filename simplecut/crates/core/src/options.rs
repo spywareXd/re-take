@@ -121,7 +121,6 @@ impl SilenceInfo {
 pub struct ServiceOptions {
     pub transcription: Option<TranscriptionInfo>,
     pub silence_gap: Option<SilenceInfo>,
-    pub export: Option<ExportCapabilities>,
 }
 
 impl ServiceOptions {
@@ -130,15 +129,126 @@ impl ServiceOptions {
         Self {
             transcription: v.get("transcription").and_then(TranscriptionInfo::from_json),
             silence_gap: v.get("silence_gap").and_then(SilenceInfo::from_json),
-            export: None,
         }
     }
 }
 
-/// What the export dialog needs from the service; filled in by the export item.
+/// One export preset (built in, or saved by the user in their own config folder).
+#[derive(Debug, Clone, PartialEq)]
+pub struct ExportPreset {
+    pub name: String,
+    pub category: String,
+    pub description: String,
+    pub builtin: bool,
+    /// The preset's settings as the service stores them (`video`, `resolution`, `fps`, `audio`), used to fill the form.
+    pub settings: Value,
+}
+
+/// What the export window needs from the service (`GET /v1/export/options`). Hardware encoders are listed only when the service's test encode worked.
 #[derive(Debug, Clone, PartialEq, Default)]
-pub struct ExportCapabilities {
-    pub raw: String,
+pub struct ExportOptionsInfo {
+    pub presets: Vec<ExportPreset>,
+    pub heights: Vec<String>,
+    pub canvases: Vec<String>,
+    pub fits: Vec<String>,
+    pub dim_min: u32,
+    pub dim_max: u32,
+    pub fps_choices: Vec<u32>,
+    pub fps_range: (f64, f64),
+    pub codecs: Vec<String>,
+    pub crf_range: (u32, u32),
+    pub bitrate_range: (u32, u32),
+    pub speeds: Vec<String>,
+    /// Codecs (`h264`, `h265`) the GPU can encode; empty = the option is not offered.
+    pub hardware: Vec<String>,
+    pub audio_bitrates: Vec<u32>,
+    pub audio_formats: Vec<String>,
+    pub text_formats: Vec<(String, Vec<String>)>,
+    pub fade_default: f64,
+    pub fade_max: f64,
+}
+
+fn strings(v: &Value) -> Vec<String> {
+    v.as_array().map(|a| a.iter().filter_map(Value::as_str).map(|s| s.chars().take(MAX_TEXT).collect()).take(MAX_MODELS * 2).collect()).unwrap_or_default()
+}
+
+fn uints(v: &Value) -> Vec<u32> {
+    v.as_array().map(|a| a.iter().filter_map(Value::as_u64).filter_map(|n| u32::try_from(n).ok()).take(MAX_MODELS * 2).collect()).unwrap_or_default()
+}
+
+fn pair_u32(v: &Value) -> (u32, u32) {
+    let a = uints(v);
+    (a.first().copied().unwrap_or(0), a.get(1).copied().unwrap_or(0))
+}
+
+impl ExportOptionsInfo {
+    pub fn from_json(v: &Value) -> Option<Self> {
+        let mut presets: Vec<ExportPreset> = v
+            .get("presets")?
+            .as_object()?
+            .iter()
+            .take(100)
+            .map(|(name, p)| ExportPreset {
+                name: name.chars().take(80).collect(),
+                category: text(p, "category").unwrap_or_default(),
+                description: text(p, "description").unwrap_or_default(),
+                builtin: p.get("builtin").and_then(Value::as_bool).unwrap_or(false),
+                settings: serde_json::json!({"video": p.get("video"), "resolution": p.get("resolution"), "fps": p.get("fps"), "audio": p.get("audio")}),
+            })
+            .collect();
+        // the service sends the order (a JSON object has none): built-in presets first, then the user's own
+        let order = strings(&v["preset_order"]);
+        presets.sort_by_key(|p| order.iter().position(|n| *n == p.name).unwrap_or(usize::MAX));
+        let r = v.get("resolutions").unwrap_or(&Value::Null);
+        let fps = v.get("fps").unwrap_or(&Value::Null);
+        let vid = v.get("video").unwrap_or(&Value::Null);
+        let aud = v.get("audio").unwrap_or(&Value::Null);
+        Some(Self {
+            presets,
+            heights: strings(&r["heights"]),
+            canvases: r["canvases"].as_object().map(|o| o.keys().cloned().collect()).unwrap_or_default(),
+            fits: strings(&r["fits"]),
+            dim_min: r["min"].as_u64().and_then(|n| u32::try_from(n).ok()).unwrap_or(16),
+            dim_max: r["max"].as_u64().and_then(|n| u32::try_from(n).ok()).unwrap_or(7680),
+            fps_choices: uints(&fps["choices"]),
+            fps_range: (number(fps, "custom_min").unwrap_or(1.0), number(fps, "custom_max").unwrap_or(240.0)),
+            codecs: strings(&vid["codecs"]),
+            crf_range: pair_u32(&vid["crf_range"]),
+            bitrate_range: pair_u32(&vid["bitrate_kbps_range"]),
+            speeds: strings(&vid["speeds"]),
+            hardware: vid["hardware"].as_object().map(|o| o.keys().cloned().collect()).unwrap_or_default(),
+            audio_bitrates: uints(&aud["bitrates_kbps"]),
+            audio_formats: strings(&v["audio_only_formats"]),
+            text_formats: v["text_formats"].as_object().map(|o| o.iter().map(|(k, f)| (k.clone(), strings(f))).collect()).unwrap_or_default(),
+            fade_default: number(aud, "fade_ms_default").unwrap_or(15.0),
+            fade_max: number(aud, "fade_ms_max").unwrap_or(100.0),
+        })
+    }
+
+    pub fn preset(&self, name: &str) -> Option<&ExportPreset> {
+        self.presets.iter().find(|p| p.name == name)
+    }
+}
+
+/// An export to make: what to export and how, as the JSON the service takes (`kind`, `format`, `preset`, `resolution`, `fps`, `video`, `audio`, `name`). The source
+/// file and the project folder are added by the client.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ExportRequest {
+    pub item: crate::ItemId,
+    /// The source video on disk.
+    pub path: String,
+    pub body: Value,
+}
+
+/// A request about the user's own (per-user, not per-project) export presets and the export options.
+#[derive(Debug, Clone, PartialEq)]
+pub enum UserCall {
+    /// `GET /v1/export/options`.
+    ExportOptions,
+    /// `PUT /v1/export/presets/{name}`.
+    SavePreset { name: String, preset: Value },
+    /// `DELETE /v1/export/presets/{name}`.
+    DeletePreset { name: String },
 }
 
 /// The settings that go with one analysis. None = whatever the project (or the service) has: the default model, the default gap.

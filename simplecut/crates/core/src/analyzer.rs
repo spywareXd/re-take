@@ -116,6 +116,17 @@ pub trait RetakeService: Send + Sync {
     /// The project folder the editor has open (None: no folder yet, or an old project). The service keeps what it computes for the project in it.
     fn set_project(&self, _folder: Option<std::path::PathBuf>) {}
 
+    /// Export the cut video / audio / subtitles / cut list / transcript into the project folder. The job's events carry the `export_render` stage (with the ffmpeg
+    /// percent), its result is `{"path", "relative", "kind", "plan", "notes", "verify"}`. None when the service cannot.
+    fn export(&self, _request: crate::options::ExportRequest) -> Option<Box<dyn AnalysisJob>> {
+        None
+    }
+
+    /// A request about the user's export presets or the export options (see [`crate::UserCall`]); the result is `{"status", "body"}`. None when the service cannot.
+    fn user_call(&self, _call: crate::options::UserCall) -> Option<Box<dyn AnalysisJob>> {
+        None
+    }
+
     /// A request about the project's stored settings and results (see [`crate::ProjectCall`]). None when the service cannot.
     fn project_call(&self, _call: crate::options::ProjectCall) -> Option<Box<dyn AnalysisJob>> {
         None

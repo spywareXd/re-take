@@ -24,7 +24,9 @@ pub use analyzer::{AdjudicateRequest, AnalysisJob, AnalysisRequest, FakeService,
 pub use editor::{Edge, Editor, ItemId, Lane, PlaceAt, TrimMode};
 pub use error::{EditorError, Result};
 pub use export::{ExportJob, ExportOptions, ExportState, verify_export};
-pub use options::{AnalysisSettings, AsrModel, GpuInfo, ProjectCall, ServiceOptions, SilenceInfo, TranscriptionInfo};
+pub use options::{
+    AnalysisSettings, AsrModel, ExportOptionsInfo, ExportPreset, ExportRequest, GpuInfo, ProjectCall, ServiceOptions, SilenceInfo, TranscriptionInfo, UserCall,
+};
 pub use player::{AudioOutput, FillFn, PlayState, Player};
 pub use progress::{STAGES, StageEvent, StageLog, StageState, StageStatus};
 pub use refine::{CutMode, RefinedCuts, WIDEN_SECS, ids_to_refine, plan_cuts};
