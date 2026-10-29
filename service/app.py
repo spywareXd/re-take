@@ -11,6 +11,7 @@ from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 import asyncio
+import json
 
 from starlette.concurrency import run_in_threadpool
 from starlette.exceptions import HTTPException as StarletteHTTPException
@@ -20,6 +21,7 @@ from pipeline.step_07_review.labels import record_answers
 
 from .config import ServiceConfig
 from .events import EventLog, read_log, sse_format
+from . import export_options as xo
 from .jobs import JobContext, JobManager, UserError
 from .project_store import ProjectCache, ProjectError, ProjectStore
 from .llm import LLMSetup, adjudicate_groups, detect_llm, keeper_advice, record_decision
@@ -294,6 +296,151 @@ def create_app(config: Optional[ServiceConfig] = None, deps: Optional[Deps] = No
         store = ProjectStore(project)
         return {"settings": store.settings(), "stale": store.stale(), "source": store.check_source(), "transcript_model": (store.get("transcript_meta") or {}).get("model"),
                 "has": {n: store.has(n) for n in ("transcript", "words", "units", "keepers", "cutlist")}}
+
+    # ---- export (item 4): options, saved presets, and the export job ----
+    @app.get("/v1/export/options")
+    def export_options():
+        """Everything the export dialog needs. Hardware (NVENC) appears only when ffmpeg lists the encoder AND a test encode worked."""
+        from . import export_media as xm
+        hw = {k: True for k, v in xm.nvenc_support().items() if v}
+        return {"kinds": list(xo.KINDS), "presets": xo.all_presets(),
+                "resolutions": {"source": True, "heights": list(xo.RESOLUTION_PRESETS), "canvases": {k: list(v) for k, v in xo.CANVAS_PRESETS.items()}, "custom": True,
+                                "fits": list(xo.FITS), "min": xo.MIN_DIM, "max": xo.MAX_DIM, "must_be_even": True},
+                "fps": {"source": True, "choices": list(xo.FPS_CHOICES), "custom_min": xo.FPS_MIN, "custom_max": xo.FPS_MAX},
+                "video": {"codecs": list(xo.VIDEO_CODECS), "crf_presets": xo.CRF_PRESETS, "crf_range": list(xo.CRF_RANGE), "bitrate_kbps_range": list(xo.BITRATE_RANGE_KBPS),
+                          "speeds": list(xo.X264_SPEEDS), "hardware": hw or None},
+                "audio": {"codec": "aac", "bitrates_kbps": list(xo.AUDIO_BITRATES), "normalize_loudness_default": False, "fade_ms_default": 15.0, "fade_ms_max": 100.0},
+                "audio_only_formats": list(xo.AUDIO_FORMATS), "text_formats": {k: list(v) for k, v in xo.TEXT_FORMATS.items()},
+                "encoders": xm.encoders_available()}
+
+    @app.get("/v1/export/presets")
+    def export_presets():
+        return xo.all_presets()
+
+    @app.put("/v1/export/presets/{name}")
+    async def export_preset_save(name: str, request: Request):
+        """Save a custom preset in the USER's config folder (not in a project)."""
+        body = await body_of(request)
+        try:
+            return xo.save_user_preset(name, body)
+        except xo.OptionError as exc:
+            raise BadRequest(str(exc))
+
+    @app.delete("/v1/export/presets/{name}", status_code=204)
+    def export_preset_delete(name: str):
+        if name in xo.BUILTIN_PRESETS:
+            raise BadRequest("Built-in presets cannot be deleted.")
+        xo.delete_user_preset(name)
+        return Response(status_code=204)
+
+    @app.post("/v1/export", status_code=202)
+    async def export_start(request: Request):
+        """Export into <project>/data/exports/ under a name that never overwrites an earlier export. Body: project, path (the source video), kind
+        (video | audio | subtitles | cutlist | transcript), format (for audio / text kinds), preset + video/resolution/fps/audio overrides, and the cut as `cut_ranges`
+        (removed, [{start,end}]) or `keep_spans`; without either the project's saved cut list is used, else the whole video is exported."""
+        from . import export_media as xm
+        body = await body_of(request)
+        store = project_of(body)
+        if store is None:
+            raise BadRequest("'project' is required: exports are written into the project folder.")
+        path = Path(need_path(body))
+        kind = body.get("kind", "video")
+        if kind not in xo.KINDS:
+            raise BadRequest(f"'kind' must be one of {', '.join(xo.KINDS)}.")
+        fmt = body.get("format")
+        if kind in xo.TEXT_FORMATS and fmt not in xo.TEXT_FORMATS[kind]:
+            raise BadRequest(f"'format' for {kind} must be one of {', '.join(xo.TEXT_FORMATS[kind])}.")
+        if kind == "audio" and fmt not in xo.AUDIO_FORMATS:
+            raise BadRequest(f"'format' for audio must be one of {', '.join(xo.AUDIO_FORMATS)}.")
+        if not path.is_file():
+            raise BadRequest("Could not read the file")
+
+        def prepare():
+            info = xm.probe_video(path)
+            if kind == "video" and not info.has_video:
+                raise xo.OptionError("The source has no video stream.")
+            cuts = body.get("cut_ranges")
+            if body.get("keep_spans") is not None:
+                keeps = xm.normalise_keeps(body["keep_spans"], info.duration)
+            else:
+                if cuts is None:
+                    saved = store.get("cutlist") or {}
+                    cuts = [(r["start"], r["end"]) for r in saved.get("ranges", [])] if isinstance(saved, dict) else []
+                keeps = xm.keep_from_cuts([(c["start"], c["end"]) if isinstance(c, dict) else c for c in cuts], info.duration)
+            if not keeps:
+                raise xo.OptionError("Nothing is left after the cuts: there is nothing to export.")
+            opts = None
+            if kind == "video":
+                opts = xo.apply_preset(body.get("preset"), {k: body.get(k) for k in xo.PRESET_KEYS})
+                nv = xm.nvenc_support() if (opts.get("video") or {}).get("hardware") else {"h264": False, "h265": False}
+                xo.plan_resolution(info.width, info.height, opts.get("resolution"))          # validate now: a bad option is a 400, not a failed job
+                xo.plan_fps(opts.get("fps"), info.vfr, info.fps)
+                xo.plan_video(opts.get("video"), nv)
+                xo.plan_audio(opts.get("audio"))
+            elif kind == "audio":
+                if not info.has_audio:
+                    raise xo.OptionError("The source has no audio stream.")
+                xo.plan_audio(body.get("audio"))
+            return info, keeps, opts
+
+        try:
+            info, keeps, opts = await run_in_threadpool(prepare)
+        except (xo.OptionError, xm.ExportError) as exc:
+            raise BadRequest(str(exc))
+        stem = xm.safe_stem(body.get("name") or path.name) + {"video": "_" + (body.get("preset") or "custom"), "audio": "_audio", "subtitles": "_subtitles",
+                                                                "cutlist": "_cutlist", "transcript": "_transcript"}[kind]
+        ext = {"video": "mp4", "audio": fmt, "subtitles": fmt, "cutlist": fmt, "transcript": fmt}[kind]
+
+        def run(ctx: JobContext):
+            out = store.unique_export_path(stem, ext)                                   # reserved atomically: never an existing file
+            ok = False
+            try:
+                with ctx.events.stage("export_render", f"{kind} -> {out.name}") as st:
+                    def prog(pct: float, msg: str) -> None:
+                        st.progress(pct, msg)
+                        ctx.progress("Exporting", pct / 100.0)
+
+                    cancelled = ctx.job.cancel.is_set
+                    plan: dict = {}
+                    if kind == "video":
+                        plan = xm.render_video(info, keeps, out, opts, prog, cancelled)
+                    elif kind == "audio":
+                        plan = xm.render_audio(info, keeps, out, fmt, body.get("audio"), prog, cancelled)
+                    else:
+                        _write_text_export(store, kind, fmt, out, info, keeps, path)
+                    result = {"path": str(out), "relative": f"data/exports/{out.name}", "kind": kind, "plan": plan, "notes": plan.get("notes", [])}
+                    if kind in ("video", "audio"):
+                        result["verify"] = xm.verify_output(out)
+                        if kind == "video":
+                            result["notes"].append(f"Output frame rate: {result['verify']['frame_rate_mode']}")
+                    st.done_message = out.name
+                ok = True
+                return result
+            finally:
+                if not ok:
+                    try:
+                        out.unlink()                                                    # the file THIS job reserved; a failed export leaves no empty file behind
+                    except OSError:
+                        pass
+
+        return {"job": jobs.submit("export", run, events_path=store.progress_path)}
+
+    def _write_text_export(store: ProjectStore, kind: str, fmt: str, out: Path, info, keeps, source: Path) -> None:
+        from . import export_media as xm
+        if kind == "subtitles":
+            units, words = store.get("units"), store.get("words")
+            if units is None or words is None:
+                raise UserError("There is no transcript in this project yet; analyze the video first.")
+            cues = xm.kept_cues(units, words, keeps)
+            text = xm.to_srt(cues) if fmt == "srt" else xm.to_vtt(cues)
+        elif kind == "cutlist":
+            text = xm.to_edl(keeps, source.name, info.fps, source.stem) if fmt == "edl" else json.dumps(xm.cutlist_json(source.name, info.duration, keeps, info.fps), indent=1)
+        else:
+            transcript = store.get("transcript")
+            if transcript is None:
+                raise UserError("There is no transcript in this project yet; analyze the video first.")
+            text = json.dumps(transcript, indent=1, ensure_ascii=False) if fmt == "json" else xm.transcript_txt(transcript, None)
+        out.write_text(text, encoding="utf-8", newline="\n")
 
     # ---- keeper provider: read / switch (service-wide, until the service restarts) ----
     @app.get("/v1/keeper")
