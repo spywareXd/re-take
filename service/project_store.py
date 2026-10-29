@@ -318,14 +318,15 @@ class ProjectStore:
         return done
 
     # ---- exports ----
-    def unique_export_path(self, stem: str, ext: str) -> Path:
-        """exports/<stem>.<ext>, or <stem>_2.<ext>, _3, ... : never an existing file. The name is reserved by creating it exclusively."""
-        self.exports_dir.mkdir(parents=True, exist_ok=True)
+    def unique_export_path(self, stem: str, ext: str, directory: Optional[Union[str, Path]] = None) -> Path:
+        """<directory>/<stem>.<ext> (default: exports/), or <stem>_2.<ext>, _3, ... : never an existing file. The name is reserved by creating it exclusively."""
+        folder = Path(directory) if directory else self.exports_dir
+        folder.mkdir(parents=True, exist_ok=True)
         stem = re.sub(r"[^\w.\- ]+", "_", stem).strip() or "export"
         ext = ext.lstrip(".")
         n = 1
         while True:
-            p = self.exports_dir / (f"{stem}.{ext}" if n == 1 else f"{stem}_{n}.{ext}")
+            p = folder / (f"{stem}.{ext}" if n == 1 else f"{stem}_{n}.{ext}")
             try:
                 with open(p, "xb"):
                     return p

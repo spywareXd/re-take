@@ -78,6 +78,8 @@ impl AnalysisJob for Immediate {
 struct Seen {
     exports: Arc<Mutex<Vec<ExportRequest>>>,
     user_calls: Arc<Mutex<Vec<UserCall>>>,
+    /// The scripted dialogs of the window (what the file and folder pickers answer).
+    script: Script,
 }
 
 struct Svc {
@@ -132,7 +134,7 @@ fn start(renderer: SoftRenderer, svc: impl FnOnce(Seen) -> Svc, save: bool) -> (
     let script = Script::default();
     script.media.lock().unwrap().push_back(vec![clip]);
     script.save.lock().unwrap().push_back(dir.join("Proj.fcproj"));
-    let seen = Seen::default();
+    let seen = Seen { script: script.clone(), ..Default::default() };
     let service = svc(seen.clone());
     let mut h = Harness::builder().with_size(vec2(1360.0, 860.0)).with_max_steps(10_000).renderer(renderer).build_eframe(move |cc| {
         let mut app = SimpleCutApp::new(&cc.egui_ctx, Box::new(script), None);
@@ -156,7 +158,7 @@ fn svc(options: Value, chunks: Vec<Vec<StageEvent>>, end: JobState, hold: bool) 
 }
 
 fn open(h: &mut Window) {
-    click(h, "Exports");
+    click(h, "Export");
     for _ in 0..3 {
         h.step();
     }
@@ -214,7 +216,7 @@ fn the_window_offers_the_presets_and_every_option_and_hides_hardware_unless_it_w
     }
     let (mut h, _d, _s) = start(SoftRenderer::default(), svc(options_json(false), vec![], ok_result(), false), true);
     open(&mut h);
-    h.get_by_label("Export to project folder");
+    h.get_by_label("Export options");
     h.get_by_value("Video (MP4)");
     h.get_by_value("YouTube 1080p"); // the default preset
     h.get_by_value("1080p"); // its size
@@ -222,7 +224,7 @@ fn the_window_offers_the_presets_and_every_option_and_hides_hardware_unless_it_w
     h.get_by_value("H.264");
     h.get_by_label_contains("Normalise loudness (off by default)");
     assert!(h.query_by_label_contains("NVENC").is_none(), "the service listed no hardware encoder: the option is not offered");
-    h.get_by_label_contains("Exports are written into the project folder");
+    h.get_by_label_contains("Names are never reused: an earlier export is never overwritten");
     // another service that did list it
     let (mut h2, _d2, _s2) = start(SoftRenderer::default(), svc(options_json(true), vec![], ok_result(), false), true);
     open(&mut h2);
@@ -313,7 +315,9 @@ fn an_unsaved_project_cannot_export_and_says_why() {
     }
     let (mut h, _d, seen) = start(SoftRenderer::default(), svc(options_json(false), vec![], ok_result(), false), false);
     open(&mut h);
-    h.get_by_label("Save the project first: exports go into its folder.");
+    h.get_by_value("Video — whole timeline (MP4)"); // no folder yet: the editor's own export is the default
+    pick(&mut h, "Video — whole timeline (MP4)", "Video (MP4)");
+    h.get_by_label("Save the project first: these exports use its folder.");
     assert!(h.get_by_label("Start export").accesskit_node().is_disabled());
     assert!(seen.exports.lock().unwrap().is_empty());
 }
@@ -375,4 +379,69 @@ fn write_export_screenshots() {
     h.step();
     h.step();
     shot(&h, &r).crop_scaled(380, 60, 600, 740, 2).save_png(&dir.join(format!("{tag}_2_done.png")));
+}
+
+// ---- one Export menu ----
+
+#[test]
+fn there_is_one_export_button_and_a_saved_project_opens_on_the_service_video_with_options() {
+    if skip() {
+        return;
+    }
+    let (mut h, _d, _s) = start(SoftRenderer::default(), svc(options_json(false), vec![], ok_result(), false), true);
+    assert!(h.query_by_label("Exports").is_none(), "the second Export button is gone");
+    open(&mut h);
+    h.get_by_label("Export options");
+    h.get_by_value("Video (MP4)"); // saved project + service: the video with options is the default
+    h.get_by_value("YouTube 1080p");
+    h.get_by_label("Destination folder:");
+    h.get_by_label("Browse folder…");
+    h.get_by_label("Start export"); // the Export button is inside the dialog
+}
+
+#[test]
+fn the_whole_timeline_export_is_in_the_same_dialog_with_its_own_destination() {
+    if skip() {
+        return;
+    }
+    let (mut h, dir, seen) = start(SoftRenderer::default(), svc(options_json(false), vec![], ok_result(), false), true);
+    open(&mut h);
+    pick(&mut h, "Video (MP4)", "Video — whole timeline (MP4)");
+    h.get_by_label("Preset: YouTube 1080p Full HD (1920×1080, H.264 + AAC)");
+    h.get_by_label("Use graphics card if available");
+    seen.script.export.lock().unwrap().push_back(dir.join("my cut.mp4"));
+    click(&mut h, "Browse...");
+    h.get_by_label("my cut.mp4");
+    click(&mut h, "Start export");
+    step_until(&mut h, "the timeline export to start", |a| a.is_exporting());
+    assert!(seen.exports.lock().unwrap().is_empty(), "the editor rendered it itself: the service was not asked");
+}
+
+#[test]
+fn the_service_exports_go_to_the_folder_the_user_picked_until_they_go_back_to_the_project() {
+    if skip() {
+        return;
+    }
+    let (mut h, dir, seen) = start(SoftRenderer::default(), svc(options_json(false), vec![], ok_result(), false), true);
+    open(&mut h);
+    let folder = dir.join("deliver");
+    seen.script.export_folder.lock().unwrap().push_back(folder.clone());
+    click(&mut h, "Browse folder…");
+    h.get_by_label_contains(&folder.display().to_string());
+    for _ in 0..3 {
+        h.step(); // the long folder name widens the window a frame later and it is re-centred: settle before aiming at the button
+    }
+    click(&mut h, "Start export");
+    let body = seen.exports.lock().unwrap().last().unwrap().body.clone();
+    assert_eq!(body["destination"].as_str(), Some(folder.to_string_lossy().as_ref()), "the request carries the chosen folder");
+    open(&mut h);
+    for _ in 0..3 {
+        h.step();
+    }
+    click(&mut h, "Use the project folder");
+    for _ in 0..3 {
+        h.step();
+    }
+    click(&mut h, "Start export");
+    assert!(seen.exports.lock().unwrap().last().unwrap().body.get("destination").is_none(), "back to the project's own exports folder");
 }

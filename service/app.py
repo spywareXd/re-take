@@ -468,12 +468,23 @@ def create_app(config: Optional[ServiceConfig] = None, deps: Optional[Deps] = No
             info, keeps, opts = await run_in_threadpool(prepare)
         except (xo.OptionError, xm.ExportError) as exc:
             raise BadRequest(str(exc))
+        destination = None
+        if body.get("destination") is not None:
+            raw = body["destination"]
+            if not isinstance(raw, str) or not raw.strip() or not Path(raw).is_absolute():
+                raise BadRequest("'destination' must be the full path of a folder.")
+            destination = Path(raw)
+            if destination.exists() and not destination.is_dir():
+                raise BadRequest("'destination' is a file, not a folder.")
         stem = xm.safe_stem(body.get("name") or path.name) + {"video": "_" + (body.get("preset") or "custom"), "audio": "_audio", "subtitles": "_subtitles",
                                                                 "cutlist": "_cutlist", "transcript": "_transcript"}[kind]
         ext = {"video": "mp4", "audio": fmt, "subtitles": fmt, "cutlist": fmt, "transcript": fmt}[kind]
 
         def run(ctx: JobContext):
-            out = store.unique_export_path(stem, ext)                                   # reserved atomically: never an existing file
+            try:
+                out = store.unique_export_path(stem, ext, destination)                  # reserved atomically: never an existing file
+            except OSError as exc:                                                       # an unwritable destination is said in plain words
+                raise UserError(f"Could not write into the destination folder: {exc.strerror or exc}")
             ok = False
             try:
                 with ctx.events.stage("export_render", f"{kind} -> {out.name}") as st:
@@ -489,7 +500,11 @@ def create_app(config: Optional[ServiceConfig] = None, deps: Optional[Deps] = No
                         plan = xm.render_audio(info, keeps, out, fmt, body.get("audio"), prog, cancelled)
                     else:
                         _write_text_export(store, kind, fmt, out, info, keeps, path)
-                    result = {"path": str(out), "relative": f"data/exports/{out.name}", "kind": kind, "plan": plan, "notes": plan.get("notes", [])}
+                    try:
+                        shown = out.resolve().relative_to(store.root.resolve()).as_posix()      # inside the project: relative to its folder; elsewhere: the full path
+                    except ValueError:
+                        shown = str(out)
+                    result = {"path": str(out), "relative": shown, "kind": kind, "plan": plan, "notes": plan.get("notes", [])}
                     if kind in ("video", "audio"):
                         result["verify"] = xm.verify_output(out)
                         if kind == "video":

@@ -9,7 +9,7 @@ use std::path::Path;
 
 use egui::{Align2, RichText};
 use serde_json::Value;
-use simplecut_core::{AnalysisJob, AnalysisSettings, JobState, ProjectCall, project_folder};
+use simplecut_core::{AnalysisJob, AnalysisSettings, JobState, ProjectCall, WorkCall, WorkKind, project_folder};
 
 use crate::app::{Action, SimpleCutApp};
 use crate::theme;
@@ -34,6 +34,9 @@ pub enum OptionsAction {
     CancelAsk,
     /// Copy the old per-machine data of this video into the project (the originals stay).
     ImportLegacy,
+    /// Ask before setting the transcription / the keeper groups aside.
+    AskReset(WorkKind),
+    ConfirmReset,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -46,6 +49,8 @@ enum Call {
     Import,
     /// The automatic copy of the old data into a project that was just saved.
     Adopt,
+    /// Setting work aside / bringing it back (Ctrl+Z, Ctrl+Y, the Reset buttons).
+    Work,
 }
 
 /// What the service said about the project (`GET /v1/project/status`).
@@ -87,6 +92,7 @@ pub(crate) enum Ask {
     Retranscribe { from: String, to: String },
     ResplitOffer { text: String },
     ResplitConfirm { gap: f64, will_replace: Vec<String> },
+    Reset { what: WorkKind },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -145,8 +151,28 @@ impl SimpleCutApp {
     }
 
     /// The video on the timeline (the one the analysis is about), on disk.
-    fn source_video_path(&self) -> Option<String> {
+    pub(crate) fn source_video_path(&self) -> Option<String> {
         self.editor.analysis_requests().ok().and_then(|r| r.into_iter().next()).map(|r| r.path)
+    }
+
+    /// The Reset buttons (after the question): set the transcription or the keeper groups aside. Nothing is deleted and the answers stay.
+    fn reset_work(&mut self, what: WorkKind) {
+        self.work(WorkCall::Reset { what, path: String::new() });
+        match what {
+            WorkKind::Transcription => {
+                self.steps = Default::default();
+                self.perform(Action::CloseReview);
+                self.options_ui.note = Some(
+                    "The transcription (transcript, sentences, pair scores) is set aside. The next Remove Retakes starts from scratch; the old files stay as numbered copies and your answers are kept."
+                        .into(),
+                );
+            }
+            WorkKind::KeeperGroups => {
+                self.steps.done.retain(|s| !matches!(s.kind, crate::retake_steps::StepKind::Keepers { .. }));
+                self.clear_ai_choices();
+                self.options_ui.note = Some("The AI's choices are set aside: the ticks are back to what you had. Nothing was deleted.".into());
+            }
+        }
     }
 
     /// A project was just saved into its own folder: bring the transcript, sentences and pair scores that were made before the save (kept by the service in its old
@@ -157,6 +183,13 @@ impl SimpleCutApp {
         }
         if let Some(path) = self.source_video_path() {
             self.make_call(Call::Adopt, ProjectCall::ImportLegacy { path });
+        }
+    }
+
+    pub(crate) fn make_work_call(&mut self, call: WorkCall) {
+        match self.service.as_ref().and_then(|s| s.work_call(call)) {
+            Some(job) => self.options_ui.calls.push((Call::Work, job)),
+            None => self.options_ui.note = Some("The retake service cannot set work aside.".into()),
         }
     }
 
@@ -250,6 +283,12 @@ impl SimpleCutApp {
                 }
             }
             OptionsAction::CancelAsk => self.options_ui.ask = None,
+            OptionsAction::AskReset(what) => self.options_ui.ask = Some(Ask::Reset { what }),
+            OptionsAction::ConfirmReset => {
+                if let Some(Ask::Reset { what }) = self.options_ui.ask.take() {
+                    self.reset_work(what);
+                }
+            }
             OptionsAction::ImportLegacy => match self.source_video_path() {
                 Some(path) => self.make_call(Call::Import, ProjectCall::ImportLegacy { path }),
                 None => self.options_ui.note = Some("Add a video to the timeline first: the old data is matched to the video.".into()),
@@ -348,6 +387,11 @@ impl SimpleCutApp {
                     self.make_call(Call::Status, ProjectCall::Status);
                 }
             }
+            (Call::Work, 200) => {
+                if self.project_folder_path().is_some() {
+                    self.make_call(Call::Status, ProjectCall::Status);
+                }
+            }
             (Call::Adopt, _) => {} // nothing to bring along (no earlier analysis, or an older service): not worth a message
             (Call::Import, 200) => {
                 let done: Vec<String> = body["imported"].as_array().map(|a| a.iter().filter_map(Value::as_str).map(pretty).collect()).unwrap_or_default();
@@ -385,6 +429,7 @@ pub(crate) fn window(app: &mut SimpleCutApp, ctx: &egui::Context) {
     let amber = theme::GROUP_COLORS[0];
     let options = app.service.as_ref().map(|s| s.options()).unwrap_or_default();
     let busy = app.is_analyzing();
+    let working = app.pipeline_running();
     let have_folder = app.project_folder_path().is_some();
     let mut queue: Vec<OptionsAction> = Vec::new();
     let (chosen_model, chosen_gap) = (app.options_ui.model.clone(), app.options_ui.silence_gap_s);
@@ -496,6 +541,19 @@ pub(crate) fn window(app: &mut SimpleCutApp, ctx: &egui::Context) {
             }
         }
 
+        // ── start over
+        ui.add_space(10.0);
+        ui.label(RichText::new("Start over").strong());
+        ui.horizontal(|ui| {
+            if ui.add_enabled(!working, egui::Button::new("Reset transcription…")).on_hover_text("Set the transcript, sentences and pair scores aside; the next run starts from scratch").clicked() {
+                queue.push(OptionsAction::AskReset(WorkKind::Transcription));
+            }
+            if ui.add_enabled(!working, egui::Button::new("Reset keeper groups…")).on_hover_text("Set the AI's choices aside and clear its ticks").clicked() {
+                queue.push(OptionsAction::AskReset(WorkKind::KeeperGroups));
+            }
+        });
+        ui.label(RichText::new("Nothing is deleted: the old results stay as numbered copies, and your answers are never touched. Ctrl+Z undoes the last step the same way.").color(t.text_dim).small());
+
         // ── stale results and questions
         if let Some(st) = &status
             && !st.stale.is_empty()
@@ -537,6 +595,23 @@ pub(crate) fn window(app: &mut SimpleCutApp, ctx: &egui::Context) {
                 ui.horizontal(|ui| {
                     if ui.button("Re-split").clicked() {
                         queue.push(OptionsAction::ConfirmResplit);
+                    }
+                    if ui.button("Cancel").clicked() {
+                        queue.push(OptionsAction::CancelAsk);
+                    }
+                });
+            }
+            Some(Ask::Reset { what }) => {
+                ui.add_space(8.0);
+                ui.separator();
+                let what_text = match what {
+                    WorkKind::Transcription => "the transcription (transcript, sentences and pair scores)",
+                    WorkKind::KeeperGroups => "the keeper groups (the AI's choices)",
+                };
+                ui.add(egui::Label::new(format!("Set aside {what_text}? It is kept as a copy, nothing is deleted, and your answers stay. The next run starts from scratch.")).wrap());
+                ui.horizontal(|ui| {
+                    if ui.button("Reset").clicked() {
+                        queue.push(OptionsAction::ConfirmReset);
                     }
                     if ui.button("Cancel").clicked() {
                         queue.push(OptionsAction::CancelAsk);

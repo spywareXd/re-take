@@ -741,3 +741,30 @@ fn user_preset_calls_use_the_right_methods_and_encode_the_name() {
     );
     assert!(seen.iter().any(|(me, p, _)| me == "DELETE" && p == "/v1/export/presets/My%20720p%20%2F%20draft"));
 }
+
+// ── setting work aside (Ctrl+Z, Reset) ─────────────────────────────────────
+
+#[test]
+fn reset_and_restore_name_the_work_the_video_and_the_project() {
+    let m = mock(|method, path, body| match (method, path) {
+        ("GET", "/v1/capabilities") => (200, r#"{"adjudicate":false,"refine":false}"#.into()),
+        ("POST", "/v1/work/reset") => (200, format!(r#"{{"reset":["transcript"],"echo":{body}}}"#)),
+        ("POST", "/v1/work/restore") => (200, r#"{"restored":["transcript"]}"#.into()),
+        _ => (404, "{}".into()),
+    });
+    let s = HttpService::connect(&m.url);
+    let call = |c| call_result(&mut *s.work_call(c).unwrap());
+    // no project folder yet: the old per-machine cache is addressed by the video alone
+    let r = call(simplecut_core::WorkCall::Reset { what: simplecut_core::WorkKind::Transcription, path: "C:/clips/take.mp4".into() });
+    assert_eq!(
+        (r["status"].as_u64(), r["body"]["echo"]["what"].as_str(), r["body"]["echo"]["path"].as_str()),
+        (Some(200), Some("transcription"), Some("C:/clips/take.mp4"))
+    );
+    assert!(r["body"]["echo"].get("project").is_none());
+    s.set_project(Some(std::path::PathBuf::from("C:/p")));
+    let r = call(simplecut_core::WorkCall::Reset { what: simplecut_core::WorkKind::KeeperGroups, path: "C:/clips/take.mp4".into() });
+    assert_eq!((r["body"]["echo"]["what"].as_str(), r["body"]["echo"]["project"].as_str()), (Some("keepers"), Some("C:/p")));
+    let r = call(simplecut_core::WorkCall::Restore { what: simplecut_core::WorkKind::Transcription, path: "C:/clips/take.mp4".into() });
+    assert_eq!(r["body"]["restored"][0], "transcript");
+    assert!(m.seen.lock().unwrap().iter().any(|(me, p, _)| me == "POST" && p == "/v1/work/restore"));
+}

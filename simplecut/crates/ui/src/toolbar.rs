@@ -19,7 +19,7 @@ pub(crate) fn show(app: &mut SimpleCutApp, ui: &mut egui::Ui) {
     } else if !has_timeline {
         "Add media to the timeline before exporting."
     } else {
-        "Export video (Ctrl+E)"
+        "Export the video, audio, subtitles, cut list or transcript (Ctrl+E)"
     };
     ui.horizontal(|ui| {
         ui.add_space(2.0);
@@ -58,14 +58,6 @@ pub(crate) fn show(app: &mut SimpleCutApp, ui: &mut egui::Ui) {
                     "Transcription model and sentence splitting for Remove Retakes",
                     Action::Options(crate::retake_options::OptionsAction::Open),
                     !is_exporting,
-                );
-                button(
-                    app,
-                    ui,
-                    "Exports",
-                    "Cut video with size, frame rate and quality options, audio only, subtitles, cut list, transcript",
-                    Action::Exports(crate::retake_export::ExportAction::Open),
-                    has_timeline && !is_exporting,
                 );
             }
             ui.add_space(8.0);

@@ -161,13 +161,6 @@ enum Then {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct ExportModalState {
-    pub path: PathBuf,
-    pub use_hardware: bool,
-    pub overwrite_confirm: bool,
-}
-
-#[derive(Debug, Clone, PartialEq)]
 pub struct RecoveryModalItem {
     pub id: String,
     pub name: String,
@@ -177,7 +170,6 @@ pub struct RecoveryModalItem {
 #[derive(Debug, Clone, PartialEq)]
 enum Modal {
     Unsaved(Then),
-    Export(ExportModalState),
     Recovery { candidates: Vec<RecoveryModalItem>, selected: usize },
     Shortcuts,
 }
@@ -209,6 +201,7 @@ pub struct SimpleCutApp {
     pub(crate) retakes: RetakeUi,
     pub(crate) options_ui: crate::retake_options::OptionsUi,
     pub(crate) export_ui: crate::retake_export::ExportUi,
+    pub(crate) steps: crate::retake_steps::StepHistory,
 
     pub(crate) source: Source,
     /// Position in the previewed file (the timeline's is the editor's playhead).
@@ -248,6 +241,7 @@ impl SimpleCutApp {
             retakes: RetakeUi::default(),
             options_ui: Default::default(),
             export_ui: Default::default(),
+            steps: Default::default(),
             source: Source::Timeline,
             media_time: Tick::ZERO,
             thumb_state: HashMap::new(),
@@ -455,6 +449,8 @@ impl SimpleCutApp {
                 }
             }
             Action::ImportPaths(paths) => self.import(paths),
+            Action::Undo if self.undo_pipeline_step() => {}
+            Action::Redo if self.redo_pipeline_step() => {}
             Action::Undo => match self.editor.undo() {
                 Some(what) => self.info(format!("Undid {}", what.to_lowercase())),
                 None => self.info("Nothing to undo."),
@@ -600,9 +596,7 @@ impl SimpleCutApp {
                 return;
             }
         };
-        let default_name = format!("{}.mp4", self.editor.project_name());
-        let default_path = if let Some(p) = self.editor.project_path() { PathBuf::from(p).with_file_name(default_name) } else { PathBuf::from(default_name) };
-        self.modal = Some(Modal::Export(ExportModalState { path: default_path, use_hardware: false, overwrite_confirm: false }));
+        self.perform_export(crate::retake_export::ExportAction::Open);
     }
 
     fn start_export(&mut self, path: PathBuf, use_hardware: bool) {
@@ -793,6 +787,7 @@ impl SimpleCutApp {
             job.cancel();
         }
         self.active_export = None;
+        self.steps = Default::default();
         self.player.pause();
         self.player.set_skips(Vec::new());
         self.retakes = RetakeUi::default();
@@ -1078,67 +1073,6 @@ impl SimpleCutApp {
                     }
                     Some(_) => self.modal = None,
                     None => {}
-                }
-            }
-            Modal::Export(mut state) => {
-                let t = theme::tokens();
-                let mut close = false;
-                let mut start: Option<(PathBuf, bool)> = None;
-                egui::Window::new("Export video").collapsible(false).resizable(false).anchor(Align2::CENTER_CENTER, [0.0, 0.0]).show(ctx, |ui| {
-                    ui.label(RichText::new("Preset: YouTube 1080p Full HD (1920×1080, H.264 + AAC)").color(t.text_dim));
-                    ui.add_space(8.0);
-                    ui.horizontal(|ui| {
-                        ui.label("Destination:");
-                        let shown =
-                            state.path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| state.path.to_string_lossy().into_owned());
-                        ui.label(RichText::new(shown).color(t.text));
-                        if ui.button("Browse...").clicked() {
-                            let suggested = state.path.file_name().and_then(|n| n.to_str()).unwrap_or("output.mp4");
-                            if let Some(picked) = self.dialogs.pick_export_path(suggested) {
-                                state.path = picked;
-                                state.overwrite_confirm = false;
-                            }
-                        }
-                    });
-                    ui.add_space(4.0);
-                    ui.checkbox(&mut state.use_hardware, "Use graphics card if available");
-                    ui.add_space(8.0);
-
-                    if state.overwrite_confirm {
-                        ui.label(RichText::new("A file with this name already exists. Overwrite?").color(t.danger));
-                        ui.add_space(6.0);
-                        ui.horizontal(|ui| {
-                            if ui.button("Overwrite").clicked() {
-                                start = Some((state.path.clone(), state.use_hardware));
-                                close = true;
-                            }
-                            if ui.button("Cancel").clicked() {
-                                state.overwrite_confirm = false;
-                            }
-                        });
-                    } else {
-                        ui.horizontal(|ui| {
-                            if ui.button("Start export").clicked() {
-                                if state.path.exists() {
-                                    state.overwrite_confirm = true;
-                                } else {
-                                    start = Some((state.path.clone(), state.use_hardware));
-                                    close = true;
-                                }
-                            }
-                            if ui.button("Cancel").clicked() {
-                                close = true;
-                            }
-                        });
-                    }
-                });
-                if close {
-                    self.modal = None;
-                } else {
-                    self.modal = Some(Modal::Export(state));
-                }
-                if let Some((path, use_hardware)) = start {
-                    self.perform(Action::StartExport { path, use_hardware });
                 }
             }
             Modal::Recovery { candidates, mut selected } => {

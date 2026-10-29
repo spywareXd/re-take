@@ -26,6 +26,7 @@ pub use error::{EditorError, Result};
 pub use export::{ExportJob, ExportOptions, ExportState, verify_export};
 pub use options::{
     AnalysisSettings, AsrModel, ExportOptionsInfo, ExportPreset, ExportRequest, GpuInfo, ProjectCall, ServiceOptions, SilenceInfo, TranscriptionInfo, UserCall,
+    WorkCall, WorkKind,
 };
 pub use player::{AudioOutput, FillFn, PlayState, Player};
 pub use progress::{STAGES, StageEvent, StageLog, StageState, StageStatus};

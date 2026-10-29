@@ -10,6 +10,7 @@ mod library;
 mod preview;
 mod retake_export;
 mod retake_options;
+mod retake_steps;
 mod retakes;
 mod status;
 mod status_text;

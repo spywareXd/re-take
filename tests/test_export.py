@@ -467,3 +467,31 @@ def test_options_carry_the_preset_order_because_json_objects_have_none(env, tmp_
     o = client.get("/v1/export/options").json()
     assert o["preset_order"] == ["Match Source", "YouTube 1080p", "YouTube 4K", "Shorts / Reels / TikTok", "Draft / Preview", "My Draft"]
     assert set(o["preset_order"]) == set(o["presets"])
+
+
+@needs_ffmpeg
+def test_an_export_can_go_to_a_folder_of_the_users_choice_and_never_overwrites(env, tmp_path):
+    client, proj, clips = env
+    dest = tmp_path / "my exports" / "deliver"                                         # does not exist yet: made
+    names = []
+    for _ in range(2):
+        _, body = _export(client, proj, clips["cfr"], preset="Draft / Preview", keep_spans=[[0.0, 1.0]], destination=str(dest))
+        assert body["state"] == "done", body
+        out = Path(body["result"]["path"])
+        assert out.parent == dest and out.is_file()
+        assert body["result"]["relative"] == str(out), "outside the project: the full path is shown"
+        names.append(out.name)
+    assert len(set(names)) == 2, "the second export got a new name, the first is untouched"
+    assert not (proj / "data" / "exports").exists() or not list((proj / "data" / "exports").glob("*.mp4")), "nothing went into the project's own exports folder"
+    _, inside = _export(client, proj, clips["cfr"], preset="Draft / Preview", keep_spans=[[0.0, 1.0]])
+    assert inside["result"]["relative"].startswith("data/exports/"), "the default destination stays inside the project"
+
+
+@needs_ffmpeg
+def test_a_bad_destination_is_refused_in_plain_words(env, tmp_path):
+    client, proj, clips = env
+    a_file = tmp_path / "not_a_folder.txt"
+    a_file.write_text("x", encoding="utf-8")
+    for bad, why in ((str(a_file), "is a file"), ("relative/folder", "full path"), ("", "full path"), (5, "full path")):
+        r, _ = _export(client, proj, clips["cfr"], expect_status=400, keep_spans=[[0.0, 1.0]], destination=bad)
+        assert r.status_code == 400 and why in r.json()["error"], (bad, r.json())

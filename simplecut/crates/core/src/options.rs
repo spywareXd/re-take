@@ -240,6 +240,33 @@ pub struct ExportRequest {
     pub body: Value,
 }
 
+/// A piece of work the pipeline created, that can be set aside (and brought back).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkKind {
+    /// The transcript, its words, the sentences and the pair scores.
+    Transcription,
+    /// The keeper (AI) choices stored for the project.
+    KeeperGroups,
+}
+
+impl WorkKind {
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::Transcription => "transcription",
+            Self::KeeperGroups => "keepers",
+        }
+    }
+}
+
+/// Set work aside, or bring it back (`POST /v1/work/reset`, `/v1/work/restore`). Nothing is deleted: the service keeps the files, starts the work over the next time it
+/// is needed (the old results become numbered copies), and leaves the user's answers alone. `path` is the video (used when the project has no folder yet). The job's
+/// result is `{"status", "body"}`.
+#[derive(Debug, Clone, PartialEq)]
+pub enum WorkCall {
+    Reset { what: WorkKind, path: String },
+    Restore { what: WorkKind, path: String },
+}
+
 /// A request about the user's own (per-user, not per-project) export presets and the export options.
 #[derive(Debug, Clone, PartialEq)]
 pub enum UserCall {

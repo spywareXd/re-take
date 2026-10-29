@@ -19,6 +19,14 @@ pub enum ExportAction {
     Cancel,
     SavePreset,
     DeletePreset(String),
+    /// Choose the file for the whole-timeline export.
+    BrowseTimeline,
+    /// Choose the destination folder for the service's exports.
+    BrowseFolder,
+    UseProjectFolder,
+    /// The file already exists: go ahead and replace it (the whole-timeline export only; the service never overwrites).
+    Overwrite,
+    KeepExisting,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -223,6 +231,14 @@ pub(crate) struct ExportUi {
     pub error: Option<String>,
     pub result: Option<Vec<String>>,
     pub log: StageLog,
+    /// The whole-timeline export (the editor's own): where the file goes, whether to use the graphics card, and the "replace it?" question.
+    pub timeline_path: std::path::PathBuf,
+    pub timeline_hw: bool,
+    pub overwrite_confirm: bool,
+    /// Where the service's exports go (None: the project's data/exports).
+    pub dest_folder: Option<std::path::PathBuf>,
+    /// The user picked a kind: the window no longer chooses for them when the service's options arrive.
+    pub kind_chosen: bool,
     job: Option<Box<dyn AnalysisJob>>,
     calls: Vec<(bool, Box<dyn AnalysisJob>)>,
 }
@@ -235,6 +251,7 @@ impl ExportUi {
 
 fn kind_label(kind: &str) -> &'static str {
     match kind {
+        "timeline" => "Video — whole timeline (MP4)",
         "video" => "Video (MP4)",
         "audio" => "Audio only",
         "subtitles" => "Subtitles of the kept text",
@@ -274,16 +291,46 @@ impl SimpleCutApp {
             ExportAction::Open => {
                 self.export_ui.open = true;
                 self.export_ui.note = None;
-                if self.export_ui.info.is_none() {
+                self.export_ui.error = None;
+                self.export_ui.result = None;
+                self.export_ui.overwrite_confirm = false;
+                let name = format!("{}.mp4", self.editor.project_name());
+                self.export_ui.timeline_path = match self.editor.project_path() {
+                    Some(p) => std::path::PathBuf::from(p).with_file_name(name),
+                    None => std::path::PathBuf::from(name),
+                };
+                if !self.export_ui.kind_chosen {
+                    self.export_ui.form.kind = "timeline".into();
+                }
+                if self.service.is_some() && self.export_ui.info.is_none() {
                     self.user_call(false, UserCall::ExportOptions);
+                } else {
+                    self.pick_default_kind();
                 }
             }
+            ExportAction::BrowseTimeline => {
+                let suggested = self.export_ui.timeline_path.file_name().and_then(|n| n.to_str()).unwrap_or("output.mp4").to_string();
+                if let Some(picked) = self.dialogs.pick_export_path(&suggested) {
+                    self.export_ui.timeline_path = picked;
+                    self.export_ui.overwrite_confirm = false;
+                }
+            }
+            ExportAction::BrowseFolder => {
+                let start = self.export_ui.dest_folder.clone();
+                if let Some(picked) = self.dialogs.pick_export_folder(start.as_deref()) {
+                    self.export_ui.dest_folder = Some(picked);
+                }
+            }
+            ExportAction::UseProjectFolder => self.export_ui.dest_folder = None,
+            ExportAction::KeepExisting => self.export_ui.overwrite_confirm = false,
+            ExportAction::Overwrite => self.start_timeline_export(true),
             ExportAction::Close => self.export_ui.open = false,
             ExportAction::Cancel => {
                 if let Some(job) = &mut self.export_ui.job {
                     job.cancel();
                 }
             }
+            ExportAction::Start if self.export_ui.form.kind == "timeline" || self.export_ui.info.is_none() => self.start_timeline_export(false),
             ExportAction::Start => self.start_export_job(),
             ExportAction::SavePreset => {
                 let name = self.export_ui.preset_name.trim().to_string();
@@ -310,6 +357,27 @@ impl SimpleCutApp {
         }
     }
 
+    /// The whole-timeline export: the editor's own render of everything on the timeline. A file that is already there is only replaced after the user said so.
+    fn start_timeline_export(&mut self, confirmed: bool) {
+        let path = self.export_ui.timeline_path.clone();
+        if path.exists() && !confirmed {
+            self.export_ui.overwrite_confirm = true;
+            return;
+        }
+        self.export_ui.open = false;
+        self.export_ui.overwrite_confirm = false;
+        let use_hardware = self.export_ui.timeline_hw;
+        self.perform(Action::StartExport { path, use_hardware });
+    }
+
+    /// With the project saved, the service's export (with its options) is the natural default; otherwise the whole timeline. Only until the user chooses.
+    fn pick_default_kind(&mut self) {
+        let have_folder = self.editor.project_path().is_some_and(|p| simplecut_core::project_folder::folder_of(std::path::Path::new(p)).is_some());
+        if !self.export_ui.kind_chosen {
+            self.export_ui.form.kind = if self.export_ui.info.is_some() && have_folder { "video".into() } else { "timeline".into() };
+        }
+    }
+
     fn start_export_job(&mut self) {
         let ui = &mut self.export_ui;
         ui.error = None;
@@ -331,7 +399,10 @@ impl SimpleCutApp {
             self.export_ui.error = Some("Add a video to the timeline first.".into());
             return;
         };
-        let body = self.export_ui.form.body();
+        let mut body = self.export_ui.form.body();
+        if let (Some(dest), Some(map)) = (&self.export_ui.dest_folder, body.as_object_mut()) {
+            map.insert("destination".into(), json!(dest.to_string_lossy()));
+        }
         match self.service.as_ref().and_then(|s| s.export(ExportRequest { item: source.item, path: source.path, body })) {
             Some(job) => {
                 self.export_ui.log = StageLog::new();
@@ -401,9 +472,14 @@ impl SimpleCutApp {
     fn apply_options(&mut self, info: ExportOptionsInfo) {
         if self.export_ui.info.is_none() {
             let first = info.presets.iter().find(|p| p.name == "YouTube 1080p").or_else(|| info.presets.first());
+            let kind = self.export_ui.form.kind.clone();
             self.export_ui.form = first.map_or_else(Form::default, |p| Form::from_preset(&p.name, &p.settings, &info));
+            if self.export_ui.kind_chosen {
+                self.export_ui.form.kind = kind;
+            }
         }
         self.export_ui.info = Some(info);
+        self.pick_default_kind();
     }
 }
 
@@ -457,6 +533,8 @@ fn combo<T: Clone + PartialEq>(ui: &mut egui::Ui, id: &str, label: &str, current
     picked
 }
 
+/// The one Export dialog. With the retake service connected it starts with "What to export": the whole timeline (the editor's own render, with music and volume), or the
+/// retake cut and the other files the service makes. Each kind has its destination and the Export button is in the dialog.
 pub(crate) fn window(app: &mut SimpleCutApp, ctx: &egui::Context) {
     if !app.export_ui.open {
         return;
@@ -465,188 +543,246 @@ pub(crate) fn window(app: &mut SimpleCutApp, ctx: &egui::Context) {
     let have_folder = app.editor.project_path().is_some_and(|p| simplecut_core::project_folder::folder_of(std::path::Path::new(p)).is_some());
     let mut queue: Vec<ExportAction> = Vec::new();
     let running = app.export_ui.running();
-    let Some(info) = app.export_ui.info.clone() else {
-        egui::Window::new("Export to project folder").collapsible(false).resizable(false).anchor(Align2::CENTER_CENTER, [0.0, 0.0]).show(ctx, |ui| {
-            ui.label("Asking the retake service what it can export…");
-            if let Some(n) = &app.export_ui.note {
-                ui.label(RichText::new(n.as_str()).color(t.danger));
-            }
-            if ui.button("Close").clicked() {
-                queue.push(ExportAction::Close);
-            }
-        });
-        for a in queue {
-            app.queue(Action::Exports(a));
-        }
-        return;
-    };
+    let info = app.export_ui.info.clone();
+    let service = app.service.is_some();
     let mut form = app.export_ui.form.clone();
     let mut preset_name = app.export_ui.preset_name.clone();
+    let mut timeline_hw = app.export_ui.timeline_hw;
     let (note, error, result) = (app.export_ui.note.clone(), app.export_ui.error.clone(), app.export_ui.result.clone());
+    let (timeline_path, overwrite) = (app.export_ui.timeline_path.clone(), app.export_ui.overwrite_confirm);
+    let dest_folder = app.export_ui.dest_folder.clone();
     let log = app.export_ui.log.clone();
+    let mut chosen_kind = false;
 
-    egui::Window::new("Export to project folder").collapsible(false).resizable(false).anchor(Align2::CENTER_CENTER, [0.0, 0.0]).show(ctx, |ui| {
+    egui::Window::new("Export options").collapsible(false).resizable(false).anchor(Align2::CENTER_CENTER, [0.0, 0.0]).show(ctx, |ui| {
         ui.set_min_width(500.0);
-        ui.add(egui::Label::new(RichText::new("Exports are written into the project folder (data/exports) with a new name each time; earlier exports are never overwritten. The cut comes from the project's saved cut list; without one the whole video is exported.").color(t.text_dim).small()).wrap());
-        if !have_folder {
-            ui.label(RichText::new("Save the project first: exports go into its folder.").color(t.danger));
-        }
-        ui.add_space(6.0);
-        ui.add_enabled_ui(!running, |ui| {
-            // ── what to export
-            let kinds: Vec<(String, String)> = ["video", "audio", "subtitles", "cutlist", "transcript"].iter().map(|k| (kind_label(k).to_string(), (*k).to_string())).collect();
-            if let Some(k) = combo(ui, "kind", "What to export", &form.kind.clone(), kind_label(&form.kind).to_string(), kinds) {
-                form.kind = k;
-                form.format = match form.kind.as_str() {
-                    "audio" => info.audio_formats.first().cloned().unwrap_or_default(),
-                    other => info.text_formats.iter().find(|(n, _)| n == other).and_then(|(_, f)| f.first().cloned()).unwrap_or_default(),
-                };
-            }
-            if form.kind != "video" {
-                let formats: Vec<String> = if form.kind == "audio" { info.audio_formats.clone() } else { info.text_formats.iter().find(|(n, _)| *n == form.kind).map(|(_, f)| f.clone()).unwrap_or_default() };
-                let items = formats.iter().map(|f| (f.to_uppercase(), f.clone())).collect();
-                if let Some(f) = combo(ui, "format", "Format", &form.format.clone(), form.format.to_uppercase(), items) {
-                    form.format = f;
-                }
-            }
-            if form.kind == "video" {
-                // ── preset
-                let items: Vec<(String, String)> = info.presets.iter().map(|p| (if p.builtin { p.name.clone() } else { format!("{} (mine)", p.name) }, p.name.clone())).collect();
-                let shown = if form.preset.is_empty() { "Custom".to_string() } else { form.preset.clone() };
-                if let Some(name) = combo(ui, "preset", "Preset", &form.preset.clone(), shown, items)
-                    && let Some(p) = info.preset(&name)
-                {
-                    form = Form::from_preset(&p.name, &p.settings, &info);
-                }
-                if let Some(p) = info.preset(&form.preset) {
-                    ui.label(RichText::new(&p.description).color(t.text_dim).small());
-                }
-                ui.add_space(4.0);
-                // ── size
-                let mut res_items: Vec<(String, Res)> = vec![(res_label(&Res::Source), Res::Source)];
-                res_items.extend(info.heights.iter().map(|h| (res_label(&Res::Height(h.clone())), Res::Height(h.clone()))));
-                res_items.extend(info.canvases.iter().map(|c| (res_label(&Res::Canvas(c.clone())), Res::Canvas(c.clone()))));
-                res_items.push((res_label(&Res::Custom), Res::Custom));
-                if let Some(r) = combo(ui, "res", "Size", &form.res.clone(), res_label(&form.res), res_items) {
-                    form.res = r;
-                }
-                if form.res == Res::Custom {
-                    ui.horizontal(|ui| {
-                        ui.label("Width");
-                        ui.add(egui::DragValue::new(&mut form.custom_w).range(info.dim_min..=info.dim_max).speed(2.0));
-                        ui.label("Height");
-                        ui.add(egui::DragValue::new(&mut form.custom_h).range(info.dim_min..=info.dim_max).speed(2.0));
-                        ui.checkbox(&mut form.lock_aspect, "Lock aspect ratio");
-                    });
-                }
-                if matches!(form.res, Res::Canvas(_)) || (form.res == Res::Custom && !form.lock_aspect) {
-                    let fits: Vec<(String, String)> = info.fits.iter().map(|f| (f.clone(), f.clone())).collect();
-                    if let Some(f) = combo(ui, "fit", "Picture fit", &form.fit.clone(), form.fit.clone(), fits) {
-                        form.fit = f;
-                    }
-                }
-                // ── frame rate
-                let mut fps_items = vec![(fps_label(&Fps::Source), Fps::Source)];
-                fps_items.extend(info.fps_choices.iter().map(|n| (fps_label(&Fps::Fixed(*n)), Fps::Fixed(*n))));
-                fps_items.push((fps_label(&Fps::Custom), Fps::Custom));
-                if let Some(f) = combo(ui, "fps", "Frame rate", &form.fps.clone(), fps_label(&form.fps), fps_items) {
-                    if let Fps::Fixed(n) = f {
-                        form.custom_fps = f64::from(n);
-                    }
-                    form.fps = f;
-                }
-                if form.fps == Fps::Custom {
-                    ui.horizontal(|ui| {
-                        ui.label("Frames per second");
-                        ui.add(egui::DragValue::new(&mut form.custom_fps).range(info.fps_range.0..=info.fps_range.1).speed(0.1));
-                    });
-                }
-                // ── codec and quality
-                let codecs: Vec<(String, String)> = info.codecs.iter().map(|c| (if c == "h264" { "H.264".to_string() } else { "H.265 (HEVC)".to_string() }, c.clone())).collect();
-                if let Some(c) = combo(ui, "codec", "Codec", &form.codec.clone(), if form.codec == "h264" { "H.264".to_string() } else { "H.265 (HEVC)".to_string() }, codecs) {
-                    form.codec = c;
-                }
-                ui.horizontal(|ui| {
-                    ui.label("Quality");
-                    ui.radio_value(&mut form.quality, Quality::Preset, "Preset");
-                    ui.radio_value(&mut form.quality, Quality::Crf, "CRF");
-                    ui.radio_value(&mut form.quality, Quality::Bitrate, "Bitrate");
-                });
-                ui.horizontal(|ui| match form.quality {
-                    Quality::Preset => {
-                        for p in ["draft", "standard", "high"] {
-                            ui.selectable_value(&mut form.q_preset, p.to_string(), p);
-                        }
-                    }
-                    Quality::Crf => {
-                        ui.add(egui::DragValue::new(&mut form.crf).range(info.crf_range.0..=info.crf_range.1));
-                        ui.label(RichText::new("lower = better quality, bigger file").color(t.text_dim).small());
-                    }
-                    Quality::Bitrate => {
-                        ui.add(egui::DragValue::new(&mut form.bitrate).range(info.bitrate_range.0..=info.bitrate_range.1).suffix(" kbps"));
-                    }
-                });
-                let speeds: Vec<(String, String)> = info.speeds.iter().map(|s| (s.clone(), s.clone())).collect();
-                if let Some(s) = combo(ui, "speed", "Encoder speed", &form.speed.clone(), form.speed.clone(), speeds) {
-                    form.speed = s;
-                }
-                if info.hardware.contains(&form.codec) {
-                    ui.checkbox(&mut form.hardware, "Use the NVIDIA GPU encoder (NVENC)");
-                } else {
-                    form.hardware = false;
-                }
-            }
-            if form.kind == "video" || form.kind == "audio" {
-                // ── audio
-                let rates: Vec<(String, u32)> = info.audio_bitrates.iter().map(|b| (format!("{b} kbps"), *b)).collect();
-                if let Some(b) = combo(ui, "abr", "Audio bitrate", &form.audio_bitrate, format!("{} kbps", form.audio_bitrate), rates) {
-                    form.audio_bitrate = b;
-                }
-                ui.horizontal(|ui| {
-                    ui.add(egui::DragValue::new(&mut form.fade_ms).range(0.0..=info.fade_max).suffix(" ms"));
-                    ui.label(RichText::new("short audio crossfade at every cut (0 = off)").color(t.text_dim));
-                });
-                if form.kind == "video" {
-                    ui.checkbox(&mut form.loudness, "Normalise loudness (off by default)");
-                }
-            }
-            if form.kind == "video" {
-                // ── presets of your own
-                ui.add_space(6.0);
-                ui.horizontal(|ui| {
-                    ui.add(egui::TextEdit::singleline(&mut preset_name).hint_text("Name for a new preset").desired_width(180.0));
-                    if ui.button("Save as preset").on_hover_text("Kept in your own settings folder, not in the project").clicked() {
-                        queue.push(ExportAction::SavePreset);
-                    }
-                    if info.preset(&form.preset).is_some_and(|p| !p.builtin) && ui.button("Delete this preset").clicked() {
-                        queue.push(ExportAction::DeletePreset(form.preset.clone()));
-                    }
-                });
-            }
-        });
-        if let Some(p) = form.problem(&info) {
-            ui.label(RichText::new(p).color(t.danger));
-        }
-        ui.add_space(8.0);
-        if running {
-            let frac = log.state("export_render");
-            let pct = match frac {
-                simplecut_core::StageState::Running { pct, .. } => pct.unwrap_or(0.0),
-                _ => 0.0,
-            };
-            ui.add(egui::ProgressBar::new((pct / 100.0).clamp(0.0, 1.0)).text(format!("Rendering {pct:.0}%")).desired_width(460.0));
-            if ui.button("Cancel export").clicked() {
-                queue.push(ExportAction::Cancel);
-            }
-        } else {
-            ui.horizontal(|ui| {
-                if ui.add_enabled(have_folder && form.problem(&info).is_none(), egui::Button::new("Start export")).clicked() {
-                    queue.push(ExportAction::Start);
-                }
-                if ui.button("Close").clicked() {
-                    queue.push(ExportAction::Close);
+        // ── what to export (only when the service offers more than the timeline)
+        if let Some(info) = &info {
+            ui.add_enabled_ui(!running, |ui| {
+                let mut kinds: Vec<(String, String)> = vec![("Video — whole timeline (MP4)".into(), "timeline".into())];
+                kinds.extend(["video", "audio", "subtitles", "cutlist", "transcript"].iter().map(|k| (kind_label(k).to_string(), (*k).to_string())));
+                if let Some(k) = combo(ui, "kind", "What to export", &form.kind.clone(), kind_label(&form.kind).to_string(), kinds) {
+                    chosen_kind = true;
+                    form.kind = k;
+                    form.format = match form.kind.as_str() {
+                        "audio" => info.audio_formats.first().cloned().unwrap_or_default(),
+                        other => info.text_formats.iter().find(|(n, _)| n == other).and_then(|(_, f)| f.first().cloned()).unwrap_or_default(),
+                    };
                 }
             });
+            ui.add_space(4.0);
+        } else if service {
+            ui.label(RichText::new("Asking the retake service what else it can export…").color(t.text_dim).small());
+        }
+
+        if form.kind == "timeline" || info.is_none() {
+            // ── the whole timeline: the editor's own export
+            ui.label(RichText::new("Preset: YouTube 1080p Full HD (1920×1080, H.264 + AAC)").color(t.text_dim));
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                ui.label("Destination:");
+                let shown = timeline_path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| timeline_path.to_string_lossy().into_owned());
+                ui.label(RichText::new(shown).color(t.text));
+                if ui.button("Browse...").clicked() {
+                    queue.push(ExportAction::BrowseTimeline);
+                }
+            });
+            if let Some(dir) = timeline_path.parent().filter(|d| !d.as_os_str().is_empty()) {
+                ui.label(RichText::new(format!("in {}", dir.display())).color(t.text_dim).small());
+            }
+            ui.add_space(4.0);
+            ui.checkbox(&mut timeline_hw, "Use graphics card if available");
+            ui.add_space(8.0);
+            if overwrite {
+                ui.label(RichText::new("A file with this name already exists. Overwrite?").color(t.danger));
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    if ui.button("Overwrite").clicked() {
+                        queue.push(ExportAction::Overwrite);
+                    }
+                    if ui.button("Cancel").clicked() {
+                        queue.push(ExportAction::KeepExisting);
+                    }
+                });
+            } else {
+                ui.horizontal(|ui| {
+                    if ui.button("Start export").clicked() {
+                        queue.push(ExportAction::Start);
+                    }
+                    if ui.button("Cancel").clicked() {
+                        queue.push(ExportAction::Close);
+                    }
+                });
+            }
+        } else if let Some(info) = &info {
+            // ── the retake service's exports
+            ui.add(egui::Label::new(RichText::new("The cut comes from the project's saved cut list; without one the whole video is exported. Names are never reused: an earlier export is never overwritten.").color(t.text_dim).small()).wrap());
+            if !have_folder {
+                ui.label(RichText::new("Save the project first: these exports use its folder.").color(t.danger));
+            }
+            ui.add_space(6.0);
+            ui.add_enabled_ui(!running, |ui| {
+                if form.kind != "video" {
+                    let formats: Vec<String> = if form.kind == "audio" { info.audio_formats.clone() } else { info.text_formats.iter().find(|(n, _)| *n == form.kind).map(|(_, f)| f.clone()).unwrap_or_default() };
+                    let items = formats.iter().map(|f| (f.to_uppercase(), f.clone())).collect();
+                    if let Some(f) = combo(ui, "format", "Format", &form.format.clone(), form.format.to_uppercase(), items) {
+                        form.format = f;
+                    }
+                }
+                if form.kind == "video" {
+                    // ── preset
+                    let items: Vec<(String, String)> = info.presets.iter().map(|p| (if p.builtin { p.name.clone() } else { format!("{} (mine)", p.name) }, p.name.clone())).collect();
+                    let shown = if form.preset.is_empty() { "Custom".to_string() } else { form.preset.clone() };
+                    if let Some(name) = combo(ui, "preset", "Preset", &form.preset.clone(), shown, items)
+                        && let Some(p) = info.preset(&name)
+                    {
+                        let kind = form.kind.clone();
+                        form = Form::from_preset(&p.name, &p.settings, info);
+                        form.kind = kind;
+                    }
+                    if let Some(p) = info.preset(&form.preset) {
+                        ui.label(RichText::new(&p.description).color(t.text_dim).small());
+                    }
+                    ui.add_space(4.0);
+                    // ── size
+                    let mut res_items: Vec<(String, Res)> = vec![(res_label(&Res::Source), Res::Source)];
+                    res_items.extend(info.heights.iter().map(|h| (res_label(&Res::Height(h.clone())), Res::Height(h.clone()))));
+                    res_items.extend(info.canvases.iter().map(|c| (res_label(&Res::Canvas(c.clone())), Res::Canvas(c.clone()))));
+                    res_items.push((res_label(&Res::Custom), Res::Custom));
+                    if let Some(r) = combo(ui, "res", "Size", &form.res.clone(), res_label(&form.res), res_items) {
+                        form.res = r;
+                    }
+                    if form.res == Res::Custom {
+                        ui.horizontal(|ui| {
+                            ui.label("Width");
+                            ui.add(egui::DragValue::new(&mut form.custom_w).range(info.dim_min..=info.dim_max).speed(2.0));
+                            ui.label("Height");
+                            ui.add(egui::DragValue::new(&mut form.custom_h).range(info.dim_min..=info.dim_max).speed(2.0));
+                            ui.checkbox(&mut form.lock_aspect, "Lock aspect ratio");
+                        });
+                    }
+                    if matches!(form.res, Res::Canvas(_)) || (form.res == Res::Custom && !form.lock_aspect) {
+                        let fits: Vec<(String, String)> = info.fits.iter().map(|f| (f.clone(), f.clone())).collect();
+                        if let Some(f) = combo(ui, "fit", "Picture fit", &form.fit.clone(), form.fit.clone(), fits) {
+                            form.fit = f;
+                        }
+                    }
+                    // ── frame rate
+                    let mut fps_items = vec![(fps_label(&Fps::Source), Fps::Source)];
+                    fps_items.extend(info.fps_choices.iter().map(|n| (fps_label(&Fps::Fixed(*n)), Fps::Fixed(*n))));
+                    fps_items.push((fps_label(&Fps::Custom), Fps::Custom));
+                    if let Some(f) = combo(ui, "fps", "Frame rate", &form.fps.clone(), fps_label(&form.fps), fps_items) {
+                        if let Fps::Fixed(n) = f {
+                            form.custom_fps = f64::from(n);
+                        }
+                        form.fps = f;
+                    }
+                    if form.fps == Fps::Custom {
+                        ui.horizontal(|ui| {
+                            ui.label("Frames per second");
+                            ui.add(egui::DragValue::new(&mut form.custom_fps).range(info.fps_range.0..=info.fps_range.1).speed(0.1));
+                        });
+                    }
+                    // ── codec and quality
+                    let codecs: Vec<(String, String)> = info.codecs.iter().map(|c| (if c == "h264" { "H.264".to_string() } else { "H.265 (HEVC)".to_string() }, c.clone())).collect();
+                    if let Some(c) = combo(ui, "codec", "Codec", &form.codec.clone(), if form.codec == "h264" { "H.264".to_string() } else { "H.265 (HEVC)".to_string() }, codecs) {
+                        form.codec = c;
+                    }
+                    ui.horizontal(|ui| {
+                        ui.label("Quality");
+                        ui.radio_value(&mut form.quality, Quality::Preset, "Preset");
+                        ui.radio_value(&mut form.quality, Quality::Crf, "CRF");
+                        ui.radio_value(&mut form.quality, Quality::Bitrate, "Bitrate");
+                    });
+                    ui.horizontal(|ui| match form.quality {
+                        Quality::Preset => {
+                            for p in ["draft", "standard", "high"] {
+                                ui.selectable_value(&mut form.q_preset, p.to_string(), p);
+                            }
+                        }
+                        Quality::Crf => {
+                            ui.add(egui::DragValue::new(&mut form.crf).range(info.crf_range.0..=info.crf_range.1));
+                            ui.label(RichText::new("lower = better quality, bigger file").color(t.text_dim).small());
+                        }
+                        Quality::Bitrate => {
+                            ui.add(egui::DragValue::new(&mut form.bitrate).range(info.bitrate_range.0..=info.bitrate_range.1).suffix(" kbps"));
+                        }
+                    });
+                    let speeds: Vec<(String, String)> = info.speeds.iter().map(|s| (s.clone(), s.clone())).collect();
+                    if let Some(s) = combo(ui, "speed", "Encoder speed", &form.speed.clone(), form.speed.clone(), speeds) {
+                        form.speed = s;
+                    }
+                    if info.hardware.contains(&form.codec) {
+                        ui.checkbox(&mut form.hardware, "Use the NVIDIA GPU encoder (NVENC)");
+                    } else {
+                        form.hardware = false;
+                    }
+                }
+                if form.kind == "video" || form.kind == "audio" {
+                    // ── audio
+                    let rates: Vec<(String, u32)> = info.audio_bitrates.iter().map(|b| (format!("{b} kbps"), *b)).collect();
+                    if let Some(b) = combo(ui, "abr", "Audio bitrate", &form.audio_bitrate, format!("{} kbps", form.audio_bitrate), rates) {
+                        form.audio_bitrate = b;
+                    }
+                    ui.horizontal(|ui| {
+                        ui.add(egui::DragValue::new(&mut form.fade_ms).range(0.0..=info.fade_max).suffix(" ms"));
+                        ui.label(RichText::new("short audio crossfade at every cut (0 = off)").color(t.text_dim));
+                    });
+                    if form.kind == "video" {
+                        ui.checkbox(&mut form.loudness, "Normalise loudness (off by default)");
+                    }
+                }
+                if form.kind == "video" {
+                    // ── presets of your own
+                    ui.add_space(6.0);
+                    ui.horizontal(|ui| {
+                        ui.add(egui::TextEdit::singleline(&mut preset_name).hint_text("Name for a new preset").desired_width(180.0));
+                        if ui.button("Save as preset").on_hover_text("Kept in your own settings folder, not in the project").clicked() {
+                            queue.push(ExportAction::SavePreset);
+                        }
+                        if info.preset(&form.preset).is_some_and(|p| !p.builtin) && ui.button("Delete this preset").clicked() {
+                            queue.push(ExportAction::DeletePreset(form.preset.clone()));
+                        }
+                    });
+                }
+                // ── where the file goes
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    ui.label("Destination folder:");
+                    let shown = dest_folder.as_ref().map_or_else(|| "the project's data/exports folder".to_string(), |d| d.display().to_string());
+                    ui.add(egui::Label::new(RichText::new(shown).color(t.text)).truncate());
+                    if ui.button("Browse folder…").clicked() {
+                        queue.push(ExportAction::BrowseFolder);
+                    }
+                    if dest_folder.is_some() && ui.small_button("Use the project folder").clicked() {
+                        queue.push(ExportAction::UseProjectFolder);
+                    }
+                });
+            });
+            if let Some(p) = form.problem(info) {
+                ui.label(RichText::new(p).color(t.danger));
+            }
+            ui.add_space(8.0);
+            if running {
+                let frac = log.state("export_render");
+                let pct = match frac {
+                    simplecut_core::StageState::Running { pct, .. } => pct.unwrap_or(0.0),
+                    _ => 0.0,
+                };
+                ui.add(egui::ProgressBar::new((pct / 100.0).clamp(0.0, 1.0)).text(format!("Rendering {pct:.0}%")).desired_width(460.0));
+                if ui.button("Cancel export").clicked() {
+                    queue.push(ExportAction::Cancel);
+                }
+            } else {
+                ui.horizontal(|ui| {
+                    if ui.add_enabled(have_folder && form.problem(info).is_none(), egui::Button::new("Start export")).clicked() {
+                        queue.push(ExportAction::Start);
+                    }
+                    if ui.button("Cancel").clicked() {
+                        queue.push(ExportAction::Close);
+                    }
+                });
+            }
         }
         if let Some(lines) = &result {
             ui.add_space(8.0);
@@ -665,6 +801,8 @@ pub(crate) fn window(app: &mut SimpleCutApp, ctx: &egui::Context) {
     });
     app.export_ui.form = form;
     app.export_ui.preset_name = preset_name;
+    app.export_ui.timeline_hw = timeline_hw;
+    app.export_ui.kind_chosen |= chosen_kind;
     for a in queue {
         app.queue(Action::Exports(a));
     }

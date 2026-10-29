@@ -39,6 +39,14 @@ impl Dialogs for NativeDialogs {
         Some(path)
     }
 
+    fn pick_export_folder(&self, start: Option<&std::path::Path>) -> Option<PathBuf> {
+        let mut dialog = rfd::FileDialog::new().set_title("Export into folder");
+        if let Some(dir) = start.filter(|d| d.is_dir()) {
+            dialog = dialog.set_directory(dir);
+        }
+        dialog.pick_folder()
+    }
+
     fn pick_relink_path(&self, suggested_name: &str) -> Option<PathBuf> {
         rfd::FileDialog::new()
             .set_title(format!("Locate media for {suggested_name}"))

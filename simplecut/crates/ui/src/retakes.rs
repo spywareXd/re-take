@@ -303,6 +303,16 @@ impl SimpleCutApp {
         }
     }
 
+    /// True while the pipeline itself is working (the analysis, the model checking the answers, the AI's choices). Planning cuts in the background after a tick changes
+    /// does not count: it must not stop Ctrl+Z or the Reset buttons.
+    pub(crate) fn pipeline_running(&self) -> bool {
+        match &self.retakes.stage {
+            Some(Stage::Analyzing(_) | Stage::Resolving { .. }) => true,
+            Some(Stage::Review(r)) => r.advice.is_some(),
+            _ => false,
+        }
+    }
+
     /// True while a request to the service is running.
     pub fn is_analyzing(&self) -> bool {
         self.retakes.busy()
@@ -761,7 +771,13 @@ impl SimpleCutApp {
             Stage::Analyzing(mut run) => match run.poll() {
                 None => Some(Stage::Analyzing(run)),
                 Some(JobState::Done(text)) => {
-                    self.retakes.last_log = Some(run.take_log());
+                    let log = run.take_log();
+                    let created =
+                        ["transcription", "unit_splitting", "pair_scoring"].iter().any(|s| matches!(log.state(s), simplecut_core::StageState::Done { .. }));
+                    self.retakes.last_log = Some(log);
+                    if created {
+                        self.record_step(crate::retake_steps::StepKind::Analysis); // it made files: Ctrl+Z can set them aside
+                    }
                     self.analysis_done(run.item, &text)
                 }
                 Some(JobState::Failed(why)) => {
@@ -902,6 +918,42 @@ impl SimpleCutApp {
         self.pump_refine_debounce(r);
     }
 
+    /// Take the AI's ticks back out of the review (the sentences are ticked as kept again, as before it answered).
+    pub(crate) fn remove_ai_choices<'a>(&mut self, ids: impl Iterator<Item = &'a str>) {
+        let Some(Stage::Review(r)) = &mut self.retakes.stage else { return };
+        let ids: Vec<&str> = ids.collect();
+        for id in &ids {
+            r.keep.remove(*id);
+        }
+        let groups: Vec<String> = r.groups.iter().filter(|g| g.sentences.iter().any(|s| ids.contains(&s.id.as_str()))).map(|g| g.id.clone()).collect();
+        for g in groups {
+            r.unclear.remove(&g);
+            r.reasons.remove(&g);
+        }
+    }
+
+    /// Put the AI's ticks back (redo).
+    pub(crate) fn reapply_ai_choices(&mut self, applied: &[(String, bool)], unclear: &[String], reasons: &[(String, String)]) {
+        let Some(Stage::Review(r)) = &mut self.retakes.stage else { return };
+        for (id, keep) in applied {
+            r.keep.insert(id.clone(), (*keep, Origin::Ai));
+        }
+        for g in unclear {
+            r.unclear.insert(g.clone());
+        }
+        for (g, why) in reasons {
+            r.reasons.insert(g.clone(), why.clone());
+        }
+    }
+
+    /// Clear every tick the AI made (the Reset button for the keeper groups).
+    pub(crate) fn clear_ai_choices(&mut self) {
+        let Some(Stage::Review(r)) = &mut self.retakes.stage else { return };
+        r.keep.retain(|_, (_, origin)| *origin != Origin::Ai);
+        r.unclear.clear();
+        r.reasons.clear();
+    }
+
     fn poll_advice(&mut self, r: &mut Review) {
         let Some(run) = &mut r.advice else { return };
         let Some(state) = run.poll() else { return };
@@ -912,6 +964,7 @@ impl SimpleCutApp {
                 Ok((advice, notes)) => {
                     let n = advice.len();
                     let mut check = 0usize;
+                    let (mut applied, mut unclear_groups, mut reasons) = (Vec::new(), Vec::new(), Vec::new());
                     for a in advice {
                         if a.unclear {
                             check += 1;
@@ -923,13 +976,21 @@ impl SimpleCutApp {
                             r.groups.iter().find(|g| g.id == a.group).map(|g| g.sentences.iter().map(|s| s.id.clone()).collect()).unwrap_or_default();
                         for id in ids {
                             let keep = a.keep.contains(&id);
+                            applied.push((id.clone(), keep));
                             r.keep.insert(id, (keep, Origin::Ai));
                         }
+                        if a.unclear {
+                            unclear_groups.push(a.group.clone());
+                        }
                         if !a.reason.trim().is_empty() {
+                            reasons.push((a.group.clone(), a.reason.clone()));
                             r.reasons.insert(a.group, a.reason);
                         }
                     }
                     r.notes = notes;
+                    if !applied.is_empty() {
+                        self.record_step(crate::retake_steps::StepKind::Keepers { applied, unclear: unclear_groups, reasons });
+                    }
                     let check_note = match check {
                         0 => String::new(),
                         1 => " 1 group needs a check.".to_string(),

@@ -13,7 +13,7 @@ use std::time::Duration;
 use serde_json::{Value, json};
 use simplecut_core::{
     AdjudicateRequest, AnalysisJob, AnalysisRequest, Capabilities, ExportRequest, ItemId, JobState, KeeperInfo, ProjectCall, RefineRequest, ResolveRequest,
-    RetakeService, ServiceOptions, StageEvent, Tick, UserCall,
+    RetakeService, ServiceOptions, StageEvent, Tick, UserCall, WorkCall,
 };
 
 /// The address the service listens on unless told otherwise.
@@ -186,6 +186,15 @@ impl RetakeService for HttpService {
             map.insert("path".into(), json!(path));
         }
         Some(self.start("/v1/export", self.tagged(body)))
+    }
+
+    fn work_call(&self, call: WorkCall) -> Option<Box<dyn AnalysisJob>> {
+        let (endpoint, what, path) = match call {
+            WorkCall::Reset { what, path } => ("/v1/work/reset", what, path),
+            WorkCall::Restore { what, path } => ("/v1/work/restore", what, path),
+        };
+        // the project folder (when there is one) is added; without one the service works on its old per-machine cache for this video
+        Some(self.start_call(Method::Post, endpoint.to_string(), self.tagged(json!({ "what": what.id(), "path": path }))))
     }
 
     fn user_call(&self, call: UserCall) -> Option<Box<dyn AnalysisJob>> {

@@ -33,8 +33,8 @@ fn export_dialog_can_browse_and_cancel() {
     // Click Export in toolbar
     click(&mut h, "Export");
 
-    // "Export video" window is open
-    h.get_by_label("Export video");
+    // "Export options" window is open
+    h.get_by_label("Export options");
     h.get_by_label("Preset: YouTube 1080p Full HD (1920×1080, H.264 + AAC)");
 
     // Script an export path
@@ -46,7 +46,7 @@ fn export_dialog_can_browse_and_cancel() {
 
     // Cancel closes dialog
     click(&mut h, "Cancel");
-    assert!(h.query_by_label("Export video").is_none());
+    assert!(h.query_by_label("Export options").is_none());
 }
 
 #[test]
@@ -106,7 +106,7 @@ fn export_over_existing_file_requires_confirmation() {
     // Clicking Cancel in overwrite prompt keeps the dialog without starting export
     click(&mut h, "Cancel");
     assert!(!h.state().is_exporting());
-    h.get_by_label("Export video");
+    h.get_by_label("Export options");
 
     // Clicking Start export then Overwrite starts the job
     click(&mut h, "Start export");
@@ -129,7 +129,7 @@ fn ctrl_e_opens_export_dialog() {
     // Trigger OpenExportDialog action directly
     h.state_mut().perform(Action::OpenExportDialog);
     h.step();
-    h.get_by_label("Export video");
+    h.get_by_label("Export options");
     click(&mut h, "Cancel");
 }
 

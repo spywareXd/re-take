@@ -122,6 +122,11 @@ pub trait RetakeService: Send + Sync {
         None
     }
 
+    /// Set the transcription or the keeper groups aside (Ctrl+Z of that step, or the Reset buttons), or bring them back (see [`crate::WorkCall`]). None when the service cannot.
+    fn work_call(&self, _call: crate::options::WorkCall) -> Option<Box<dyn AnalysisJob>> {
+        None
+    }
+
     /// A request about the user's export presets or the export options (see [`crate::UserCall`]); the result is `{"status", "body"}`. None when the service cannot.
     fn user_call(&self, _call: crate::options::UserCall) -> Option<Box<dyn AnalysisJob>> {
         None

@@ -10,7 +10,7 @@ its data; the editor shows the settings, asks before replacing anything, and sen
 | 1 | Model size selector | `pipeline/step_01_transcription/model_catalog.py` builds the list from the installed faster-whisper (`tiny, base, small, medium, large-v2, large-v3, turbo`); `GET /v1/capabilities` has `transcription`; `model` on `analyze`; saved in the project (`data/settings.json`); changing it after a transcript exists marks it stale and refuses (409) until confirmed | Options window: dropdown with download size, GPU memory, speed, downloaded or not, warning |
 | 2 | Progress logs | `service/events.py`: events, SSE and polling endpoints, persisted `data/progress.jsonl`; stages emitted by the transcriber, splitter, scorer, keeper, cut-list and export code | Retakes panel: stepper (all 11 stages, in order), current stage + elapsed, scrolling log, "cached", exact errors, log kept after the run |
 | 3 | Silence gap | `silence_gap_s` is a job parameter, range-checked on the server; `units-preview`, `resplit`; stale marks and numbered copies | Slider + number box, live sentence count, "Re-split sentences", the confirmation |
-| 4 | Exports | `service/export_options.py`, `service/export_media.py`, `POST /v1/export`, presets | "Exports" window |
+| 4 | Exports | `service/export_options.py`, `service/export_media.py`, `POST /v1/export`, presets, optional `destination` folder | One Export dialog (see "Second round") |
 | 5 | dB display overflow | | `timeline.rs` track headers (see below) |
 | 6 | Remove Retakes button | | `toolbar.rs` primary button |
 | 7 | Project-local storage | `service/project_store.py` (the one owner of paths under `X/data/`), legacy import | Save As makes `X/X.<ext>` + `data/`; project status and source warning on open |
@@ -22,9 +22,10 @@ name), the cell clips, and the header column is 196 px instead of 168 (without t
 the fix, at 960×600, 1100×700, 1300×820 and 1920×1080 and with dB values from −60 to +12). Screenshots: `screenshots/item5_*`.
 
 ### Item 6: the button
-Accent fill from the theme, 30 px tall, 15 pt label, dark label on the fill (about 5.7:1; WCAG AA needs 4.5:1, and white text would be 3.2:1). Hover lighter, pressed slightly
-darker (kept above 4.5:1; a first version at 4.06:1 was caught by the contrast test), keyboard focus has a 2.5 px inside outline, disabled is flat grey with a border, while the
-service works it shows the stage and percent as a fill (no animation of its own). Constants: `HOVER_LIGHTEN`, `PRESSED_DARKEN`, `PRIMARY_W/H` in `toolbar.rs`.
+Same size and font as the other buttons, filled with the theme's accent colour (it was first made larger; that was changed back after use). Dark label on the fill (about
+5.7:1; WCAG AA needs 4.5:1, and white text would be 3.2:1). Hover lighter, pressed slightly darker (kept above 4.5:1; a first version at 4.06:1 was caught by the contrast
+test), keyboard focus has a 2.5 px inside outline, disabled is flat grey with a border, while the service works the label gets the percent and the button fills like a bar
+(no animation of its own; the stage is in the tooltip). Constants: `HOVER_LIGHTEN`, `PRESSED_DARKEN` in `toolbar.rs`. Current screenshots: `screenshots/item6b_*`.
 
 ## Project folder layout
 
@@ -109,3 +110,34 @@ CRF instead of Filmcraft's fixed 16 / 45 Mbps. EDL timecode is non-drop-frame at
 - **Cold `GET /v1/capabilities`** can take tens of seconds the first time (the keeper availability check loads its libraries). That check is the keeper's and was not changed.
 - The existing core test `export_to_unwritable_path_fails_cleanly` assumes the drive `X:` does not exist; on a machine with an `X:` drive it exports a real file there (it did here: `X:\cannot\exist\rendered.mp4`). It is skipped in the runs for this work and was not changed.
 - Items 1, 3 and 7 share files in the editor and were committed together (`3e2172f`).
+
+## Second round (after first use)
+
+| Reported | Cause | Change |
+|---|---|---|
+| Hovering the transcription dropdown shifts the other rows | egui's hovered button grows its layout a little, and the rows below follow | The dropdown rows (Options and Export) are drawn by `menu_row`: a fixed-size slot with a hand-painted highlight. Test: `hovering_over_the_model_dropdown_and_its_items_moves_no_row` (fails on the old code) |
+| Remove Retakes button too big | the first restyle made it larger | Same size and font as the other buttons, still blue |
+| Ask AI (local Qwen keeper) keeps every sentence at a 0.1 s gap | **Not the model.** `ask_ai` sent only the "unsure" groups when any existed, so "likely" groups were never asked and stayed fully ticked. A shorter gap makes a mix of likely and unsure groups; at 0.7 s all groups were likely, so all were asked. On `sample_a` at 0.1 s: 5 groups, 4 likely, 1 unsure; only the unsure one was sent. Run directly with the real keeper, every group got advice with some sentences removed | A local keeper (nothing leaves the machine) is asked about **every** group. The hosted keeper keeps the narrower, consent-gated behaviour. Tests: `a_local_keeper_is_asked_about_every_group_not_only_the_unsure_ones`, `a_hosted_keeper_is_still_asked_...` |
+| Remove / Apply button hidden below the cut modes | The footer (three unwrapped cut-mode buttons, wrapped description and warning, the button) was laid out under a *guessed* reserved height, so it overflowed the panel | The footer is laid out from the bottom up, the cut modes wrap, and the list of groups takes the rest. Test: `the_remove_button_and_the_cut_modes_stay_inside_the_panel_...` at four window sizes and 1.3x / 1.5x text (it fails on the old layout: bottom 794 vs 792) |
+| Ctrl+Z should undo a step's files; a Reset option | Steps that made files were not part of undo, so a redo with new settings found the old results | See "Ctrl+Z and Reset" |
+| One Export menu, with destination folder and Export button inside | There were two Export buttons and dialogs | See "One Export dialog" |
+| Saving after the cache exists: the transcription should follow | The first analysis lives in the service's old per-machine cache, and the saved project started empty | Right after the first save the editor asks the service to **copy** that work into the project (`POST /v1/project/import-legacy` with the video path). Originals stay. The same call backs the Options button |
+
+Also fixed on the way: the old per-machine cache kept one sentence split per video and ignored the silence gap (a shorter gap silently did nothing). It now records the gap
+that made the split (`units_meta.json`) and splits again, reusing the transcript, when a different gap is asked for.
+
+### Ctrl+Z and Reset
+- A step that **created files** (the transcription: transcript, words, sentences, pair scores; the AI's choices) is recorded like an edit. **Ctrl+Z** undoes the latest one if
+  nothing was edited after it (otherwise the edit comes first, as usual); **Ctrl+Y** redoes it. A step that found everything in the cache made nothing and is not recorded.
+- "Undo" **sets the work aside, it never deletes**: the service marks the results as reset (`POST /v1/work/reset`), the files stay, and the next run computes them again
+  without asking (the old ones become `stale/<name>.<n>.json`). `POST /v1/work/restore` (Ctrl+Y) lifts the mark. The user's answers (`labels.jsonl`) are never touched.
+  It works for a project folder and for the old per-machine cache (`<fingerprint>/_reset.json`).
+- Undoing the transcription closes the review (it belonged to the old transcription); undoing the AI puts the ticks back as they were.
+- Options window, "Start over": **Reset transcription…** and **Reset keeper groups…** (each asks first). Doing something new after an undo ends the redo.
+- Not covered: the cut list file (`cutlist.json`) is replaced with a numbered copy when a cut is applied again, but it has no step of its own in Ctrl+Z.
+
+### One Export dialog
+One **Export** button (Ctrl+E) opens "Export options". With the retake service connected it starts with **What to export**: *Video — whole timeline (MP4)* (the editor's own
+render: picture, dialogue, music, volume; its own destination file with Browse and the "replace it?" question) and the service's kinds (cut video with all the options,
+audio only, subtitles, cut list, transcript), which go to a **destination folder** (default `data/exports`; Browse folder…; never overwrites, names get `_2`, `_3`).
+A saved project with the service connected opens on the service video; otherwise on the whole timeline. The Export button ("Start export") is inside the dialog.

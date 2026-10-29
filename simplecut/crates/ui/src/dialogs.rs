@@ -20,6 +20,10 @@ pub trait Dialogs {
     fn pick_groups_save_path(&self, _suggested_name: &str) -> Option<PathBuf> {
         None
     }
+    /// Choose the folder the retake service's exports go into; `start` is the folder to start in. None: cancelled.
+    fn pick_export_folder(&self, _start: Option<&std::path::Path>) -> Option<PathBuf> {
+        None
+    }
     /// Open the system file browser showing the given file/folder.
     fn open_folder(&self, path: &std::path::Path);
 }
