@@ -502,3 +502,95 @@ fn hostile_keeper_text_is_cut_and_junk_is_skipped() {
     assert!(!info.providers[0].available);
     assert_eq!(info.providers[0].reason.chars().count(), 300);
 }
+
+// ── stage events ───────────────────────────────────────────────────────────
+
+fn events_service(events_reply: impl Fn(&str) -> (u16, String) + Send + Sync + 'static) -> Mock {
+    let polls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    mock(move |method, path, _| match (method, path) {
+        ("GET", "/v1/capabilities") => (200, r#"{"adjudicate":false,"refine":false}"#.into()),
+        ("POST", "/v1/analyze") => (202, r#"{"job":"j1"}"#.into()),
+        ("GET", "/v1/jobs/j1") => {
+            if polls.fetch_add(1, Ordering::SeqCst) < 2 {
+                (200, r#"{"state":"running","fraction":0.4,"status":"Transcribing"}"#.into())
+            } else {
+                (200, r#"{"state":"done","fraction":1.0,"status":"Done","result":{"stage":"candidates","job":"j1"}}"#.into())
+            }
+        }
+        ("GET", p) if p.starts_with("/v1/jobs/j1/events") => events_reply(p),
+        _ => (404, r#"{"error":"Not found."}"#.into()),
+    })
+}
+
+fn drain(job: &mut dyn AnalysisJob) -> (JobState, Vec<simplecut_core::StageEvent>) {
+    let mut all = Vec::new();
+    let end = Instant::now() + Duration::from_secs(20);
+    while Instant::now() < end {
+        all.extend(job.events());
+        match job.poll() {
+            JobState::Running { .. } => std::thread::sleep(Duration::from_millis(20)),
+            other => {
+                all.extend(job.events());
+                return (other, all);
+            }
+        }
+    }
+    panic!("job did not finish");
+}
+
+#[test]
+fn stage_events_arrive_in_order_with_cached_stages_and_exact_errors() {
+    let m = events_service(|p| {
+        let after: u64 = p.split("after=").nth(1).and_then(|n| n.parse().ok()).unwrap_or(0);
+        let all = [
+            r#"{"seq":1,"stage":"audio_extraction","status":"started","message":"16 kHz mono WAV","timestamp":"2026-10-29T22:35:55.591+00:00"}"#,
+            r#"{"seq":2,"stage":"audio_extraction","status":"done","pct":100,"message":"","timestamp":"2026-10-29T22:35:56.100+00:00"}"#,
+            r#"{"seq":3,"stage":"model_load","status":"done","pct":100,"message":"cached","cached":true,"timestamp":"2026-10-29T22:35:56.200+00:00"}"#,
+            r#"{"seq":4,"stage":"transcription","status":"error","message":"RuntimeError: CUDA out of memory","timestamp":"2026-10-29T22:35:57.000+00:00"}"#,
+        ];
+        let body = format!(r#"{{"events":[{}],"finished":true}}"#, all.iter().skip(after as usize).copied().collect::<Vec<_>>().join(","));
+        (200, body)
+    });
+    let s = HttpService::connect(&m.url);
+    let mut job = s.analyze(request());
+    let (end, events) = drain(&mut *job);
+    assert!(matches!(end, JobState::Done(_)));
+    assert_eq!(events.iter().map(|e| e.seq).collect::<Vec<_>>(), vec![1, 2, 3, 4], "each event exactly once, in order, however many polls there were");
+    assert!(events[2].cached && events[3].message == "RuntimeError: CUDA out of memory");
+    let asked: Vec<String> = m.seen.lock().unwrap().iter().filter(|(_, p, _)| p.contains("/events")).map(|(_, p, _)| p.clone()).collect();
+    assert!(asked.iter().any(|p| p.ends_with("after=0")) && asked.iter().any(|p| p.ends_with("after=4")), "the cursor moves on: {asked:?}");
+}
+
+#[test]
+fn a_service_without_events_or_with_bad_ones_still_finishes_the_job() {
+    for reply in
+        [(404, r#"{"error":"Not found."}"#.to_string()), (200, "not json".to_string()), (500, "{}".to_string()), (200, r#"{"events":"nope"}"#.to_string())]
+    {
+        let m = events_service(move |_| reply.clone());
+        let s = HttpService::connect(&m.url);
+        let (end, events) = drain(&mut *s.analyze(request()));
+        assert!(matches!(end, JobState::Done(_)), "the job result does not depend on events");
+        assert!(events.is_empty());
+    }
+}
+
+#[test]
+fn hostile_events_are_dropped_and_values_are_clamped() {
+    let m = events_service(|_| {
+        (
+            200,
+            r#"{"events":[
+                {"seq":1,"stage":"../../etc","status":"started"},
+                {"seq":2,"stage":"vad","status":"exploded"},
+                {"seq":3,"stage":"vad","status":"progress","pct":1e30,"message":"ok"},
+                {"seq":3,"stage":"vad","status":"done"},
+                7, null, "x"
+            ]}"#
+            .into(),
+        )
+    });
+    let s = HttpService::connect(&m.url);
+    let (_, events) = drain(&mut *s.analyze(request()));
+    assert_eq!(events.len(), 1, "only the one valid event survives (a repeated seq is not a new event)");
+    assert_eq!(events[0].pct, Some(100.0));
+}

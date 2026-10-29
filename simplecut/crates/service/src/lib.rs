@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 use simplecut_core::{
-    AdjudicateRequest, AnalysisJob, AnalysisRequest, Capabilities, ItemId, JobState, KeeperInfo, RefineRequest, ResolveRequest, RetakeService, Tick,
+    AdjudicateRequest, AnalysisJob, AnalysisRequest, Capabilities, ItemId, JobState, KeeperInfo, RefineRequest, ResolveRequest, RetakeService, StageEvent, Tick,
 };
 
 /// The address the service listens on unless told otherwise.
@@ -79,6 +79,8 @@ impl HttpService {
     /// the job reads as cancelled at once and the late answer is dropped.
     fn start_as(&self, method: Method, endpoint: &str, body: String, immediate: bool) -> Box<dyn AnalysisJob> {
         let state = Arc::new(Mutex::new(JobState::Running { fraction: 0.0, status: "Contacting the retake service".into() }));
+        let events: EventBox = Arc::new(Mutex::new(Vec::new()));
+        let thread_events = Arc::clone(&events);
         let cancel = Arc::new(AtomicBool::new(false));
         let (agent, base, endpoint) = (self.agent.clone(), self.base.clone(), endpoint.to_string());
         let (thread_state, thread_cancel) = (Arc::clone(&state), Arc::clone(&cancel));
@@ -88,7 +90,7 @@ impl HttpService {
             let end = if immediate {
                 run_once(&agent, method, &base, &endpoint, &body, &thread_state)
             } else {
-                run_job(&agent, &base, &endpoint, &body, &thread_state, &thread_cancel)
+                run_job(&agent, &base, &endpoint, &body, &thread_state, &thread_cancel, &thread_events)
             };
             if let JobState::Done(reply) = &end
                 && method == Method::Put
@@ -104,7 +106,7 @@ impl HttpService {
         if spawned.is_err() {
             return failed("Could not start the request.");
         }
-        Box::new(HttpJob { state, cancel, immediate })
+        Box::new(HttpJob { state, cancel, immediate, events, taken: 0 })
     }
 
     fn path_of(&self, item: ItemId) -> Option<String> {
@@ -204,15 +206,28 @@ impl RetakeService for HttpService {
 
 // ── jobs ───────────────────────────────────────────────────────────────────
 
+/// The events fetched so far, shared with the polling thread.
+type EventBox = Arc<Mutex<Vec<StageEvent>>>;
+
 struct HttpJob {
     state: Arc<Mutex<JobState>>,
     cancel: Arc<AtomicBool>,
     immediate: bool,
+    events: EventBox,
+    /// How many of `events` were already handed out.
+    taken: usize,
 }
 
 impl AnalysisJob for HttpJob {
     fn poll(&mut self) -> JobState {
         self.state.lock().unwrap_or_else(PoisonError::into_inner).clone()
+    }
+
+    fn events(&mut self) -> Vec<StageEvent> {
+        let all = self.events.lock().unwrap_or_else(PoisonError::into_inner);
+        let new = all.get(self.taken..).map(<[StageEvent]>::to_vec).unwrap_or_default();
+        self.taken = all.len();
+        new
     }
 
     fn cancel(&mut self) {
@@ -248,7 +263,13 @@ fn refresh_capabilities(agent: &ureq::Agent, base: &str, into: &Mutex<Capabiliti
 }
 
 fn failed(why: &str) -> Box<dyn AnalysisJob> {
-    Box::new(HttpJob { state: Arc::new(Mutex::new(JobState::Failed(why.to_string()))), cancel: Arc::new(AtomicBool::new(false)), immediate: false })
+    Box::new(HttpJob {
+        state: Arc::new(Mutex::new(JobState::Failed(why.to_string()))),
+        cancel: Arc::new(AtomicBool::new(false)),
+        immediate: false,
+        events: Arc::new(Mutex::new(Vec::new())),
+        taken: 0,
+    })
 }
 
 /// One request, one reply (`/v1/refine`): the reply body is the result.
@@ -267,7 +288,7 @@ fn set(state: &Mutex<JobState>, to: JobState) {
 }
 
 /// Send the request, then follow the job until it ends. Returns the final state.
-fn run_job(agent: &ureq::Agent, base: &str, endpoint: &str, body: &str, state: &Mutex<JobState>, cancel: &AtomicBool) -> JobState {
+fn run_job(agent: &ureq::Agent, base: &str, endpoint: &str, body: &str, state: &Mutex<JobState>, cancel: &AtomicBool, events: &EventBox) -> JobState {
     let started = match send(agent, Method::Post, &format!("{base}{endpoint}"), Some(body)) {
         Ok(r) => r,
         Err(e) => return JobState::Failed(e),
@@ -279,6 +300,7 @@ fn run_job(agent: &ureq::Agent, base: &str, endpoint: &str, body: &str, state: &
         return JobState::Failed("The retake service answered in a form this editor does not understand.".into());
     };
     let url = format!("{base}/v1/jobs/{job}");
+    let events_url = format!("{url}/events");
     let mut missed = 0u32;
     loop {
         if cancel.load(Ordering::SeqCst) {
@@ -291,8 +313,14 @@ fn run_job(agent: &ureq::Agent, base: &str, endpoint: &str, body: &str, state: &
             Ok(r) if r.status == 200 => {
                 missed = 0;
                 match read_state(&r.body) {
-                    Some(JobState::Running { fraction, status }) => set(state, JobState::Running { fraction, status }),
-                    Some(end) => return end,
+                    Some(JobState::Running { fraction, status }) => {
+                        set(state, JobState::Running { fraction, status });
+                        fetch_events(agent, &events_url, events);
+                    }
+                    Some(end) => {
+                        fetch_events(agent, &events_url, events); // the last events (an error message, say) arrive with the end
+                        return end;
+                    }
                     None => return JobState::Failed("The retake service answered in a form this editor does not understand.".into()),
                 }
             }
@@ -306,6 +334,22 @@ fn run_job(agent: &ureq::Agent, base: &str, endpoint: &str, body: &str, state: &
             }
         }
         std::thread::sleep(POLL_EVERY);
+    }
+}
+
+/// Fetch the events after the ones already held. Never fails the job: a service without the endpoint, a bad reply or a dropped connection just means no new events.
+fn fetch_events(agent: &ureq::Agent, url: &str, into: &Mutex<Vec<StageEvent>>) {
+    let after = into.lock().unwrap_or_else(PoisonError::into_inner).last().map_or(0, |e| e.seq);
+    let Ok(reply) = send(agent, Method::Get, &format!("{url}?after={after}"), None) else { return };
+    if reply.status != 200 {
+        return;
+    }
+    let Some(list) = serde_json::from_str::<Value>(&reply.body).ok().and_then(|v| v.get("events").and_then(Value::as_array).cloned()) else { return };
+    let mut held = into.lock().unwrap_or_else(PoisonError::into_inner);
+    for ev in list.iter().filter_map(StageEvent::from_json) {
+        if held.last().is_none_or(|last| ev.seq > last.seq) && held.len() < simplecut_core::progress::MAX_EVENTS {
+            held.push(ev);
+        }
     }
 }
 

@@ -20,7 +20,7 @@ use simplecut_core::retake::{CutScope, MAX_DOCUMENT_BYTES, Presence};
 use simplecut_core::review::parse_advice;
 use simplecut_core::{
     AdjudicateRequest, AnalysisJob, Candidates, Checked, CutMode, ItemId, JobState, Label, LabelsRequest, PairClass, RefineRequest, RefinedCuts,
-    ResolveRequest, ReviewGroup, Sentence, Tick, Verdict, ids_to_refine, plan_cuts,
+    ResolveRequest, ReviewGroup, Sentence, StageLog, Tick, Verdict, ids_to_refine, plan_cuts,
 };
 
 use crate::app::{Action, SimpleCutApp, Source};
@@ -40,15 +40,29 @@ pub(crate) struct Running {
     pub item: ItemId,
     pub status: String,
     pub fraction: f32,
+    /// The stage events of this request (the stepper and the log).
+    pub log: StageLog,
 }
 
 impl Running {
     fn new(job: Box<dyn AnalysisJob>, item: ItemId, status: &str) -> Self {
-        Self { job, item, status: status.into(), fraction: 0.0 }
+        Self { job, item, status: status.into(), fraction: 0.0, log: StageLog::new() }
+    }
+
+    /// The request is over: stop the clock and hand the log over (to be kept and shown after the run).
+    fn take_log(&mut self) -> StageLog {
+        for e in self.job.events() {
+            self.log.push(e);
+        }
+        self.log.finish();
+        std::mem::take(&mut self.log)
     }
 
     /// Follow the job; the finished result is handed back.
     fn poll(&mut self) -> Option<JobState> {
+        for e in self.job.events() {
+            self.log.push(e);
+        }
         match self.job.poll() {
             JobState::Running { fraction, status } => {
                 self.fraction = fraction;
@@ -157,17 +171,21 @@ pub(crate) struct RetakeUi {
     pub span_log: Option<PathBuf>,
     /// Highlight strength of cut sentences on the timeline (0.1..=0.8).
     pub highlight_strength: f32,
+    /// The log of the last finished request: kept after it ends, so the stage that failed (and every message) can still be read.
+    pub last_log: Option<StageLog>,
+    /// A run ended in an error or was cancelled: the panel stays open to show its log.
+    pub show_last_log: bool,
 }
 
 impl Default for RetakeUi {
     fn default() -> Self {
-        Self { stage: None, ai_consented: false, label_log: None, span_log: None, highlight_strength: 0.45 }
+        Self { stage: None, ai_consented: false, label_log: None, span_log: None, highlight_strength: 0.45, last_log: None, show_last_log: false }
     }
 }
 
 impl RetakeUi {
     pub fn visible(&self) -> bool {
-        self.stage.is_some()
+        self.stage.is_some() || (self.show_last_log && self.last_log.is_some())
     }
 
     pub fn busy(&self) -> bool {
@@ -659,6 +677,8 @@ impl SimpleCutApp {
         };
         let Some(first) = requests.first().cloned() else { return };
         let job = service.analyze(first.clone());
+        self.retakes.last_log = None;
+        self.retakes.show_last_log = false;
         self.player.pause();
         self.retakes.stage = Some(Stage::Analyzing(Running::new(job, first.item, "Starting…")));
         if requests.len() > 1 {
@@ -670,10 +690,13 @@ impl SimpleCutApp {
         match self.retakes.stage.take() {
             Some(Stage::Analyzing(mut run)) => {
                 run.job.cancel();
+                self.retakes.last_log = Some(run.take_log());
+                self.retakes.show_last_log = true;
                 self.info_text("Analysis cancelled.");
             }
             Some(Stage::Resolving { mut run, questions }) => {
                 run.job.cancel();
+                self.retakes.last_log = Some(run.take_log());
                 self.retakes.stage = Some(Stage::Questions(questions));
                 self.info_text("Cancelled. Your answers are kept.");
             }
@@ -698,6 +721,8 @@ impl SimpleCutApp {
 
     fn close_review(&mut self) {
         self.player.set_skips(Vec::new());
+        self.retakes.show_last_log = false;
+        self.retakes.last_log = None;
         match self.retakes.stage.take() {
             Some(Stage::Analyzing(mut run)) | Some(Stage::Resolving { mut run, .. }) => run.job.cancel(),
             Some(Stage::Review(mut r)) => {
@@ -718,24 +743,40 @@ impl SimpleCutApp {
         self.retakes.stage = match stage {
             Stage::Analyzing(mut run) => match run.poll() {
                 None => Some(Stage::Analyzing(run)),
-                Some(JobState::Done(text)) => self.analysis_done(run.item, &text),
+                Some(JobState::Done(text)) => {
+                    self.retakes.last_log = Some(run.take_log());
+                    self.analysis_done(run.item, &text)
+                }
                 Some(JobState::Failed(why)) => {
-                    self.fail_text(&format!("The retake service could not finish: {why}"));
+                    let log = run.take_log();
+                    self.fail_text(&format!("The retake service could not finish: {why}{}", stage_error_suffix(&log)));
+                    self.retakes.last_log = Some(log);
+                    self.retakes.show_last_log = true;
                     None
                 }
                 Some(_) => {
+                    self.retakes.last_log = Some(run.take_log());
+                    self.retakes.show_last_log = true;
                     self.info_text("Analysis cancelled.");
                     None
                 }
             },
             Stage::Resolving { mut run, questions } => match run.poll() {
                 None => Some(Stage::Resolving { run, questions }),
-                Some(JobState::Done(text)) => self.resolve_done(&text, questions),
+                Some(JobState::Done(text)) => {
+                    self.retakes.last_log = Some(run.take_log());
+                    self.resolve_done(&text, questions)
+                }
                 Some(JobState::Failed(why)) => {
-                    self.fail_text(&format!("The model could not finish: {why}. Your answers are kept."));
+                    let log = run.take_log();
+                    self.fail_text(&format!("The model could not finish: {why}{}. Your answers are kept.", stage_error_suffix(&log)));
+                    self.retakes.last_log = Some(log);
                     Some(Stage::Questions(questions))
                 }
-                Some(_) => Some(Stage::Questions(questions)),
+                Some(_) => {
+                    self.retakes.last_log = Some(run.take_log());
+                    Some(Stage::Questions(questions))
+                }
             },
             Stage::Review(mut r) => {
                 self.review_tick(&mut r);
@@ -1443,6 +1484,7 @@ pub(crate) fn panel(app: &mut SimpleCutApp, ui: &mut egui::Ui) {
         Some(Stage::Analyzing(_)) => ("Retakes · looking…", false),
         Some(Stage::Resolving { .. }) => ("Retakes · Step 1: check uncertain pairs", false),
         Some(Stage::Review(_)) => ("Retakes · Step 2: choose what to keep", true),
+        None if app.retakes.show_last_log && app.retakes.last_log.is_some() => ("Retakes · last run", true),
         None => return,
     };
     ui.horizontal(|ui| {
@@ -1461,15 +1503,154 @@ pub(crate) fn panel(app: &mut SimpleCutApp, ui: &mut egui::Ui) {
         Some(Stage::Analyzing(run)) => {
             let (s, f) = (run.status.clone(), run.fraction);
             progress(app, ui, &s, f, "Cancel analysis");
+            run_view(ui, &run_log_of(app), true);
         }
         Some(Stage::Resolving { run, .. }) => {
             let (s, f) = (run.status.clone(), run.fraction);
             progress(app, ui, &s, f, "Cancel checking");
+            run_view(ui, &run_log_of(app), true);
         }
-        Some(Stage::Questions(_)) => questions_panel(app, ui, fps),
-        Some(Stage::Review(_)) => review_panel(app, ui, fps),
-        None => {}
+        Some(Stage::Questions(_)) => {
+            questions_panel(app, ui, fps);
+            last_log_section(app, ui);
+        }
+        Some(Stage::Review(_)) => {
+            review_panel(app, ui, fps);
+            last_log_section(app, ui);
+        }
+        None => {
+            if let Some(log) = &app.retakes.last_log {
+                run_view(ui, log, false);
+            }
+        }
     }
+}
+
+/// The log of the request that is running now.
+fn run_log_of(app: &SimpleCutApp) -> StageLog {
+    match &app.retakes.stage {
+        Some(Stage::Analyzing(run)) | Some(Stage::Resolving { run, .. }) => run.log.clone(),
+        _ => StageLog::new(),
+    }
+}
+
+/// The finished request's log, folded away under the questions / the review.
+fn last_log_section(app: &SimpleCutApp, ui: &mut egui::Ui) {
+    if let Some(log) = app.retakes.last_log.as_ref().filter(|l| !l.is_empty()) {
+        ui.add_space(8.0);
+        egui::CollapsingHeader::new(RichText::new(format!("Pipeline log · {}", format_elapsed(log.elapsed()))).color(theme::tokens().text_dim))
+            .id_salt("pipeline-log")
+            .show(ui, |ui| run_view(ui, log, false));
+    }
+}
+
+/// ` (Transcribe: <the exact message>)` for the first stage that failed; empty when no stage reported an error.
+fn stage_error_suffix(log: &StageLog) -> String {
+    log.error().map(|(label, msg)| format!(" ({label}: {msg})")).unwrap_or_default()
+}
+
+fn format_elapsed(d: std::time::Duration) -> String {
+    let s = d.as_secs();
+    if s < 60 { format!("{}.{} s", s, d.subsec_millis() / 100) } else { format!("{}:{:02}", s / 60, s % 60) }
+}
+
+/// What a stepper row looks like.
+#[derive(Clone, Copy, PartialEq)]
+enum StepMark {
+    Pending,
+    Running,
+    Done,
+    Cached,
+    Error,
+}
+
+fn draw_mark(ui: &mut egui::Ui, mark: StepMark) {
+    let t = theme::tokens();
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(14.0, 14.0), egui::Sense::hover());
+    let (c, r) = (rect.center(), 6.0);
+    let p = ui.painter();
+    match mark {
+        StepMark::Pending => {
+            p.circle_stroke(c, r, egui::Stroke::new(1.0, t.border));
+        }
+        StepMark::Running => {
+            p.circle_filled(c, r, t.accent);
+            p.circle_filled(c, 2.0, t.bg);
+        }
+        StepMark::Done => {
+            p.circle_filled(c, r, t.dialogue_clip);
+            let s = egui::Stroke::new(1.6, t.bg);
+            p.line_segment([c + egui::vec2(-3.0, 0.5), c + egui::vec2(-0.8, 2.8)], s);
+            p.line_segment([c + egui::vec2(-0.8, 2.8), c + egui::vec2(3.2, -2.4)], s);
+        }
+        StepMark::Cached => {
+            p.circle_stroke(c, r, egui::Stroke::new(1.5, t.accent.gamma_multiply(0.7)));
+            p.circle_filled(c, 2.0, t.accent.gamma_multiply(0.7));
+        }
+        StepMark::Error => {
+            p.circle_filled(c, r, t.danger);
+            let s = egui::Stroke::new(1.6, t.bg);
+            p.line_segment([c + egui::vec2(-2.5, -2.5), c + egui::vec2(2.5, 2.5)], s);
+            p.line_segment([c + egui::vec2(-2.5, 2.5), c + egui::vec2(2.5, -2.5)], s);
+        }
+    }
+}
+
+/// The stepper (every stage, in order) with the current stage and the elapsed time on top, and the scrolling log below. Skipped stages read "cached"; a failed stage
+/// shows the service's exact message. Used while the request runs and, unchanged, after it ended.
+fn run_view(ui: &mut egui::Ui, log: &StageLog, running: bool) {
+    use simplecut_core::{STAGES, StageState};
+
+    let t = theme::tokens();
+    ui.add_space(6.0);
+    ui.horizontal(|ui| {
+        let head = match (log.error(), log.current()) {
+            (Some((label, _)), _) => format!("Failed at: {label}"),
+            (None, Some((label, Some(pct)))) => format!("{label} · {pct:.0}%"),
+            (None, Some((label, None))) => label.to_string(),
+            (None, None) if running => "Waiting for the first stage…".to_string(),
+            (None, None) => "Finished".to_string(),
+        };
+        ui.label(RichText::new(head).strong().color(if log.error().is_some() { t.danger } else { t.text }));
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.label(RichText::new(format_elapsed(log.elapsed())).color(t.text_dim).monospace());
+        });
+    });
+    ui.add_space(4.0);
+    for (id, label) in STAGES {
+        let state = log.state(id);
+        let (mark, detail): (StepMark, String) = match &state {
+            StageState::Pending => (StepMark::Pending, String::new()),
+            StageState::Running { pct, message } => (StepMark::Running, pct.map_or_else(|| message.clone(), |p| format!("{p:.0}%"))),
+            StageState::Done { message } => (StepMark::Done, message.clone()),
+            StageState::Cached => (StepMark::Cached, "cached".to_string()),
+            StageState::Error { .. } => (StepMark::Error, String::new()),
+        };
+        ui.horizontal(|ui| {
+            draw_mark(ui, mark);
+            let ink = if mark == StepMark::Pending { t.text_dim } else { t.text };
+            ui.label(RichText::new(label).color(ink));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if let Some(d) = log.stage_elapsed(id).filter(|_| matches!(mark, StepMark::Done | StepMark::Running)) {
+                    ui.label(RichText::new(format_elapsed(d)).color(t.text_dim).small().monospace());
+                }
+                if !detail.is_empty() {
+                    ui.add(egui::Label::new(RichText::new(detail).color(t.text_dim).small()).truncate());
+                }
+            });
+        });
+        if let StageState::Error { message } = state {
+            ui.add(egui::Label::new(RichText::new(message).color(t.danger).small()).wrap());
+        }
+    }
+    ui.add_space(6.0);
+    ui.label(RichText::new("Log").color(t.text_dim).small());
+    egui::ScrollArea::vertical().id_salt("run-log").max_height(150.0).stick_to_bottom(true).auto_shrink([false, true]).show(ui, |ui| {
+        for line in log.lines() {
+            let failed = line.contains(": ERROR");
+            ui.add(egui::Label::new(RichText::new(line).monospace().small().color(if failed { t.danger } else { t.text_dim })).wrap());
+        }
+    });
 }
 
 fn progress(app: &mut SimpleCutApp, ui: &mut egui::Ui, status: &str, fraction: f32, cancel: &str) {

@@ -88,6 +88,11 @@ pub enum JobState {
 pub trait AnalysisJob: Send {
     fn poll(&mut self) -> JobState;
     fn cancel(&mut self);
+
+    /// The stage events that arrived since the last call (see [`crate::progress`]). A service that reports none gives an empty list.
+    fn events(&mut self) -> Vec<crate::progress::StageEvent> {
+        Vec::new()
+    }
 }
 
 /// Something that can find retakes.
