@@ -69,57 +69,39 @@ pub(crate) fn show(app: &mut SimpleCutApp, ui: &mut egui::Ui) {
     });
 }
 
-/// The primary action of the bar (Remove Retakes): the same size and font as the other buttons, filled with the theme's accent colour, with its own hover, pressed,
-/// keyboard-focus, disabled and loading looks. While the service works the label gets the percent and the button fills like a determinate bar (no animation of its
-/// own); the stage is in the tooltip. The dark label on the accent fill has a contrast ratio of about 6:1 (WCAG AA needs 4.5:1); keyboard focus draws a bright outline
-/// that does not depend on the fill colour.
+/// The primary action of the bar (Remove Retakes): an ordinary button, so its height, corners, border and font are the same as the others, filled with the accent colour.
+/// Hover is lighter, pressed slightly darker, keyboard focus draws a bright outline, and while the service works a thin bar along the bottom shows the progress (the stage is
+/// in the tooltip). The dark label on the accent fill has a contrast ratio of about 6:1 (WCAG AA needs 4.5:1).
 fn primary_button(app: &mut SimpleCutApp, ui: &mut egui::Ui, label: &str, tip: &str, action: Action, enabled: bool) {
     let t = theme::tokens();
     let progress = app.analysis_progress();
-    // the size of any other button: the button font and padding, as wide as the label with its percent so the bar does not jump while it runs
-    let font = egui::TextStyle::Button.resolve(ui.style());
-    let widest = ui.painter().layout_no_wrap(format!("{label} 100%"), font.clone(), t.bg).size().x;
-    let size = egui::vec2(widest + 2.0 * ui.spacing().button_padding.x, ui.spacing().interact_size.y);
-    let (rect, resp) = ui.allocate_exact_size(size, egui::Sense::click());
+    let live = enabled && progress.is_none();
     let tip = match &progress {
-        Some((status, _)) if !status.is_empty() => format!("{tip} ({status})"),
+        Some((status, fraction)) if !status.is_empty() => format!("{tip} ({status}, {}%)", (fraction * 100.0).round() as u32),
         _ => tip.to_string(),
     };
-    let resp = resp.on_hover_text(tip);
-    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled && progress.is_none(), label));
-    let live = enabled && progress.is_none();
-    if ui.is_rect_visible(rect) {
-        let radius = egui::CornerRadius::same(6);
-        let (fill, ink) = if progress.is_some() {
-            (t.panel_raised, t.text)
-        } else if !enabled {
-            (t.panel_raised, t.text_dim)
-        } else if resp.is_pointer_button_down_on() {
-            (t.accent.lerp_to_gamma(egui::Color32::BLACK, PRESSED_DARKEN), t.bg)
-        } else if resp.hovered() {
-            (t.accent.lerp_to_gamma(egui::Color32::WHITE, HOVER_LIGHTEN), t.bg)
-        } else {
-            (t.accent, t.bg)
-        };
-        let painter = ui.painter();
-        painter.rect_filled(rect, radius, fill);
-        if let Some((_, fraction)) = &progress {
-            let done = egui::Rect::from_min_size(rect.min, egui::vec2(rect.width() * fraction, rect.height()));
-            painter.rect_filled(done, radius, t.accent.gamma_multiply(0.5));
-        }
-        if !live {
-            painter.rect_stroke(rect, radius, egui::Stroke::new(1.0, t.border), egui::StrokeKind::Inside);
-        }
-        if resp.has_focus() {
-            painter.rect_stroke(rect, radius, egui::Stroke::new(2.5, t.text), egui::StrokeKind::Inside); // inside: the bar's edge would clip a ring drawn outside
-        }
-        let text = match &progress {
-            Some((_, fraction)) => format!("{label} {}%", (fraction * 100.0).round() as u32),
-            None => label.to_string(),
-        };
-        painter.text(rect.center(), egui::Align2::CENTER_CENTER, text, font, ink);
+    let response = ui
+        .scope(|ui| {
+            if live {
+                let v = ui.visuals_mut();
+                v.widgets.inactive.weak_bg_fill = t.accent;
+                v.widgets.inactive.fg_stroke.color = t.bg;
+                v.widgets.hovered.weak_bg_fill = t.accent.lerp_to_gamma(egui::Color32::WHITE, HOVER_LIGHTEN);
+                v.widgets.hovered.fg_stroke.color = t.bg;
+                v.widgets.active.weak_bg_fill = t.accent.lerp_to_gamma(egui::Color32::BLACK, PRESSED_DARKEN);
+                v.widgets.active.fg_stroke.color = t.bg;
+                v.selection.stroke = egui::Stroke::new(2.5, t.text);
+            }
+            ui.add_enabled(live, egui::Button::new(label))
+        })
+        .inner
+        .on_hover_text(tip);
+    if let Some((_, fraction)) = &progress {
+        let r = response.rect;
+        let bar = egui::Rect::from_min_size(egui::pos2(r.left() + 3.0, r.bottom() - 5.0), egui::vec2((r.width() - 6.0) * fraction, 3.0));
+        ui.painter().rect_filled(bar, egui::CornerRadius::same(1), t.accent);
     }
-    if live && resp.clicked() {
+    if live && response.clicked() {
         app.queue(action);
     }
 }

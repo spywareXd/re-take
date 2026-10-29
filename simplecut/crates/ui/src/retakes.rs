@@ -2057,16 +2057,13 @@ fn review_panel(app: &mut SimpleCutApp, ui: &mut egui::Ui, fps: f64) {
                 ui.add(egui::Label::new(RichText::new(warn).color(t.danger).small()).wrap());
             }
             ui.add(egui::Label::new(RichText::new(current_mode.description()).color(t.text_dim).small()).wrap());
-            ui.horizontal_wrapped(|ui| {
-                for &mode in &CutMode::ALL {
-                    let selected = current_mode == mode;
-                    let btn = ui.selectable_label(selected, mode.label());
-                    btn.widget_info(|| WidgetInfo::selected(WidgetType::Button, true, selected, format!("Cut mode: {}", mode.label())));
-                    if btn.clicked() && !selected {
-                        app.queue(Action::SetCutMode(mode));
-                    }
+            for &mode in CutMode::ALL.iter().rev() {
+                let selected = current_mode == mode;
+                let btn = crate::retake_options::menu_row_named(ui, selected, mode.label(), Some(&format!("Cut mode: {}", mode.label())));
+                if btn.clicked() && !selected {
+                    app.queue(Action::SetCutMode(mode));
                 }
-            });
+            }
             ui.add_space(6.0);
         }
         ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {

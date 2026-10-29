@@ -275,3 +275,22 @@ fn playing_a_previewed_file_leaves_the_timeline_alone() {
 fn picked_still_alone(dir: &std::path::Path) -> bool {
     dir.join("talk.fcproj").exists()
 }
+
+#[test]
+fn a_long_message_in_the_status_bar_is_shortened_and_never_pushes_the_dismiss_button_out() {
+    if skip() {
+        return;
+    }
+    let mut h = window(Script::default());
+    let long = format!("C:/{}/project.fcproj", "a-very-long-folder-name/".repeat(12));
+    h.state_mut().open_project_path(std::path::PathBuf::from(long));
+    for _ in 0..3 {
+        h.step();
+    }
+    let banner = h.state().banner().map(|b| b.text.clone()).expect("opening a missing file says so");
+    assert!(banner.len() > 200, "the message is long: {banner}");
+    let dismiss = h.get_by_label("Dismiss").rect();
+    assert!(dismiss.right() <= 1300.5 && dismiss.left() > 0.0, "the Dismiss button is inside the window: {dismiss:?}");
+    let message = h.query_all_by_label_contains("project.fcproj").next().map(|n| n.rect()).expect("the message is in the bar");
+    assert!(message.right() <= dismiss.left() + 0.5, "the message ends before the Dismiss button instead of running under it: {message:?} vs {dismiss:?}");
+}

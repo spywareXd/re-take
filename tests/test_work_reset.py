@@ -67,6 +67,7 @@ def test_reset_sets_the_transcription_aside_without_deleting_and_the_next_run_st
     assert (data / "labels.jsonl").read_text(encoding="utf-8") == '{"label": "retake"}\n', "the user's answers are never touched"
     st = client.get("/v1/project/status", params={"project": str(proj)}).json()
     assert "transcript" in st["stale"]
+    assert set(st["reset"]) == set(st["stale"]) >= {"transcript", "units"}, "what was set aside on purpose is listed apart, so it is not reported as out of date"
     _, body = _analyze(client, media, project=str(proj))                                              # same settings: no question, it just starts over
     assert body["state"] == "done" and calls["transcribe"] == 2, "transcribed again from scratch"
     assert (data / "stale" / "transcript.1.json").read_bytes() == before["transcript.json"], "the set-aside transcript is kept as a numbered copy"

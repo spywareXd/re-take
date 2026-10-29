@@ -164,3 +164,20 @@ fn the_button_works_from_the_keyboard() {
     h.step();
     assert_ne!(h.state().review_stage(), "none", "Enter on the focused button started the analysis");
 }
+
+#[test]
+fn the_blue_button_has_the_same_height_and_top_as_the_other_buttons() {
+    if skip() {
+        return;
+    }
+    let r = SoftRenderer::default();
+    let (mut h, _d) = window(r, FakeService::default(), true);
+    h.step();
+    h.step();
+    let rect = |h: &Window, l: &str| h.get_by_label(l).rect();
+    let blue = rect(&h, LABEL);
+    for other in ["Options", "Export", "Shortcuts"] {
+        let o = rect(&h, other);
+        assert_eq!((blue.top(), blue.height()), (o.top(), o.height()), "{other}: {o:?} vs the blue button {blue:?}");
+    }
+}

@@ -544,7 +544,6 @@ pub(crate) fn window(app: &mut SimpleCutApp, ctx: &egui::Context) {
     let mut queue: Vec<ExportAction> = Vec::new();
     let running = app.export_ui.running();
     let info = app.export_ui.info.clone();
-    let service = app.service.is_some();
     let mut form = app.export_ui.form.clone();
     let mut preset_name = app.export_ui.preset_name.clone();
     let mut timeline_hw = app.export_ui.timeline_hw;
@@ -571,8 +570,6 @@ pub(crate) fn window(app: &mut SimpleCutApp, ctx: &egui::Context) {
                 }
             });
             ui.add_space(4.0);
-        } else if service {
-            ui.label(RichText::new("Asking the retake service what else it can export…").color(t.text_dim).small());
         }
 
         if form.kind == "timeline" || info.is_none() {
@@ -616,14 +613,17 @@ pub(crate) fn window(app: &mut SimpleCutApp, ctx: &egui::Context) {
             }
         } else if let Some(info) = &info {
             // ── the retake service's exports
-            ui.add(egui::Label::new(RichText::new("The cut comes from the project's saved cut list; without one the whole video is exported. Names are never reused: an earlier export is never overwritten.").color(t.text_dim).small()).wrap());
             if !have_folder {
-                ui.label(RichText::new("Save the project first: these exports use its folder.").color(t.danger));
+                ui.label(RichText::new("Save the project first.").color(t.danger));
             }
             ui.add_space(6.0);
             ui.add_enabled_ui(!running, |ui| {
                 if form.kind != "video" {
-                    let formats: Vec<String> = if form.kind == "audio" { info.audio_formats.clone() } else { info.text_formats.iter().find(|(n, _)| *n == form.kind).map(|(_, f)| f.clone()).unwrap_or_default() };
+                    let formats: Vec<String> = if form.kind == "audio" {
+                        info.audio_formats.clone()
+                    } else {
+                        info.text_formats.iter().find(|(n, _)| *n == form.kind).map(|(_, f)| f.clone()).unwrap_or_default()
+                    };
                     let items = formats.iter().map(|f| (f.to_uppercase(), f.clone())).collect();
                     if let Some(f) = combo(ui, "format", "Format", &form.format.clone(), form.format.to_uppercase(), items) {
                         form.format = f;
@@ -631,7 +631,8 @@ pub(crate) fn window(app: &mut SimpleCutApp, ctx: &egui::Context) {
                 }
                 if form.kind == "video" {
                     // ── preset
-                    let items: Vec<(String, String)> = info.presets.iter().map(|p| (if p.builtin { p.name.clone() } else { format!("{} (mine)", p.name) }, p.name.clone())).collect();
+                    let items: Vec<(String, String)> =
+                        info.presets.iter().map(|p| (if p.builtin { p.name.clone() } else { format!("{} (mine)", p.name) }, p.name.clone())).collect();
                     let shown = if form.preset.is_empty() { "Custom".to_string() } else { form.preset.clone() };
                     if let Some(name) = combo(ui, "preset", "Preset", &form.preset.clone(), shown, items)
                         && let Some(p) = info.preset(&name)
@@ -684,8 +685,16 @@ pub(crate) fn window(app: &mut SimpleCutApp, ctx: &egui::Context) {
                         });
                     }
                     // ── codec and quality
-                    let codecs: Vec<(String, String)> = info.codecs.iter().map(|c| (if c == "h264" { "H.264".to_string() } else { "H.265 (HEVC)".to_string() }, c.clone())).collect();
-                    if let Some(c) = combo(ui, "codec", "Codec", &form.codec.clone(), if form.codec == "h264" { "H.264".to_string() } else { "H.265 (HEVC)".to_string() }, codecs) {
+                    let codecs: Vec<(String, String)> =
+                        info.codecs.iter().map(|c| (if c == "h264" { "H.264".to_string() } else { "H.265 (HEVC)".to_string() }, c.clone())).collect();
+                    if let Some(c) = combo(
+                        ui,
+                        "codec",
+                        "Codec",
+                        &form.codec.clone(),
+                        if form.codec == "h264" { "H.264".to_string() } else { "H.265 (HEVC)".to_string() },
+                        codecs,
+                    ) {
                         form.codec = c;
                     }
                     ui.horizontal(|ui| {
@@ -702,7 +711,6 @@ pub(crate) fn window(app: &mut SimpleCutApp, ctx: &egui::Context) {
                         }
                         Quality::Crf => {
                             ui.add(egui::DragValue::new(&mut form.crf).range(info.crf_range.0..=info.crf_range.1));
-                            ui.label(RichText::new("lower = better quality, bigger file").color(t.text_dim).small());
                         }
                         Quality::Bitrate => {
                             ui.add(egui::DragValue::new(&mut form.bitrate).range(info.bitrate_range.0..=info.bitrate_range.1).suffix(" kbps"));
@@ -726,7 +734,7 @@ pub(crate) fn window(app: &mut SimpleCutApp, ctx: &egui::Context) {
                     }
                     ui.horizontal(|ui| {
                         ui.add(egui::DragValue::new(&mut form.fade_ms).range(0.0..=info.fade_max).suffix(" ms"));
-                        ui.label(RichText::new("short audio crossfade at every cut (0 = off)").color(t.text_dim));
+                        ui.label("Crossfade at cuts");
                     });
                     if form.kind == "video" {
                         ui.checkbox(&mut form.loudness, "Normalise loudness (off by default)");

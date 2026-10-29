@@ -9,7 +9,8 @@ mod common;
 
 use std::sync::{Arc, Mutex};
 
-use common::harness::{Script, Window, click, item, skip, step_until, window_with};
+use common::harness::{Script, Window, click, item, skip, step_until};
+use common::raster::SoftRenderer;
 use egui_kittest::kittest::Queryable;
 use serde_json::json;
 use simplecut_core::{
@@ -112,12 +113,24 @@ impl RetakeService for StepService {
 }
 
 fn start(cached: bool) -> (Window, Arc<Mutex<Vec<WorkCall>>>) {
+    let (h, work, _) = start_drawn(cached, false);
+    (h, work)
+}
+
+fn start_drawn(cached: bool, refine: bool) -> (Window, Arc<Mutex<Vec<WorkCall>>>, SoftRenderer) {
     let dir = common::scratch("undo-steps");
     let script = Script::default();
     script.media.lock().unwrap().push_back(vec![common::make_clip(&dir, "talk.mp4", 4), common::make_music(&dir, "bed.wav", 6)]);
     let work = Arc::new(Mutex::new(Vec::new()));
-    let service = StepService { fake: FakeService { adjudicate: true, ..Default::default() }, cached, work: work.clone() };
-    let mut h = window_with(script, Some(Box::new(service)));
+    let service = StepService { fake: FakeService { adjudicate: true, refine, ..Default::default() }, cached, work: work.clone() };
+    let renderer = SoftRenderer::default();
+    let mut h =
+        egui_kittest::Harness::builder().with_size(egui::vec2(1300.0, 820.0)).with_max_steps(10_000).renderer(renderer.clone()).build_eframe(move |cc| {
+            let mut app = simplecut_ui::SimpleCutApp::new(&cc.egui_ctx, Box::new(script), None);
+            app.set_service(Some(Box::new(service)));
+            app
+        });
+    h.step();
     click(&mut h, "Import");
     step_until(&mut h, "the import", |a| a.editor().media().len() == 2);
     let video = item(&h, "talk.mp4");
@@ -125,7 +138,7 @@ fn start(cached: bool) -> (Window, Arc<Mutex<Vec<WorkCall>>>) {
     h.state_mut().perform(Action::SelectClips { clips: vec![], add: false });
     h.step();
     h.step();
-    (h, work)
+    (h, work, renderer)
 }
 
 /// Start, answer the way the documentation does, press Next and wait for the groups.
@@ -195,14 +208,10 @@ fn ctrl_z_after_a_transcription_sets_it_aside_and_ctrl_y_brings_it_back() {
     assert_eq!(work(&w), vec![(true, WorkKind::Transcription, true)], "the transcription was set aside, naming the video");
     assert_eq!(h.state().review_stage(), "none", "the review of what no longer exists is closed");
     assert_eq!(depth(&h), editor_depth, "the editor's own undo stack was not touched");
-    assert!(
-        h.state().banner().is_some_and(|b| b.text.contains("Undid the transcription") && b.text.contains("nothing is deleted")),
-        "{:?}",
-        h.state().banner()
-    );
+    assert!(h.state().banner().is_some_and(|b| b.text.contains("Transcription undone")), "{:?}", h.state().banner());
     redo(&mut h);
     assert_eq!(work(&w).last(), Some(&(false, WorkKind::Transcription, true)), "Ctrl+Y asks the service to bring it back");
-    assert!(h.state().banner().is_some_and(|b| b.text.contains("The transcription is back")));
+    assert!(h.state().banner().is_some_and(|b| b.text.contains("Transcription restored")));
 }
 
 #[test]
@@ -285,13 +294,12 @@ fn the_reset_buttons_ask_first_then_set_the_work_aside() {
     for _ in 0..4 {
         h.step();
     }
-    h.get_by_label_contains("Nothing is deleted: the old results stay as numbered copies");
     // keeper groups: ask, cancel, ask, confirm
     settle_then_click(&mut h, "Reset keeper groups…");
-    h.get_by_label_contains("Set aside the keeper groups (the AI's choices)?");
+    h.get_by_label_contains("Reset the keeper groups?");
     assert!(work(&w).is_empty(), "asked, not done");
     settle_then_click(&mut h, "Cancel");
-    assert!(work(&w).is_empty() && h.query_by_label_contains("Set aside the keeper groups").is_none());
+    assert!(work(&w).is_empty() && h.query_by_label_contains("Reset the keeper groups?").is_none());
     settle_then_click(&mut h, "Reset keeper groups…");
     settle_then_click(&mut h, "Reset");
     assert_eq!(work(&w), vec![(true, WorkKind::KeeperGroups, true)]);
@@ -300,11 +308,34 @@ fn the_reset_buttons_ask_first_then_set_the_work_aside() {
     assert_eq!(h.state().review_stage(), "review", "the transcription is untouched");
     // transcription
     settle_then_click(&mut h, "Reset transcription…");
-    h.get_by_label_contains("Set aside the transcription (transcript, sentences and pair scores)?");
+    h.get_by_label_contains("Reset the transcription?");
     settle_then_click(&mut h, "Reset");
     assert_eq!(work(&w).last(), Some(&(true, WorkKind::Transcription, true)));
     assert_eq!(h.state().review_stage(), "none", "the review of the old transcription is closed");
-    h.get_by_label_contains("The transcription (transcript, sentences, pair scores) is set aside. The next Remove Retakes starts from scratch");
+    h.get_by_label_contains("Transcription reset.");
     undo(&mut h);
     assert_eq!(work(&w).len(), 2, "after a reset there is no step left to undo");
+}
+
+/// Not a check: writes the review panel's footer (the cut modes, the Remove button) and the top bar to <dir>/<tag>_footer.png and <tag>_toolbar.png. Runs only when
+/// SIMPLECUT_SHOT_DIR and SIMPLECUT_SHOT_TAG are set.
+#[test]
+fn write_footer_screenshots() {
+    let (Some(dir), Ok(tag)) = (std::env::var_os("SIMPLECUT_SHOT_DIR"), std::env::var("SIMPLECUT_SHOT_TAG")) else {
+        eprintln!("SKIPPED: set SIMPLECUT_SHOT_DIR and SIMPLECUT_SHOT_TAG to write screenshots");
+        return;
+    };
+    if skip() {
+        return;
+    }
+    let dir = std::path::PathBuf::from(dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let (mut h, _w, r) = start_drawn(false, true);
+    to_review(&mut h);
+    for _ in 0..4 {
+        h.step();
+    }
+    let pic = r.draw(&h.ctx, h.output(), 1300.0, 820.0, egui::Color32::from_rgb(16, 16, 20));
+    pic.crop_scaled(930, 560, 370, 260, 2).save_png(&dir.join(format!("{tag}_footer.png")));
+    pic.crop_scaled(560, 0, 740, 50, 2).save_png(&dir.join(format!("{tag}_toolbar.png")));
 }

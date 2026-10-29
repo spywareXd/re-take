@@ -56,14 +56,12 @@ impl SimpleCutApp {
             StepKind::Analysis => {
                 self.work(WorkCall::Reset { what: WorkKind::Transcription, path: String::new() });
                 self.perform(crate::app::Action::CloseReview);
-                self.info_text(
-                    "Undid the transcription: it is set aside, so the next Remove Retakes starts from scratch (your answers are kept, nothing is deleted). Ctrl+Y brings it back.",
-                );
+                self.info_text("Transcription undone.");
             }
             StepKind::Keepers { applied, .. } => {
                 self.remove_ai_choices(applied.iter().map(|(id, _)| id.as_str()));
                 self.work(WorkCall::Reset { what: WorkKind::KeeperGroups, path: String::new() });
-                self.info_text("Undid the AI's choices: the ticks are back as they were. Ctrl+Y brings them back.");
+                self.info_text("AI choices undone.");
             }
         }
         self.steps.undone.push(step);
@@ -83,12 +81,12 @@ impl SimpleCutApp {
         match &step.kind {
             StepKind::Analysis => {
                 self.work(WorkCall::Restore { what: WorkKind::Transcription, path: String::new() });
-                self.info_text("The transcription is back. Press Remove Retakes to go on: nothing is transcribed again.");
+                self.info_text("Transcription restored.");
             }
             StepKind::Keepers { applied, unclear, reasons } => {
                 self.reapply_ai_choices(applied, unclear, reasons);
                 self.work(WorkCall::Restore { what: WorkKind::KeeperGroups, path: String::new() });
-                self.info_text("The AI's choices are back.");
+                self.info_text("AI choices restored.");
             }
         }
         self.steps.done.push(step);

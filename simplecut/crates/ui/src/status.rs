@@ -9,17 +9,18 @@ pub(crate) fn show(app: &mut SimpleCutApp, ui: &mut egui::Ui) {
     let t = theme::tokens();
     ui.horizontal_centered(|ui| match app.banner.clone() {
         Some(b) => {
-            ui.label(RichText::new(&b.text).color(if b.error { t.danger } else { t.text }));
-            if let Some((label, action)) = b.action {
-                ui.add_space(8.0);
-                if ui.small_button(label).clicked() {
-                    app.queue(action);
-                }
-            }
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 if ui.small_button("Dismiss").clicked() {
                     app.queue(Action::DismissBanner);
                 }
+                if let Some((label, action)) = b.action
+                    && ui.small_button(label).clicked()
+                {
+                    app.queue(action);
+                }
+                ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                    ui.add(egui::Label::new(RichText::new(&b.text).color(if b.error { t.danger } else { t.text })).truncate()).on_hover_text(&b.text);
+                });
             });
         }
         None => {

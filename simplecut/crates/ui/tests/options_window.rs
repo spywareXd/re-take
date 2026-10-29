@@ -163,7 +163,6 @@ fn the_dropdown_lists_every_model_with_its_details_and_warnings_without_download
     h.get_by_label("about 5.5 GB (approximate)");
     h.get_by_label_contains("Warning: Needs about 5.5 GB of GPU memory");
     h.get_by_label_contains("GPU: NVIDIA RTX 3070 Ti · 8.0 GB, 5.2 GB free now");
-    h.get_by_label_contains("Compute type: auto: tries int8_float16");
     // open the list: every model is there, with what it takes
     h.get_by_role(Role::ComboBox).click();
     h.step();
@@ -180,7 +179,6 @@ fn an_unsaved_project_keeps_the_choice_for_the_next_analysis_and_says_so() {
     }
     let (mut h, _dir, seen) = start(SoftRenderer::default(), quiet());
     open_options(&mut h);
-    h.get_by_label_contains("This project has no folder yet");
     h.get_by_role(Role::ComboBox).click();
     h.step();
     h.get_by_label_contains("base  ·  downloaded").click();
@@ -204,7 +202,6 @@ fn a_saved_project_tells_the_service_its_folder_and_stores_the_choice_there() {
     assert_eq!(seen.projects.lock().unwrap().last().cloned().flatten(), Some(dir.join("Proj")), "the service learns the project folder X/");
     assert!(calls(&seen).contains(&ProjectCall::Status), "and the project's status is asked for when it is saved/opened");
     open_options(&mut h);
-    assert!(h.query_by_label_contains("This project has no folder yet").is_none());
     h.get_by_role(Role::ComboBox).click();
     h.step();
 
@@ -320,11 +317,11 @@ fn the_slider_shows_the_sentence_count_and_resplitting_asks_what_will_be_replace
     h.step();
     h.step();
     h.step();
-    h.get_by_label_contains("Out of date: units, keepers");
+    h.get_by_label_contains("Out of date: sentences, keeper groups");
     click(&mut h, "Re-split now");
     h.step();
     h.step();
-    h.get_by_label_contains("Re-splitting at 0.30 s replaces: units, keepers, cutlist. The old versions are kept as numbered copies");
+    h.get_by_label_contains("Re-split at 0.30 s? This replaces: sentences, keeper groups, cut list.");
     assert!(!calls(&seen).iter().any(|c| matches!(c, ProjectCall::Resplit { confirm: true, .. })), "nothing is replaced before the confirmation");
     click(&mut h, "Re-split");
     h.step();
@@ -368,13 +365,13 @@ fn old_data_is_offered_for_import_and_copied_only_when_asked() {
     let (mut h, _dir, seen) = start(SoftRenderer::default(), reply);
     saved(&mut h);
     open_options(&mut h);
-    h.get_by_label_contains("Data from before projects had folders was found for this video (transcript, units, scores final-ce stacker-v1)");
+    h.get_by_label_contains("Earlier work on this video was found (transcript, sentences, pair scores). Copy it into this project?");
     let imports = |seen: &Seen| calls(seen).iter().filter(|c| matches!(c, ProjectCall::ImportLegacy { .. })).count();
     assert_eq!(imports(&seen), 1, "saving already brought the earlier work along once (automatically); this is the button for a project opened later");
     click(&mut h, "Import into this project");
     h.step();
     h.step();
-    h.get_by_label_contains("Copied into the project: transcript, units. The old files were not touched.");
+    h.get_by_label_contains("Copied into the project: transcript, sentences.");
     assert_eq!(imports(&seen), 2, "the button sends it again");
     assert!(calls(&seen).iter().all(|c| !matches!(c, ProjectCall::ImportLegacy { path } if !path.ends_with("talk.mp4"))), "every call names the video");
 }
@@ -492,5 +489,37 @@ fn saving_a_project_brings_the_earlier_transcription_along_and_says_so() {
     let adopted: Vec<_> = calls(&seen).into_iter().filter(|c| matches!(c, ProjectCall::ImportLegacy { path } if path.ends_with("talk.mp4"))).collect();
     assert_eq!(adopted.len(), 1, "right after the first save, the work done before it is copied into the project");
     open_options(&mut h);
-    h.get_by_label_contains("Work done before saving came along: transcript, units, pairs final-ce stacker-v1 copied into the project");
+    h.get_by_label_contains("Copied into the project: transcript, sentences, pair scores.");
+}
+
+#[test]
+fn work_the_user_reset_is_not_called_out_of_date() {
+    if skip() {
+        return;
+    }
+    let reset = Arc::new(Mutex::new(true));
+    let flag = reset.clone();
+    let reply: Arc<Replier> = Arc::new(move |call| match call {
+        ProjectCall::Status => {
+            let mut st = status(Some("large-v2"), true, ("ok", ""), &[]);
+            if *flag.lock().unwrap() {
+                st["stale"] = json!(["transcript", "units", "pairs__final-ce_stacker-v1", "words"]);
+                st["reset"] = json!(["transcript", "units", "pairs__final-ce_stacker-v1", "words"]);
+            } else {
+                st["stale"] = json!(["units", "pairs__final-ce_stacker-v1", "keepers"]);
+            }
+            (200, st)
+        }
+        _ => (200, json!({})),
+    });
+    let (mut h, _dir, _seen) = start(SoftRenderer::default(), reply);
+    saved(&mut h);
+    open_options(&mut h);
+    assert!(h.query_by_label_contains("Out of date").is_none(), "set aside on purpose: nothing to report");
+    *reset.lock().unwrap() = false;
+    h.state_mut().perform(Action::Options(OptionsAction::Open));
+    for _ in 0..4 {
+        h.step();
+    }
+    h.get_by_label("Out of date: sentences, pair scores, keeper groups"); // a real stale result is named in plain words, each once
 }

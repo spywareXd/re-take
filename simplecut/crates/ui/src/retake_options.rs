@@ -60,6 +60,8 @@ pub(crate) struct ProjectStatus {
     pub saved_model: Option<String>,
     pub saved_gap: Option<f64>,
     pub stale: Vec<String>,
+    /// What the user set aside on purpose (Ctrl+Z, Reset): not "out of date".
+    pub reset: Vec<String>,
     pub has_transcript: bool,
     pub has_units: bool,
     /// `ok`, `missing`, `changed` or `none`.
@@ -77,6 +79,7 @@ impl ProjectStatus {
             saved_model: text(&v["settings"]["transcription_model"]),
             saved_gap: v["settings"]["silence_gap_s"].as_f64().filter(|g| g.is_finite()),
             stale: list(&v["stale"]),
+            reset: list(&v["reset"]),
             has_transcript: v["has"]["transcript"].as_bool().unwrap_or(false),
             has_units: v["has"]["units"].as_bool().unwrap_or(false),
             source: text(&v["source"]["status"]).unwrap_or_else(|| "none".into()),
@@ -119,11 +122,11 @@ pub(crate) struct OptionsUi {
     calls: Vec<(Call, Box<dyn AnalysisJob>)>,
 }
 
-/// One row of a drop-down list: a fixed-size slot, with the highlight painted by hand. Hovering can only change how the row is painted, never where it or the rows
-/// below it sit (egui's own hovered button grows its layout a little, and the whole list jittered under the mouse).
-pub(crate) fn menu_row(ui: &mut egui::Ui, selected: bool, text: &str) -> egui::Response {
+/// One row of a list: a fixed-size slot, with the highlight painted by hand. Hovering can only change how the row is painted, never where it or the rows below it sit
+/// (egui's own hovered button grows its layout a little, and the whole list jittered under the mouse). `name` is what a screen reader hears (default: the text).
+pub(crate) fn menu_row_named(ui: &mut egui::Ui, selected: bool, text: &str, name: Option<&str>) -> egui::Response {
     let (rect, response) = ui.allocate_exact_size(egui::vec2(ui.available_width(), ui.spacing().interact_size.y), egui::Sense::click());
-    response.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Button, ui.is_enabled(), selected, text));
+    response.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Button, ui.is_enabled(), selected, name.unwrap_or(text)));
     if ui.is_rect_visible(rect) {
         let visuals = ui.style().interact_selectable(&response, selected);
         if selected || response.hovered() || response.has_focus() {
@@ -136,8 +139,26 @@ pub(crate) fn menu_row(ui: &mut egui::Ui, selected: bool, text: &str) -> egui::R
     response
 }
 
-fn pretty(name: &str) -> String {
-    name.replace("__", " ").replace('_', " ")
+pub(crate) fn menu_row(ui: &mut egui::Ui, selected: bool, text: &str) -> egui::Response {
+    menu_row_named(ui, selected, text, None)
+}
+
+/// What a stored result is called for the user, each name once, in order.
+fn friendly(names: &[String]) -> String {
+    let mut out: Vec<&str> = Vec::new();
+    for n in names {
+        let label = match n.as_str() {
+            "units" | "units_meta" => "sentences",
+            "keepers" => "keeper groups",
+            "cutlist" => "cut list",
+            n if n.starts_with("pairs__") || n.starts_with("scores__") => "pair scores",
+            other => other,
+        };
+        if !out.contains(&label) {
+            out.push(label);
+        }
+    }
+    out.join(", ")
 }
 
 impl SimpleCutApp {
@@ -162,15 +183,12 @@ impl SimpleCutApp {
             WorkKind::Transcription => {
                 self.steps = Default::default();
                 self.perform(Action::CloseReview);
-                self.options_ui.note = Some(
-                    "The transcription (transcript, sentences, pair scores) is set aside. The next Remove Retakes starts from scratch; the old files stay as numbered copies and your answers are kept."
-                        .into(),
-                );
+                self.options_ui.note = Some("Transcription reset.".into());
             }
             WorkKind::KeeperGroups => {
                 self.steps.done.retain(|s| !matches!(s.kind, crate::retake_steps::StepKind::Keepers { .. }));
                 self.clear_ai_choices();
-                self.options_ui.note = Some("The AI's choices are set aside: the ticks are back to what you had. Nothing was deleted.".into());
+                self.options_ui.note = Some("Keeper groups reset.".into());
             }
         }
     }
@@ -370,20 +388,17 @@ impl SimpleCutApp {
             }
             (Call::ResplitCheck | Call::Resplit, 200) => {
                 let n = body["units"].as_u64().unwrap_or(0);
-                self.options_ui.note = Some(format!(
-                    "Re-split into {n} sentences. Pairs, keepers and the cut list built on the old split are out of date: run Remove Retakes again."
-                ));
+                self.options_ui.note = Some(format!("Re-split into {n} sentences."));
                 self.options_ui.preview = None;
                 self.make_call(Call::Status, ProjectCall::Status);
             }
             (Call::Adopt, 200) => {
                 let done: Vec<String> = body["imported"]
                     .as_array()
-                    .map(|a| a.iter().filter_map(Value::as_str).filter(|n| *n != "units_meta").map(pretty).collect())
+                    .map(|a| a.iter().filter_map(Value::as_str).filter(|n| *n != "units_meta").map(str::to_string).collect())
                     .unwrap_or_default();
                 if !done.is_empty() {
-                    self.options_ui.note =
-                        Some(format!("Work done before saving came along: {} copied into the project (the old files stay where they were).", done.join(", ")));
+                    self.options_ui.note = Some(format!("Copied into the project: {}.", friendly(&done)));
                     self.make_call(Call::Status, ProjectCall::Status);
                 }
             }
@@ -394,11 +409,14 @@ impl SimpleCutApp {
             }
             (Call::Adopt, _) => {} // nothing to bring along (no earlier analysis, or an older service): not worth a message
             (Call::Import, 200) => {
-                let done: Vec<String> = body["imported"].as_array().map(|a| a.iter().filter_map(Value::as_str).map(pretty).collect()).unwrap_or_default();
+                let done: Vec<String> = body["imported"]
+                    .as_array()
+                    .map(|a| a.iter().filter_map(Value::as_str).filter(|n| *n != "units_meta").map(str::to_string).collect())
+                    .unwrap_or_default();
                 self.options_ui.note = Some(if done.is_empty() {
                     "Nothing to copy: the project already has this data.".into()
                 } else {
-                    format!("Copied into the project: {}. The old files were not touched.", done.join(", "))
+                    format!("Copied into the project: {}.", friendly(&done))
                 });
                 self.make_call(Call::Status, ProjectCall::Status);
             }
@@ -430,7 +448,6 @@ pub(crate) fn window(app: &mut SimpleCutApp, ctx: &egui::Context) {
     let options = app.service.as_ref().map(|s| s.options()).unwrap_or_default();
     let busy = app.is_analyzing();
     let working = app.pipeline_running();
-    let have_folder = app.project_folder_path().is_some();
     let mut queue: Vec<OptionsAction> = Vec::new();
     let (chosen_model, chosen_gap) = (app.options_ui.model.clone(), app.options_ui.silence_gap_s);
     let status = app.options_ui.status.clone();
@@ -438,10 +455,6 @@ pub(crate) fn window(app: &mut SimpleCutApp, ctx: &egui::Context) {
 
     egui::Window::new("Retake options").collapsible(false).resizable(false).anchor(Align2::CENTER_CENTER, [0.0, 0.0]).show(ctx, |ui| {
         ui.set_min_width(460.0);
-        if !have_folder {
-            ui.label(RichText::new("This project has no folder yet. Save it, and these settings are kept in its folder. Until then they apply to the next analysis only.").color(t.text_dim).small());
-            ui.add_space(6.0);
-        }
         if let Some(st) = &status
             && matches!(st.source.as_str(), "missing" | "changed")
         {
@@ -451,93 +464,82 @@ pub(crate) fn window(app: &mut SimpleCutApp, ctx: &egui::Context) {
 
         // ── the transcription model
         ui.label(RichText::new("Transcription model").strong());
-        match &options.transcription {
-            Some(info) => {
-                let current = chosen_model.clone().unwrap_or_else(|| info.default.clone());
-                ui.add_enabled_ui(!busy, |ui| {
-                    let shown = info.model(&current).map_or_else(|| current.clone(), model_line);
-                    egui::ComboBox::from_label("Model").selected_text(shown).width(380.0).show_ui(ui, |ui| {
-                        for m in &info.models {
-                            if menu_row(ui, m.name == current, &model_line(m)).clicked() {
-                                queue.push(OptionsAction::SetModel(m.name.clone()));
-                            }
+        if let Some(info) = &options.transcription {
+            let current = chosen_model.clone().unwrap_or_else(|| info.default.clone());
+            ui.add_enabled_ui(!busy, |ui| {
+                let shown = info.model(&current).map_or_else(|| current.clone(), model_line);
+                egui::ComboBox::from_label("Model").selected_text(shown).width(380.0).show_ui(ui, |ui| {
+                    for m in &info.models {
+                        if menu_row(ui, m.name == current, &model_line(m)).clicked() {
+                            queue.push(OptionsAction::SetModel(m.name.clone()));
                         }
-                    });
-                });
-                if let Some(m) = info.model(&current) {
-                    egui::Grid::new("model-detail").num_columns(2).spacing([12.0, 2.0]).show(ui, |ui| {
-                        ui.label(RichText::new("Download").color(t.text_dim));
-                        ui.label(match (m.downloaded, m.size_on_disk_gb, m.download_gb) {
-                            (true, Some(d), _) => format!("already downloaded ({d:.2} GB on disk)"),
-                            (true, None, _) => "already downloaded".to_string(),
-                            (false, _, Some(g)) => format!("not downloaded yet: about {g:.1} GB (approximate)"),
-                            _ => "not downloaded yet".to_string(),
-                        });
-                        ui.end_row();
-                        ui.label(RichText::new("GPU memory").color(t.text_dim));
-                        ui.label(m.vram_gb.map_or("unknown".to_string(), |v| format!("about {v:.1} GB (approximate)")));
-                        ui.end_row();
-                        ui.label(RichText::new("Speed").color(t.text_dim));
-                        ui.label(m.relative_speed.map_or("unknown".to_string(), |s| format!("about {s:.1}× the speed of the default model")));
-                        ui.end_row();
-                    });
-                    if let Some(w) = &m.warning {
-                        ui.add_space(2.0);
-                        ui.add(egui::Label::new(RichText::new(format!("Warning: {w}")).color(amber)).wrap());
                     }
-                }
-                if let Some(g) = &info.gpu {
-                    ui.label(RichText::new(format!("GPU: {} · {:.1} GB, {:.1} GB free now", g.name, g.total_gb, g.free_gb)).color(t.text_dim).small());
-                } else {
-                    ui.label(RichText::new("No NVIDIA GPU found: transcription runs on the CPU.").color(t.text_dim).small());
-                }
-                if !info.compute_note.is_empty() {
-                    ui.label(RichText::new(format!("Compute type: {}", info.compute_note)).color(t.text_dim).small());
+                });
+            });
+            if let Some(m) = info.model(&current) {
+                egui::Grid::new("model-detail").num_columns(2).spacing([12.0, 2.0]).show(ui, |ui| {
+                    ui.label(RichText::new("Download").color(t.text_dim));
+                    ui.label(match (m.downloaded, m.size_on_disk_gb, m.download_gb) {
+                        (true, Some(d), _) => format!("already downloaded ({d:.2} GB on disk)"),
+                        (true, None, _) => "already downloaded".to_string(),
+                        (false, _, Some(g)) => format!("not downloaded yet: about {g:.1} GB (approximate)"),
+                        _ => "not downloaded yet".to_string(),
+                    });
+                    ui.end_row();
+                    ui.label(RichText::new("GPU memory").color(t.text_dim));
+                    ui.label(m.vram_gb.map_or("unknown".to_string(), |v| format!("about {v:.1} GB (approximate)")));
+                    ui.end_row();
+                    ui.label(RichText::new("Speed").color(t.text_dim));
+                    ui.label(m.relative_speed.map_or("unknown".to_string(), |s| format!("about {s:.1}× the speed of the default model")));
+                    ui.end_row();
+                });
+                if let Some(w) = &m.warning {
+                    ui.add_space(2.0);
+                    ui.add(egui::Label::new(RichText::new(format!("Warning: {w}")).color(amber)).wrap());
                 }
             }
-            None => {
-                ui.label(RichText::new("This retake service does not offer a choice of model.").color(t.text_dim));
+            if let Some(g) = &info.gpu {
+                ui.label(RichText::new(format!("GPU: {} · {:.1} GB, {:.1} GB free now", g.name, g.total_gb, g.free_gb)).color(t.text_dim).small());
+            } else {
+                ui.label(RichText::new("No NVIDIA GPU found: transcription runs on the CPU.").color(t.text_dim).small());
             }
         }
         ui.add_space(10.0);
 
         // ── the silence gap
         ui.label(RichText::new("Sentence splitting").strong());
-        match options.silence_gap {
-            Some(info) => {
-                let mut v = chosen_gap.unwrap_or(info.default);
-                ui.add_enabled_ui(!busy, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.spacing_mut().slider_width = 200.0;
-                        ui.visuals_mut().widgets.inactive.bg_fill = t.text_dim.gamma_multiply(0.45); // the slider's rail: the theme's own is invisible on this window
-                        ui.visuals_mut().widgets.hovered.bg_fill = t.text_dim.gamma_multiply(0.6);
-                        let r = ui.add(egui::Slider::new(&mut v, info.min..=info.max).step_by(info.step).suffix(" s").text("Silence gap"));
-                        if r.changed() {
-                            queue.push(OptionsAction::SetSilenceGap(v));
-                        }
-                        if r.drag_stopped() || r.lost_focus() {
-                            queue.push(OptionsAction::CommitSilenceGap);
-                        }
-                        if ui.small_button("Default").on_hover_text(format!("Back to {:.2} s", info.default)).clicked() {
-                            queue.push(OptionsAction::SetSilenceGap(info.default));
-                            queue.push(OptionsAction::CommitSilenceGap);
-                        }
-                    });
-                });
-                ui.label(RichText::new(format!("A pause longer than this splits the transcript into sentences ({:.2}–{:.2} s, default {:.2} s). Set it before transcribing.", info.min, info.max, info.default)).color(t.text_dim).small());
-                if let Some(p) = &preview {
-                    ui.label(format!("At {:.2} s the transcript gives {} sentences (now {}).", p.gap, p.units, p.current));
-                    if status.as_ref().is_some_and(|s| s.has_units)
-                        && p.units != p.current
-                        && ask.is_none()
-                        && ui.add_enabled(!busy, egui::Button::new("Re-split sentences")).on_hover_text("Uses the saved word timestamps: no re-transcribing").clicked()
-                    {
-                        queue.push(OptionsAction::ResplitNow);
+        if let Some(info) = options.silence_gap {
+            let mut v = chosen_gap.unwrap_or(info.default);
+            ui.add_enabled_ui(!busy, |ui| {
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().slider_width = 200.0;
+                    ui.visuals_mut().widgets.inactive.bg_fill = t.text_dim.gamma_multiply(0.45); // the slider's rail: the theme's own is invisible on this window
+                    ui.visuals_mut().widgets.hovered.bg_fill = t.text_dim.gamma_multiply(0.6);
+                    let r = ui.add(egui::Slider::new(&mut v, info.min..=info.max).step_by(info.step).suffix(" s").text("Silence gap"));
+                    if r.changed() {
+                        queue.push(OptionsAction::SetSilenceGap(v));
                     }
+                    if r.drag_stopped() || r.lost_focus() {
+                        queue.push(OptionsAction::CommitSilenceGap);
+                    }
+                    if ui.small_button("Default").on_hover_text(format!("Back to {:.2} s", info.default)).clicked() {
+                        queue.push(OptionsAction::SetSilenceGap(info.default));
+                        queue.push(OptionsAction::CommitSilenceGap);
+                    }
+                });
+            });
+            if let Some(p) = &preview {
+                ui.label(format!("At {:.2} s the transcript gives {} sentences (now {}).", p.gap, p.units, p.current));
+                if status.as_ref().is_some_and(|s| s.has_units)
+                    && p.units != p.current
+                    && ask.is_none()
+                    && ui
+                        .add_enabled(!busy, egui::Button::new("Re-split sentences"))
+                        .on_hover_text("Uses the saved word timestamps: no re-transcribing")
+                        .clicked()
+                {
+                    queue.push(OptionsAction::ResplitNow);
                 }
-            }
-            None => {
-                ui.label(RichText::new("This retake service does not offer a choice of silence gap.").color(t.text_dim));
             }
         }
 
@@ -545,27 +547,27 @@ pub(crate) fn window(app: &mut SimpleCutApp, ctx: &egui::Context) {
         ui.add_space(10.0);
         ui.label(RichText::new("Start over").strong());
         ui.horizontal(|ui| {
-            if ui.add_enabled(!working, egui::Button::new("Reset transcription…")).on_hover_text("Set the transcript, sentences and pair scores aside; the next run starts from scratch").clicked() {
+            if ui.add_enabled(!working, egui::Button::new("Reset transcription…")).on_hover_text("Set the transcription aside").clicked() {
                 queue.push(OptionsAction::AskReset(WorkKind::Transcription));
             }
-            if ui.add_enabled(!working, egui::Button::new("Reset keeper groups…")).on_hover_text("Set the AI's choices aside and clear its ticks").clicked() {
+            if ui.add_enabled(!working, egui::Button::new("Reset keeper groups…")).on_hover_text("Set the AI's choices aside").clicked() {
                 queue.push(OptionsAction::AskReset(WorkKind::KeeperGroups));
             }
         });
-        ui.label(RichText::new("Nothing is deleted: the old results stay as numbered copies, and your answers are never touched. Ctrl+Z undoes the last step the same way.").color(t.text_dim).small());
 
         // ── stale results and questions
-        if let Some(st) = &status
-            && !st.stale.is_empty()
-        {
-            ui.add_space(8.0);
-            ui.label(RichText::new(format!("Out of date: {}", st.stale.iter().map(|s| pretty(s)).collect::<Vec<_>>().join(", "))).color(amber));
+        if let Some(st) = &status {
+            let stale: Vec<String> = st.stale.iter().filter(|n| !st.reset.contains(n)).cloned().collect();
+            if !stale.is_empty() {
+                ui.add_space(8.0);
+                ui.label(RichText::new(format!("Out of date: {}", friendly(&stale))).color(amber));
+            }
         }
         match &ask {
             Some(Ask::Retranscribe { from, to }) => {
                 ui.add_space(8.0);
                 ui.separator();
-                ui.add(egui::Label::new(format!("The transcript was made with “{from}”. Re-transcribe with “{to}”? The old transcript and everything built on it are kept as numbered copies in the project.")).wrap());
+                ui.add(egui::Label::new(format!("The transcript was made with “{from}”. Re-transcribe with “{to}”?")).wrap());
                 ui.horizontal(|ui| {
                     if ui.button("Re-transcribe now").clicked() {
                         queue.push(OptionsAction::ConfirmRetranscribe);
@@ -575,10 +577,10 @@ pub(crate) fn window(app: &mut SimpleCutApp, ctx: &egui::Context) {
                     }
                 });
             }
-            Some(Ask::ResplitOffer { text }) => {
+            Some(Ask::ResplitOffer { .. }) => {
                 ui.add_space(8.0);
                 ui.separator();
-                ui.add(egui::Label::new(text.as_str()).wrap());
+                ui.add(egui::Label::new("Re-split the sentences at this gap?").wrap());
                 ui.horizontal(|ui| {
                     if ui.button("Re-split now").clicked() {
                         queue.push(OptionsAction::ResplitNow);
@@ -591,7 +593,7 @@ pub(crate) fn window(app: &mut SimpleCutApp, ctx: &egui::Context) {
             Some(Ask::ResplitConfirm { gap, will_replace }) => {
                 ui.add_space(8.0);
                 ui.separator();
-                ui.add(egui::Label::new(format!("Re-splitting at {gap:.2} s replaces: {}. The old versions are kept as numbered copies in the project, and what was built on them is marked out of date.", will_replace.iter().map(|s| pretty(s)).collect::<Vec<_>>().join(", "))).wrap());
+                ui.add(egui::Label::new(format!("Re-split at {gap:.2} s? This replaces: {}.", friendly(will_replace))).wrap());
                 ui.horizontal(|ui| {
                     if ui.button("Re-split").clicked() {
                         queue.push(OptionsAction::ConfirmResplit);
@@ -605,10 +607,10 @@ pub(crate) fn window(app: &mut SimpleCutApp, ctx: &egui::Context) {
                 ui.add_space(8.0);
                 ui.separator();
                 let what_text = match what {
-                    WorkKind::Transcription => "the transcription (transcript, sentences and pair scores)",
-                    WorkKind::KeeperGroups => "the keeper groups (the AI's choices)",
+                    WorkKind::Transcription => "the transcription",
+                    WorkKind::KeeperGroups => "the keeper groups",
                 };
-                ui.add(egui::Label::new(format!("Set aside {what_text}? It is kept as a copy, nothing is deleted, and your answers stay. The next run starts from scratch.")).wrap());
+                ui.add(egui::Label::new(format!("Reset {what_text}?")).wrap());
                 ui.horizontal(|ui| {
                     if ui.button("Reset").clicked() {
                         queue.push(OptionsAction::ConfirmReset);
@@ -627,7 +629,7 @@ pub(crate) fn window(app: &mut SimpleCutApp, ctx: &egui::Context) {
         {
             ui.add_space(8.0);
             ui.separator();
-            ui.add(egui::Label::new(format!("Data from before projects had folders was found for this video ({}). Copy it into this project? The old files stay where they are.", st.legacy.iter().map(|s| pretty(s)).collect::<Vec<_>>().join(", "))).wrap());
+            ui.add(egui::Label::new(format!("Earlier work on this video was found ({}). Copy it into this project?", friendly(&st.legacy))).wrap());
             if ui.button("Import into this project").clicked() {
                 queue.push(OptionsAction::ImportLegacy);
             }

@@ -300,7 +300,8 @@ def create_app(config: Optional[ServiceConfig] = None, deps: Optional[Deps] = No
     def project_status(project: str):
         store = ProjectStore(project)
         return {"settings": store.settings(), "stale": store.stale(), "source": store.check_source(), "transcript_model": (store.get("transcript_meta") or {}).get("model"),
-                "has": {n: store.has(n) for n in ("transcript", "words", "units", "keepers", "cutlist")}, "legacy": legacy_names(store)}
+                "has": {n: store.has(n) for n in ("transcript", "words", "units", "keepers", "cutlist")}, "legacy": legacy_names(store),
+                "reset": store.reset_marks()}
 
     def legacy_names(store: ProjectStore) -> list[str]:
         """What the old per-machine cache (service/data/cache/<fingerprint>) holds for this project's source video and the project does not have yet."""

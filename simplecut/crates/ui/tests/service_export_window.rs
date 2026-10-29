@@ -224,7 +224,7 @@ fn the_window_offers_the_presets_and_every_option_and_hides_hardware_unless_it_w
     h.get_by_value("H.264");
     h.get_by_label_contains("Normalise loudness (off by default)");
     assert!(h.query_by_label_contains("NVENC").is_none(), "the service listed no hardware encoder: the option is not offered");
-    h.get_by_label_contains("Names are never reused: an earlier export is never overwritten");
+    h.get_by_label("Destination folder:");
     // another service that did list it
     let (mut h2, _d2, _s2) = start(SoftRenderer::default(), svc(options_json(true), vec![], ok_result(), false), true);
     open(&mut h2);
@@ -317,7 +317,7 @@ fn an_unsaved_project_cannot_export_and_says_why() {
     open(&mut h);
     h.get_by_value("Video — whole timeline (MP4)"); // no folder yet: the editor's own export is the default
     pick(&mut h, "Video — whole timeline (MP4)", "Video (MP4)");
-    h.get_by_label("Save the project first: these exports use its folder.");
+    h.get_by_label("Save the project first.");
     assert!(h.get_by_label("Start export").accesskit_node().is_disabled());
     assert!(seen.exports.lock().unwrap().is_empty());
 }
