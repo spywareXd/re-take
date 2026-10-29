@@ -1514,3 +1514,118 @@ fn a_service_that_does_not_report_keepers_shows_no_selector() {
     assert!(h.query_by_label("Keeper").is_none());
     assert!(h.state().keeper_info().is_none());
 }
+
+// ---- which groups the keeper is asked about ----
+
+/// The groups the keeper was asked about: (id, likely).
+type Asked = Arc<Mutex<Vec<(String, bool)>>>;
+
+struct AskedGroups {
+    inner: FakeService,
+    keeper: String,
+    asked: Asked,
+}
+
+impl simplecut_core::RetakeService for AskedGroups {
+    fn name(&self) -> String {
+        self.inner.name()
+    }
+    fn capabilities(&self) -> simplecut_core::Capabilities {
+        self.inner.capabilities()
+    }
+    fn analyze(&self, request: simplecut_core::AnalysisRequest) -> Box<dyn simplecut_core::AnalysisJob> {
+        self.inner.analyze(request)
+    }
+    fn resolve(&self, request: simplecut_core::ResolveRequest) -> Box<dyn simplecut_core::AnalysisJob> {
+        self.inner.resolve(request)
+    }
+    fn keeper(&self) -> Option<simplecut_core::KeeperInfo> {
+        let p = |id: &str| simplecut_core::KeeperProvider { id: id.into(), available: true, reason: String::new() };
+        Some(simplecut_core::KeeperInfo {
+            current: self.keeper.clone(),
+            default: "finetuned".into(),
+            providers: vec![p("finetuned"), p("gpt-oss"), p("keep-last")],
+        })
+    }
+    fn adjudicate(&self, request: simplecut_core::AdjudicateRequest) -> Option<Box<dyn simplecut_core::AnalysisJob>> {
+        self.asked.lock().unwrap().extend(request.groups.iter().map(|g| (g.id.clone(), g.likely)));
+        Some(Box::new(DoneJob(Some(simplecut_core::JobState::Done("[]".into())))))
+    }
+}
+
+fn asked_window(keeper: &str) -> (Win, Asked) {
+    let asked: Asked = Arc::new(Mutex::new(Vec::new()));
+    let service = AskedGroups { inner: FakeService { adjudicate: true, ..Default::default() }, keeper: keeper.into(), asked: asked.clone() };
+    let (mut h, _) = ready_any(Box::new(service));
+    to_review(&mut h);
+    (h, asked)
+}
+
+#[test]
+fn a_local_keeper_is_asked_about_every_group_not_only_the_unsure_ones() {
+    if skip() {
+        return;
+    }
+    let (mut h, asked) = asked_window("finetuned");
+    click(&mut h, "Ask AI to choose");
+    step_until(&mut h, "the keeper to be asked", |_| !asked.lock().unwrap().is_empty());
+    let sent = asked.lock().unwrap().clone();
+    assert!(sent.iter().any(|(_, likely)| *likely) && sent.iter().any(|(_, likely)| !*likely), "both likely and unsure groups are sent: {sent:?}");
+    let all = h.state().review_groups().len();
+    assert_eq!(sent.len(), all, "every group the review shows is sent");
+}
+
+#[test]
+fn a_hosted_keeper_is_still_asked_about_the_unsure_groups_first_and_only_after_consent() {
+    if skip() {
+        return;
+    }
+    let (mut h, asked) = asked_window("gpt-oss");
+    click(&mut h, "Ask AI to choose");
+    assert!(asked.lock().unwrap().is_empty(), "nothing is sent before the user agrees");
+    click(&mut h, "Continue");
+    step_until(&mut h, "the keeper to be asked", |_| !asked.lock().unwrap().is_empty());
+    let sent = asked.lock().unwrap().clone();
+    assert!(sent.iter().all(|(_, likely)| !*likely), "only the unsure groups leave the machine: {sent:?}");
+}
+
+#[test]
+fn the_remove_button_and_the_cut_modes_stay_inside_the_panel_at_every_window_size_and_text_size() {
+    if skip() {
+        return;
+    }
+    const STATUS_BAR: f32 = 28.0; // the bar along the bottom of the window covers whatever is drawn under it
+    let (mut h, _) = ready(FakeService { refine: true, ..Default::default() });
+    to_review(&mut h);
+    let base: Vec<(egui::TextStyle, f32)> = h.ctx.global_style().text_styles.iter().map(|(k, f)| (k.clone(), f.size)).collect();
+    for (w, hgt, text_scale) in [(1300.0_f32, 820.0_f32, 1.0_f32), (1100.0, 700.0, 1.0), (960.0, 600.0, 1.0), (960.0, 600.0, 1.3), (1300.0, 820.0, 1.5)] {
+        h.set_size(egui::vec2(w, hgt));
+        h.ctx.global_style_mut(|st| {
+            for (k, size) in &base {
+                if let Some(f) = st.text_styles.get_mut(k) {
+                    f.size = size * text_scale;
+                }
+            }
+        });
+        for _ in 0..4 {
+            h.step();
+        }
+        let remove = h
+            .query_all_by_label_contains("sentence")
+            .find(|n| n.accesskit_node().label().is_some_and(|l| l.starts_with("Remove ") && l.contains("sentence")))
+            .unwrap_or_else(|| panic!("{w}x{hgt} text x{text_scale}: there is a Remove button"))
+            .rect();
+        let usable = hgt - STATUS_BAR;
+        assert!(
+            remove.bottom() <= usable + 0.5 && remove.top() >= 0.0,
+            "{w}x{hgt} text x{text_scale}: the Remove button is fully visible (bottom {} vs {usable}): {remove:?}",
+            remove.bottom()
+        );
+        let modes: Vec<egui::Rect> = h.query_all_by_label_contains("Cut mode:").map(|n| n.rect()).collect();
+        assert_eq!(modes.len(), 3, "{w}x{hgt} text x{text_scale}: the three cut modes are there");
+        for m in modes {
+            assert!(m.bottom() <= remove.top() + 0.5, "{w}x{hgt} text x{text_scale}: the cut modes sit above the Remove button: {m:?} vs {remove:?}");
+            assert!(m.right() <= w + 0.5, "{w}x{hgt} text x{text_scale}: a cut mode is not pushed past the right edge: {m:?}");
+        }
+    }
+}

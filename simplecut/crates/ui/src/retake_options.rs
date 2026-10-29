@@ -44,6 +44,8 @@ enum Call {
     ResplitCheck,
     Resplit,
     Import,
+    /// The automatic copy of the old data into a project that was just saved.
+    Adopt,
 }
 
 /// What the service said about the project (`GET /v1/project/status`).
@@ -111,6 +113,23 @@ pub(crate) struct OptionsUi {
     calls: Vec<(Call, Box<dyn AnalysisJob>)>,
 }
 
+/// One row of a drop-down list: a fixed-size slot, with the highlight painted by hand. Hovering can only change how the row is painted, never where it or the rows
+/// below it sit (egui's own hovered button grows its layout a little, and the whole list jittered under the mouse).
+pub(crate) fn menu_row(ui: &mut egui::Ui, selected: bool, text: &str) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(ui.available_width(), ui.spacing().interact_size.y), egui::Sense::click());
+    response.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Button, ui.is_enabled(), selected, text));
+    if ui.is_rect_visible(rect) {
+        let visuals = ui.style().interact_selectable(&response, selected);
+        if selected || response.hovered() || response.has_focus() {
+            ui.painter().rect_filled(rect, visuals.corner_radius, visuals.weak_bg_fill);
+        }
+        let font = egui::TextStyle::Button.resolve(ui.style());
+        let at = egui::pos2(rect.left() + ui.spacing().button_padding.x, rect.center().y);
+        ui.painter().text(at, egui::Align2::LEFT_CENTER, text, font, visuals.text_color());
+    }
+    response
+}
+
 fn pretty(name: &str) -> String {
     name.replace("__", " ").replace('_', " ")
 }
@@ -123,6 +142,22 @@ impl SimpleCutApp {
 
     fn project_folder_path(&self) -> Option<std::path::PathBuf> {
         self.editor.project_path().and_then(|p| project_folder::folder_of(Path::new(p)))
+    }
+
+    /// The video on the timeline (the one the analysis is about), on disk.
+    fn source_video_path(&self) -> Option<String> {
+        self.editor.analysis_requests().ok().and_then(|r| r.into_iter().next()).map(|r| r.path)
+    }
+
+    /// A project was just saved into its own folder: bring the transcript, sentences and pair scores that were made before the save (kept by the service in its old
+    /// per-machine cache) into the project, so the work already done follows it. They are copied; the originals stay.
+    pub(crate) fn adopt_existing_work(&mut self) {
+        if self.project_folder_path().is_none() || self.service.is_none() {
+            return;
+        }
+        if let Some(path) = self.source_video_path() {
+            self.make_call(Call::Adopt, ProjectCall::ImportLegacy { path });
+        }
     }
 
     fn make_call(&mut self, kind: Call, call: ProjectCall) {
@@ -215,7 +250,10 @@ impl SimpleCutApp {
                 }
             }
             OptionsAction::CancelAsk => self.options_ui.ask = None,
-            OptionsAction::ImportLegacy => self.make_call(Call::Import, ProjectCall::ImportLegacy),
+            OptionsAction::ImportLegacy => match self.source_video_path() {
+                Some(path) => self.make_call(Call::Import, ProjectCall::ImportLegacy { path }),
+                None => self.options_ui.note = Some("Add a video to the timeline first: the old data is matched to the video.".into()),
+            },
         }
     }
 
@@ -299,6 +337,18 @@ impl SimpleCutApp {
                 self.options_ui.preview = None;
                 self.make_call(Call::Status, ProjectCall::Status);
             }
+            (Call::Adopt, 200) => {
+                let done: Vec<String> = body["imported"]
+                    .as_array()
+                    .map(|a| a.iter().filter_map(Value::as_str).filter(|n| *n != "units_meta").map(pretty).collect())
+                    .unwrap_or_default();
+                if !done.is_empty() {
+                    self.options_ui.note =
+                        Some(format!("Work done before saving came along: {} copied into the project (the old files stay where they were).", done.join(", ")));
+                    self.make_call(Call::Status, ProjectCall::Status);
+                }
+            }
+            (Call::Adopt, _) => {} // nothing to bring along (no earlier analysis, or an older service): not worth a message
             (Call::Import, 200) => {
                 let done: Vec<String> = body["imported"].as_array().map(|a| a.iter().filter_map(Value::as_str).map(pretty).collect()).unwrap_or_default();
                 self.options_ui.note = Some(if done.is_empty() {
@@ -363,7 +413,7 @@ pub(crate) fn window(app: &mut SimpleCutApp, ctx: &egui::Context) {
                     let shown = info.model(&current).map_or_else(|| current.clone(), model_line);
                     egui::ComboBox::from_label("Model").selected_text(shown).width(380.0).show_ui(ui, |ui| {
                         for m in &info.models {
-                            if ui.selectable_label(m.name == current, model_line(m)).clicked() {
+                            if menu_row(ui, m.name == current, &model_line(m)).clicked() {
                                 queue.push(OptionsAction::SetModel(m.name.clone()));
                             }
                         }

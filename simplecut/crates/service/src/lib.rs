@@ -216,7 +216,9 @@ impl RetakeService for HttpService {
             ProjectCall::UnitsPreview { silence_gap_s } => {
                 (Method::Get, format!("/v1/project/units-preview?project={q}&silence_gap_s={silence_gap_s}"), String::new())
             }
-            ProjectCall::ImportLegacy => (Method::Post, "/v1/project/import-legacy".to_string(), json!({ "project": project }).to_string()),
+            ProjectCall::ImportLegacy { path } => {
+                (Method::Post, "/v1/project/import-legacy".to_string(), json!({ "project": project, "path": path }).to_string())
+            }
             ProjectCall::Resplit { silence_gap_s, confirm } => {
                 (Method::Post, "/v1/project/resplit".to_string(), json!({ "project": project, "silence_gap_s": silence_gap_s, "confirm": confirm }).to_string())
             }

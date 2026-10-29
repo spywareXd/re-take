@@ -160,3 +160,64 @@ def test_status_lists_legacy_data_and_import_copies_it_without_touching_original
     bare = tmp_path / "Bare"
     ProjectStore.create(bare)
     assert client.post("/v1/project/import-legacy", json={"project": str(bare)}).status_code == 400            # no source recorded
+
+
+def _legacy_api(tmp_path):
+    calls = {"transcribe": 0}
+
+    def transcribe(path):
+        calls["transcribe"] += 1
+        return Transcript.model_validate(json.loads(FIXTURE.read_text(encoding="utf-8")))
+
+    cfg = ServiceConfig(data_dir=str(tmp_path / "service_data"), llm_mock=True, keeper_provider="gpt-oss")
+    client = TestClient(create_app(cfg, Deps(transcribe_fn=transcribe, scorer=FinalScorer(mock=True), llm_client=MockLLMClient())))
+    media = tmp_path / "take.mp4"
+    media.write_bytes(b"stand-in media bytes")
+    return client, media, cfg, calls
+
+
+def _run(client, body):
+    job = client.post("/v1/analyze", json=body).json()["job"]
+    end = time.time() + 60
+    while time.time() < end:
+        b = client.get(f"/v1/jobs/{job}").json()
+        if b["state"] != "running":
+            return job, b
+        time.sleep(0.02)
+    raise AssertionError("timeout")
+
+
+def test_the_old_cache_no_longer_ignores_a_different_silence_gap(tmp_path):
+    client, media, cfg, calls = _legacy_api(tmp_path)
+
+    def units_now() -> int:
+        (folder,) = list(Path(cfg.cache_dir).iterdir())
+        return len(json.loads((folder / "units.json").read_text(encoding="utf-8")))
+
+    _run(client, {"path": str(media), "duration_seconds": 25.8})                              # default gap 0.7
+    n_default = units_now()
+    _run(client, {"path": str(media), "duration_seconds": 25.8, "silence_gap_s": 0.1})
+    n_short = units_now()
+    assert n_short > n_default, "a shorter gap gives more sentences, not the cached split"
+    assert calls["transcribe"] == 1, "the transcript is reused: only the sentences are split again"
+    _run(client, {"path": str(media), "duration_seconds": 25.8, "silence_gap_s": 0.1})
+    assert units_now() == n_short                                                             # the same gap again: from the cache
+    _run(client, {"path": str(media), "duration_seconds": 25.8})
+    assert units_now() == n_default, "and back to the default gap"
+
+
+def test_saving_a_project_after_the_analysis_brings_the_transcript_with_it(tmp_path):
+    client, media, cfg, calls = _legacy_api(tmp_path)
+    _run(client, {"path": str(media), "duration_seconds": 25.8, "silence_gap_s": 0.3})   # analysed before the project was saved: old per-machine cache
+    proj = tmp_path / "Saved"
+    ProjectStore.create(proj)
+    r = client.post("/v1/project/import-legacy", json={"project": str(proj), "path": str(media)}).json()   # what the editor does right after the first save
+    assert {"transcript", "units", "units_meta"} <= set(r["imported"]) and any(n.startswith("pairs__") for n in r["imported"]) and r["originals_untouched"]
+    store = ProjectStore(proj)
+    assert store.check_source()["status"] == "ok" and store.get("units_meta") == {"silence_gap_s": 0.3} and store.has("words")
+    job, body = _run(client, {"path": str(media), "duration_seconds": 25.8, "project": str(proj), "silence_gap_s": 0.3})
+    assert body["state"] == "done" and calls["transcribe"] == 1, "no second transcription after the save"
+    ev = client.get(f"/v1/jobs/{job}/events").json()["events"]
+    assert {e["stage"] for e in ev if e.get("cached")} >= {"transcription", "unit_splitting", "pair_scoring"}
+    # a second adoption copies nothing and changes nothing
+    assert client.post("/v1/project/import-legacy", json={"project": str(proj), "path": str(media)}).json()["imported"] == []

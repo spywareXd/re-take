@@ -5,6 +5,7 @@ import hashlib
 import json
 import logging
 import os
+import shutil
 from pathlib import Path
 from typing import Any, Optional, Union
 
@@ -44,9 +45,42 @@ class MediaCache:
         self.dir = Path(cache_dir) / fingerprint
         self.fingerprint = fingerprint
 
+    # ---- reset: set results aside without deleting them ----
+    # A reset names results that must be computed again. The files stay where they are (get() just stops serving them); when a reset result is recomputed, the old
+    # one is first copied to stale/<name>.<n>.json. restore() lifts the mark, so the old results are served again.
+    @property
+    def _marks_file(self) -> Path:
+        return self.dir / "_reset.json"
+
+    def reset_marks(self) -> set[str]:
+        try:
+            return set(json.loads(self._marks_file.read_text(encoding="utf-8")).get("names", []))
+        except (OSError, ValueError, AttributeError):
+            return set()
+
+    def _write_marks(self, names: set[str]) -> None:
+        self.dir.mkdir(parents=True, exist_ok=True)
+        tmp = self._marks_file.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps({"names": sorted(names)}), encoding="utf-8")
+        os.replace(tmp, self._marks_file)
+
+    def reset(self, names: Any) -> list[str]:
+        """Set aside the named results that exist. Returns the names that were set aside."""
+        existing = [n for n in names if (self.dir / f"{n}.json").is_file()]
+        if existing:
+            self._write_marks(self.reset_marks() | set(existing))
+        return sorted(existing)
+
+    def restore(self, names: Any) -> list[str]:
+        marks = self.reset_marks()
+        back = sorted(set(names) & marks)
+        if back:
+            self._write_marks(marks - set(back))
+        return back
+
     def get(self, name: str) -> Optional[Any]:
         f = self.dir / f"{name}.json"
-        if not f.exists():
+        if not f.exists() or name in self.reset_marks():
             return None
         try:
             return json.loads(f.read_text(encoding="utf-8"))
@@ -57,6 +91,15 @@ class MediaCache:
     def put(self, name: str, obj: Any) -> Path:
         self.dir.mkdir(parents=True, exist_ok=True)
         f = self.dir / f"{name}.json"
+        marks = self.reset_marks()
+        if name in marks:                                              # replacing a result that was set aside: keep it as a numbered copy first
+            if f.is_file():
+                (self.dir / "stale").mkdir(exist_ok=True)
+                n = 1
+                while (self.dir / "stale" / f"{name}.{n}.json").exists():
+                    n += 1
+                shutil.copyfile(f, self.dir / "stale" / f"{name}.{n}.json")
+            self._write_marks(marks - {name})
         tmp = f.with_suffix(".json.tmp")
         tmp.write_text(json.dumps(obj, ensure_ascii=False), encoding="utf-8")
         os.replace(tmp, f)

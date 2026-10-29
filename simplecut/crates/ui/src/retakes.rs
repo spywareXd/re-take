@@ -1146,7 +1146,10 @@ impl SimpleCutApp {
         r.ai_consent_pending = false;
         let live: Vec<ReviewGroup> = r.groups.iter().filter(|g| self.actionable(r.item, g)).cloned().collect();
         let unsure: Vec<ReviewGroup> = live.iter().filter(|g| !g.likely).cloned().collect();
-        let chosen = if unsure.is_empty() { live } else { unsure };
+        // A hosted keeper is asked about the unsure groups first (the sentences leave this machine, so only what is needed is sent). A local keeper sends nothing
+        // anywhere, so it chooses in EVERY group: asking only about the unsure ones left the "likely" groups untouched, with all their sentences still ticked,
+        // which looked like "the AI keeps everything" (it happens as soon as a group is unsure, e.g. after a shorter silence gap).
+        let chosen = if self.keeper_needs_consent() && !unsure.is_empty() { unsure } else { live };
         if chosen.is_empty() {
             self.info_text("There is nothing to ask the AI about.");
             self.retakes.stage = Some(Stage::Review(r));
@@ -1966,88 +1969,91 @@ fn review_panel(app: &mut SimpleCutApp, ui: &mut egui::Ui, fps: f64) {
     );
     ui.add_space(2.0);
 
-    let footer_height = if app.refine_available() { if current_mode.warning().is_some() { 130.0 } else { 110.0 } } else { 52.0 };
-    let list_height = (ui.available_height() - footer_height).max(80.0);
-    egui::ScrollArea::vertical().max_height(list_height).auto_shrink([false, false]).show(ui, |ui| {
-        let likely: Vec<&GroupView> = groups.iter().filter(|g| live(g) && g.likely).collect();
-        let possible: Vec<&GroupView> = groups.iter().filter(|g| live(g) && !g.likely).collect();
-        let handled: Vec<&GroupView> = groups.iter().filter(|g| !live(g)).collect();
-        if likely.is_empty() && possible.is_empty() {
-            ui.label(RichText::new("Nothing to choose here. Everything is already handled; Ctrl+Z brings removed sentences back.").color(t.text_dim));
-        }
-        if !likely.is_empty() {
-            ui.label(RichText::new(format!("Likely retakes ({})", likely.len())).strong().color(t.text));
-            for g in likely {
-                group_card(app, ui, item, g, fps, true);
-            }
-        }
-        if !possible.is_empty() {
-            ui.add_space(6.0);
-            egui::CollapsingHeader::new(RichText::new(format!("Possible retakes ({})", possible.len())).strong().color(t.text))
-                .id_salt("possible-retakes")
-                .default_open(false)
-                .show(ui, |ui| {
-                    for g in possible {
-                        group_card(app, ui, item, g, fps, false);
-                    }
-                });
-        }
-        if !handled.is_empty() {
-            ui.add_space(6.0);
-            egui::CollapsingHeader::new(RichText::new(format!("Already handled or not on the timeline ({})", handled.len())).color(t.text_dim))
-                .id_salt("handled-retakes")
-                .default_open(false)
-                .show(ui, |ui| {
-                    for g in handled {
-                        let why = if g.seen_off { "already removed" } else { "outside the part of the video you used" };
-                        ui.label(RichText::new(format!("{} · {} sentences · {}", g.label, g.rows.len(), why)).color(t.text_dim).small());
-                    }
-                });
-        }
-        if ignored > 0 {
-            ui.add_space(4.0);
-            ui.label(RichText::new(format!("{ignored} unusable entr{} ignored.", if ignored == 1 { "y was" } else { "ies were" })).color(t.text_dim).small());
-        }
-    });
-
-    if app.refine_available() {
-        ui.add_space(6.0);
-        ui.horizontal(|ui| {
-            for &mode in &CutMode::ALL {
-                let selected = current_mode == mode;
-                let btn = ui.selectable_label(selected, mode.label());
-                btn.widget_info(|| WidgetInfo::selected(WidgetType::Button, true, selected, format!("Cut mode: {}", mode.label())));
-                if btn.clicked() && !selected {
-                    app.queue(Action::SetCutMode(mode));
-                }
-            }
-        });
-        ui.label(RichText::new(current_mode.description()).color(t.text_dim).small());
-        if let Some(warn) = current_mode.warning() {
-            ui.label(RichText::new(warn).color(t.danger).small());
-        }
-    }
-
-    if let Some((status, fraction)) = refine_running
-        && pending_apply
-    {
-        ui.add_space(6.0);
-        ui.label(RichText::new(status).color(t.text));
-        ui.add(egui::ProgressBar::new(fraction.clamp(0.0, 1.0)).desired_width(ui.available_width()));
-        if ui.button("Cancel").clicked() {
-            app.queue(Action::CancelAnalysis);
-        }
-    } else {
-        ui.add_space(6.0);
-        let label = format!("Remove {cut_count} sentence{}", if cut_count == 1 { "" } else { "s" });
-        if ui
-            .add_enabled(cut_count > 0, egui::Button::new(RichText::new(label).strong()).min_size(egui::vec2(ui.available_width(), 30.0)))
-            .on_hover_text("Cut every sentence that is not ticked as kept (one undo step)")
-            .clicked()
+    // The footer is laid out from the bottom up, so the Remove button, the cut mode and its description are always inside the panel whatever its size or how far the
+    // text wraps; the list of groups takes the space that is left (it used to reserve a guessed height, and the button fell off the bottom).
+    ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
+        if let Some((status, fraction)) = refine_running
+            && pending_apply
         {
-            app.queue(Action::ApplyRetakes);
+            if ui.button("Cancel").clicked() {
+                app.queue(Action::CancelAnalysis);
+            }
+            ui.add(egui::ProgressBar::new(fraction.clamp(0.0, 1.0)).desired_width(ui.available_width()));
+            ui.label(RichText::new(status).color(t.text));
+        } else {
+            let label = format!("Remove {cut_count} sentence{}", if cut_count == 1 { "" } else { "s" });
+            if ui
+                .add_enabled(cut_count > 0, egui::Button::new(RichText::new(label).strong()).min_size(egui::vec2(ui.available_width(), 30.0)))
+                .on_hover_text("Cut every sentence that is not ticked as kept (one undo step)")
+                .clicked()
+            {
+                app.queue(Action::ApplyRetakes);
+            }
         }
-    }
+        ui.add_space(6.0);
+        if app.refine_available() {
+            if let Some(warn) = current_mode.warning() {
+                ui.add(egui::Label::new(RichText::new(warn).color(t.danger).small()).wrap());
+            }
+            ui.add(egui::Label::new(RichText::new(current_mode.description()).color(t.text_dim).small()).wrap());
+            ui.horizontal_wrapped(|ui| {
+                for &mode in &CutMode::ALL {
+                    let selected = current_mode == mode;
+                    let btn = ui.selectable_label(selected, mode.label());
+                    btn.widget_info(|| WidgetInfo::selected(WidgetType::Button, true, selected, format!("Cut mode: {}", mode.label())));
+                    if btn.clicked() && !selected {
+                        app.queue(Action::SetCutMode(mode));
+                    }
+                }
+            });
+            ui.add_space(6.0);
+        }
+        ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
+            egui::ScrollArea::vertical().max_height(ui.available_height()).auto_shrink([false, false]).show(ui, |ui| {
+                let likely: Vec<&GroupView> = groups.iter().filter(|g| live(g) && g.likely).collect();
+                let possible: Vec<&GroupView> = groups.iter().filter(|g| live(g) && !g.likely).collect();
+                let handled: Vec<&GroupView> = groups.iter().filter(|g| !live(g)).collect();
+                if likely.is_empty() && possible.is_empty() {
+                    ui.label(RichText::new("Nothing to choose here. Everything is already handled; Ctrl+Z brings removed sentences back.").color(t.text_dim));
+                }
+                if !likely.is_empty() {
+                    ui.label(RichText::new(format!("Likely retakes ({})", likely.len())).strong().color(t.text));
+                    for g in likely {
+                        group_card(app, ui, item, g, fps, true);
+                    }
+                }
+                if !possible.is_empty() {
+                    ui.add_space(6.0);
+                    egui::CollapsingHeader::new(RichText::new(format!("Possible retakes ({})", possible.len())).strong().color(t.text))
+                        .id_salt("possible-retakes")
+                        .default_open(false)
+                        .show(ui, |ui| {
+                            for g in possible {
+                                group_card(app, ui, item, g, fps, false);
+                            }
+                        });
+                }
+                if !handled.is_empty() {
+                    ui.add_space(6.0);
+                    egui::CollapsingHeader::new(RichText::new(format!("Already handled or not on the timeline ({})", handled.len())).color(t.text_dim))
+                        .id_salt("handled-retakes")
+                        .default_open(false)
+                        .show(ui, |ui| {
+                            for g in handled {
+                                let why = if g.seen_off { "already removed" } else { "outside the part of the video you used" };
+                                ui.label(RichText::new(format!("{} · {} sentences · {}", g.label, g.rows.len(), why)).color(t.text_dim).small());
+                            }
+                        });
+                }
+                if ignored > 0 {
+                    ui.add_space(4.0);
+                    ui.label(
+                        RichText::new(format!("{ignored} unusable entr{} ignored.", if ignored == 1 { "y was" } else { "ies were" })).color(t.text_dim).small(),
+                    );
+                }
+            });
+        });
+    });
 }
 
 fn group_card(app: &mut SimpleCutApp, ui: &mut egui::Ui, item: ItemId, g: &GroupView, fps: f64, open: bool) {

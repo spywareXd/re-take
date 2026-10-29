@@ -362,19 +362,21 @@ fn old_data_is_offered_for_import_and_copied_only_when_asked() {
     }
     let reply: Arc<Replier> = Arc::new(|call| match call {
         ProjectCall::Status => (200, status(None, false, ("ok", ""), &["transcript", "units", "scores__final-ce_stacker-v1"])),
-        ProjectCall::ImportLegacy => (200, json!({"imported": ["transcript", "units"], "originals_untouched": true})),
+        ProjectCall::ImportLegacy { .. } => (200, json!({"imported": ["transcript", "units"], "originals_untouched": true})),
         _ => (200, json!({})),
     });
     let (mut h, _dir, seen) = start(SoftRenderer::default(), reply);
     saved(&mut h);
     open_options(&mut h);
     h.get_by_label_contains("Data from before projects had folders was found for this video (transcript, units, scores final-ce stacker-v1)");
-    assert!(!calls(&seen).contains(&ProjectCall::ImportLegacy), "offered, not done");
+    let imports = |seen: &Seen| calls(seen).iter().filter(|c| matches!(c, ProjectCall::ImportLegacy { .. })).count();
+    assert_eq!(imports(&seen), 1, "saving already brought the earlier work along once (automatically); this is the button for a project opened later");
     click(&mut h, "Import into this project");
     h.step();
     h.step();
     h.get_by_label_contains("Copied into the project: transcript, units. The old files were not touched.");
-    assert!(calls(&seen).contains(&ProjectCall::ImportLegacy));
+    assert_eq!(imports(&seen), 2, "the button sends it again");
+    assert!(calls(&seen).iter().all(|c| !matches!(c, ProjectCall::ImportLegacy { path } if !path.ends_with("talk.mp4"))), "every call names the video");
 }
 
 fn shot(h: &Window, r: &SoftRenderer) -> Picture {
@@ -422,4 +424,73 @@ fn write_options_screenshots() {
         h.step();
     }
     crop(&shot(&h, &r), 400, 120, 560, 600).save_png(&dir.join(format!("{tag}_3_ask.png")));
+}
+
+/// Every row of the window (labels, buttons, boxes) with where it is.
+fn layout(h: &Window) -> Vec<(String, egui::Rect)> {
+    use egui_kittest::kittest::NodeT;
+    let mut v = Vec::new();
+    for role in [Role::Label, Role::Button, Role::ComboBox, Role::Slider, Role::SpinButton] {
+        for n in h.query_all_by_role(role) {
+            let name = n.accesskit_node().label().or_else(|| n.accesskit_node().value()).unwrap_or_default();
+            v.push((format!("{role:?}:{name}"), n.rect()));
+        }
+    }
+    v
+}
+
+#[test]
+fn hovering_over_the_model_dropdown_and_its_items_moves_no_row() {
+    if skip() {
+        return;
+    }
+    let (mut h, _dir, _seen) = start(SoftRenderer::default(), quiet());
+    saved(&mut h);
+    open_options(&mut h);
+    let closed = layout(&h);
+    let combo = h.get_by_role(Role::ComboBox).rect();
+    h.hover_at(combo.center());
+    for _ in 0..4 {
+        h.step();
+    }
+    assert_eq!(layout(&h), closed, "hovering the closed drop-down moves nothing");
+    h.get_by_role(Role::ComboBox).click();
+    for _ in 0..4 {
+        h.step();
+    }
+    let open = layout(&h);
+    let items: Vec<egui::Pos2> = h.query_all_by_label_contains("·").map(|n| n.rect().center()).collect();
+    assert!(items.len() >= 4, "the list is open: {}", items.len());
+    for at in items {
+        h.hover_at(at);
+        for _ in 0..3 {
+            h.step();
+        }
+        let now = layout(&h);
+        // the hovered row may show its highlight; no OTHER row may move
+        let moved: Vec<_> =
+            open.iter().zip(&now).filter(|(a, b)| a.1 != b.1 && !a.1.contains(at)).map(|(a, b)| format!("{}: {:?} -> {:?}", a.0, a.1, b.1)).collect();
+        assert!(moved.is_empty(), "hovering the item at {at:?} moved other rows: {moved:?}");
+    }
+}
+
+#[test]
+fn saving_a_project_brings_the_earlier_transcription_along_and_says_so() {
+    if skip() {
+        return;
+    }
+    let reply: Arc<Replier> = Arc::new(|call| match call {
+        ProjectCall::Status => (200, status(Some("large-v2"), true, ("ok", ""), &[])),
+        ProjectCall::ImportLegacy { .. } => {
+            (200, json!({"imported": ["transcript", "units", "units_meta", "pairs__final-ce_stacker-v1"], "originals_untouched": true}))
+        }
+        _ => (200, json!({})),
+    });
+    let (mut h, _dir, seen) = start(SoftRenderer::default(), reply);
+    assert!(calls(&seen).is_empty(), "nothing is asked before the project is saved");
+    saved(&mut h);
+    let adopted: Vec<_> = calls(&seen).into_iter().filter(|c| matches!(c, ProjectCall::ImportLegacy { path } if path.ends_with("talk.mp4"))).collect();
+    assert_eq!(adopted.len(), 1, "right after the first save, the work done before it is copied into the project");
+    open_options(&mut h);
+    h.get_by_label_contains("Work done before saving came along: transcript, units, pairs final-ce stacker-v1 copied into the project");
 }

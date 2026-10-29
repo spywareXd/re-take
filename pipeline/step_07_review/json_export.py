@@ -275,6 +275,15 @@ def analyze_media(
 
     units = cache.get("units")
     unit_objs = None
+    redo_scores = False
+    if units is not None and not hasattr(cache, "store"):
+        # the old per-machine cache keeps ONE split per video: remember which gap made it, and when a different gap is asked for, split again (it used to hand back
+        # the old split whatever the setting said, so a shorter silence gap silently did nothing). A project's own files are guarded by the stale / confirm flow instead.
+        from pipeline.step_03_token_matching import PAUSE_SPLIT_THRESHOLD_SECONDS
+        made_with = float((cache.get("units_meta") or {}).get("silence_gap_s", PAUSE_SPLIT_THRESHOLD_SECONDS))
+        wanted = PAUSE_SPLIT_THRESHOLD_SECONDS if silence_gap_s is None else float(silence_gap_s)
+        if abs(made_with - wanted) > 1e-9:
+            units, redo_scores = None, True
     if units is not None:
         events.cached("unit_splitting")
     if units is None:
@@ -284,10 +293,13 @@ def analyze_media(
             st.done_message = f"{len(unit_objs)} sentences"
         units = unit_dicts(unit_objs)
         cache.put("units", units)
+        if not hasattr(cache, "store"):
+            from pipeline.step_03_token_matching import PAUSE_SPLIT_THRESHOLD_SECONDS
+            cache.put("units_meta", {"silence_gap_s": PAUSE_SPLIT_THRESHOLD_SECONDS if silence_gap_s is None else float(silence_gap_s)})
 
     engine = _decision_engine(scorer, cfg)
     model_key = (engine.model_version or engine.scorer_name or "model").replace("/", "_")
-    scores = cache.get(f"scores__{model_key}")
+    scores = None if redo_scores else cache.get(f"scores__{model_key}")
     if scores is None:
         tick("Scoring sentence pairs", 0.4)
         with events.stage("pair_scoring", "Cross-encoder + stacker") as st:

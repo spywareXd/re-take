@@ -77,13 +77,18 @@ pub(crate) fn show(app: &mut SimpleCutApp, ui: &mut egui::Ui) {
     });
 }
 
-/// The one primary action of the bar (Remove Retakes): the theme's accent colour, larger and bolder than the other buttons, with its own hover, pressed, keyboard-focus,
-/// disabled and loading looks. While the service works it shows the running stage and percent as a fill (a determinate bar, no animation of its own). The dark label
-/// on the accent fill has a contrast ratio of about 6:1 (WCAG AA needs 4.5:1); keyboard focus draws a bright outline that does not depend on the fill colour.
+/// The primary action of the bar (Remove Retakes): the same size and font as the other buttons, filled with the theme's accent colour, with its own hover, pressed,
+/// keyboard-focus, disabled and loading looks. While the service works the label gets the percent and the button fills like a determinate bar (no animation of its
+/// own); the stage is in the tooltip. The dark label on the accent fill has a contrast ratio of about 6:1 (WCAG AA needs 4.5:1); keyboard focus draws a bright outline
+/// that does not depend on the fill colour.
 fn primary_button(app: &mut SimpleCutApp, ui: &mut egui::Ui, label: &str, tip: &str, action: Action, enabled: bool) {
     let t = theme::tokens();
     let progress = app.analysis_progress();
-    let (rect, resp) = ui.allocate_exact_size(egui::vec2(PRIMARY_W, PRIMARY_H), egui::Sense::click());
+    // the size of any other button: the button font and padding, as wide as the label with its percent so the bar does not jump while it runs
+    let font = egui::TextStyle::Button.resolve(ui.style());
+    let widest = ui.painter().layout_no_wrap(format!("{label} 100%"), font.clone(), t.bg).size().x;
+    let size = egui::vec2(widest + 2.0 * ui.spacing().button_padding.x, ui.spacing().interact_size.y);
+    let (rect, resp) = ui.allocate_exact_size(size, egui::Sense::click());
     let tip = match &progress {
         Some((status, _)) if !status.is_empty() => format!("{tip} ({status})"),
         _ => tip.to_string(),
@@ -116,14 +121,11 @@ fn primary_button(app: &mut SimpleCutApp, ui: &mut egui::Ui, label: &str, tip: &
         if resp.has_focus() {
             painter.rect_stroke(rect, radius, egui::Stroke::new(2.5, t.text), egui::StrokeKind::Inside); // inside: the bar's edge would clip a ring drawn outside
         }
-        let (text, size) = match &progress {
-            Some((status, fraction)) => {
-                let shown: String = if status.chars().count() > 22 { status.chars().take(21).chain(std::iter::once('…')).collect() } else { status.clone() };
-                (format!("{} {}%", if shown.is_empty() { "Working".to_string() } else { shown }, (fraction * 100.0).round() as u32), 13.0)
-            }
-            None => (label.to_string(), 15.0),
+        let text = match &progress {
+            Some((_, fraction)) => format!("{label} {}%", (fraction * 100.0).round() as u32),
+            None => label.to_string(),
         };
-        painter.text(rect.center(), egui::Align2::CENTER_CENTER, text, egui::FontId::proportional(size), ink);
+        painter.text(rect.center(), egui::Align2::CENTER_CENTER, text, font, ink);
     }
     if live && resp.clicked() {
         app.queue(action);
@@ -132,8 +134,6 @@ fn primary_button(app: &mut SimpleCutApp, ui: &mut egui::Ui, label: &str, tip: &
 
 const HOVER_LIGHTEN: f32 = 0.18; // how far the fill moves towards white on hover
 const PRESSED_DARKEN: f32 = 0.08; // ... and towards black while pressed (small: the dark label must stay at 4.5:1 or better)
-const PRIMARY_W: f32 = 196.0; // fixed, so the bar does not jump when the label turns into the progress text
-const PRIMARY_H: f32 = 30.0;
 
 fn button(app: &mut SimpleCutApp, ui: &mut egui::Ui, label: &str, tip: &str, action: Action, enabled: bool) {
     let r = ui.add_enabled(enabled, egui::Button::new(label)).on_hover_text(tip);

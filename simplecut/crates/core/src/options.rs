@@ -272,8 +272,9 @@ pub enum ProjectCall {
     UnitsPreview { silence_gap_s: f64 },
     /// Re-split the saved transcript at the gap without re-transcribing; `confirm` false only reports what would be replaced (`POST /v1/project/resplit`).
     Resplit { silence_gap_s: f64, confirm: bool },
-    /// Copy the old per-machine data of this project's video into the project (`POST /v1/project/import-legacy`); the originals stay.
-    ImportLegacy,
+    /// Copy the old per-machine data of the video at `path` into the project (`POST /v1/project/import-legacy`); the service records the video as the project's
+    /// source. The originals stay.
+    ImportLegacy { path: String },
 }
 
 #[cfg(test)]

@@ -183,8 +183,9 @@ def create_app(config: Optional[ServiceConfig] = None, deps: Optional[Deps] = No
         return (store.get("units_meta") or {}).get("silence_gap_s", PAUSE_SPLIT_THRESHOLD_SECONDS) if store.has("units") else None
 
     def revalidate(store: ProjectStore, meta: dict, model_name: str) -> None:
-        """The model was set back to the one the stored transcript was made with: the stale marks that the model change caused are lifted (the files never moved)."""
-        if "transcript" in store.stale() and meta.get("model") == model_name:
+        """The model was set back to the one the stored transcript was made with: the stale marks that the model change caused are lifted (the files never moved).
+        A transcript the user set aside on purpose (reset) is not brought back by this."""
+        if "transcript" in store.stale() and meta.get("model") == model_name and "transcript" not in store.reset_marks():
             for n in ("transcript", "words", "units", "keepers", "cutlist", *store._names_like("pairs")):
                 store.clear_stale(n)
 
@@ -195,6 +196,9 @@ def create_app(config: Optional[ServiceConfig] = None, deps: Optional[Deps] = No
         revalidate(store, meta, model_name)
         if store.has("transcript") and meta.get("model") and meta["model"] != model_name:
             store.invalidate("transcript")
+        if "transcript" in store.reset_marks():                                       # the user set the transcription aside: start from scratch, nothing to ask
+            store.update_settings(transcription_model=model_name, silence_gap_s=gap)
+            return
         old_gap = units_gap(store)
         if old_gap is not None and abs(old_gap - gap) > 1e-9 and "transcript" not in store.stale():
             store.invalidate("units")                                                       # the units (and pairs/keepers/cutlist built on them) no longer match the slider
@@ -312,6 +316,49 @@ def create_app(config: Optional[ServiceConfig] = None, deps: Optional[Deps] = No
                 found.append(stem)
         return sorted(found)
 
+    # ---- set work aside (Ctrl+Z of a step, or the Reset buttons) and bring it back (redo) ----
+    WORK_KINDS = {"transcription": "transcript", "keepers": "keepers"}
+
+    def legacy_cache_for(path: Any) -> Any:
+        from pipeline.step_07_review.cache import MediaCache, media_fingerprint
+        if not isinstance(path, str) or not Path(path).is_file():
+            raise BadRequest("'path' (the video) is required when the project has no folder.")
+        return MediaCache(cfg.cache_dir, media_fingerprint(Path(path)))
+
+    def legacy_names_of(cache: Any, what: str) -> list[str]:
+        """The results of the old per-machine cache that belong to `what` (the old cache keeps no keeper groups)."""
+        if what != "transcription":
+            return []
+        names = ["transcript", "units", "units_meta"]
+        names += sorted(p.stem for p in cache.dir.glob("scores__*.json")) if cache.dir.is_dir() else []
+        return names
+
+    async def work_body(request: Request) -> tuple[dict, str, Optional[ProjectStore]]:
+        body = await body_of(request)
+        what = body.get("what")
+        if what not in WORK_KINDS:
+            raise BadRequest(f"'what' must be one of {', '.join(WORK_KINDS)}.")
+        return body, what, project_of(body)
+
+    @app.post("/v1/work/reset")
+    async def work_reset(request: Request):
+        """Set the transcription (transcript, words, sentences, pair scores) or the keeper groups aside. Nothing is deleted and the user's answers are untouched: the
+        results stay on disk, the next run computes them again (the old ones become numbered copies), and /v1/work/restore brings them back."""
+        body, what, store = await work_body(request)
+        if store is not None:
+            names = store.reset_work(WORK_KINDS[what])
+            return {"reset": names, "where": "project", "kept": True}
+        cache = legacy_cache_for(body.get("path"))
+        return {"reset": cache.reset(legacy_names_of(cache, what)), "where": "per-machine cache", "kept": True}
+
+    @app.post("/v1/work/restore")
+    async def work_restore(request: Request):
+        body, what, store = await work_body(request)
+        if store is not None:
+            return {"restored": store.restore_work(WORK_KINDS[what]), "where": "project"}
+        cache = legacy_cache_for(body.get("path"))
+        return {"restored": cache.restore(legacy_names_of(cache, what)), "where": "per-machine cache"}
+
     @app.post("/v1/project/import-legacy")
     async def project_import_legacy(request: Request):
         """COPY the old per-machine cache files of this project's source video into the project. The originals are not touched, and nothing the project
@@ -320,6 +367,9 @@ def create_app(config: Optional[ServiceConfig] = None, deps: Optional[Deps] = No
         store = project_of(body)
         if store is None:
             raise BadRequest("'project' is required.")
+        path = body.get("path")
+        if isinstance(path, str) and path.strip() and Path(path).is_file() and not (store.get("project", {}) or {}).get("source"):
+            store.set_source(path)                                                      # a project saved after its first analysis: record the video it belongs to
         ref = (store.get("project", {}) or {}).get("source") or {}
         fp = (ref.get("fingerprint") or {}).get("sha256")
         if not fp or not re.fullmatch(r"[0-9a-f]{64}", fp):
@@ -573,7 +623,10 @@ def create_app(config: Optional[ServiceConfig] = None, deps: Optional[Deps] = No
 
         def run(ctx: JobContext):
             with ctx.events.stage("keeper_selection", f"Keeper '{name}' on {len(groups)} groups"):
-                return _advise(ctx)
+                advice = _advise(ctx)
+                if store is not None:
+                    store.save_result("keepers", advice)
+                return advice
 
         def _advise(ctx: JobContext):
             if name in ("finetuned", "keep-last"):

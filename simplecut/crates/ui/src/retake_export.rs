@@ -448,7 +448,7 @@ fn combo<T: Clone + PartialEq>(ui: &mut egui::Ui, id: &str, label: &str, current
         });
         egui::ComboBox::from_id_salt(id).selected_text(shown).width(260.0).show_ui(ui, |ui| {
             for (text, value) in items {
-                if ui.selectable_label(&value == current, text).clicked() {
+                if crate::retake_options::menu_row(ui, &value == current, &text).clicked() {
                     picked = Some(value);
                 }
             }

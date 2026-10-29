@@ -218,9 +218,32 @@ class ProjectStore:
 
     def clear_stale(self, name: str) -> None:
         proj = dict(self.get("project", {}) or {})
-        if name in proj.get("stale", []):
-            proj["stale"] = [n for n in proj["stale"] if n != name]
+        if name in proj.get("stale", []) or name in proj.get("reset", []):
+            proj["stale"] = [n for n in proj.get("stale", []) if n != name]
+            proj["reset"] = [n for n in proj.get("reset", []) if n != name]
             self.put("project", proj)
+
+    # ---- reset: set work aside on purpose (Ctrl+Z of a step, or the Reset buttons) ----
+    def reset_marks(self) -> list[str]:
+        return sorted((self.get("project", {}) or {}).get("reset", []))
+
+    def reset_work(self, kind: str) -> list[str]:
+        """Set aside `kind` (transcript | keepers) and what is built on it: they are marked stale AND reset, so the next run recomputes them without asking again
+        (the user chose it). Nothing is deleted: when a result is recomputed the old one is copied to stale/<name>.<n>.json first, and restore_work brings it back."""
+        names = self.invalidate(kind)
+        proj = dict(self.get("project", {}) or {})
+        proj["reset"] = sorted(set(proj.get("reset", [])) | set(names))
+        self.put("project", proj)
+        return names
+
+    def restore_work(self, kind: str) -> list[str]:
+        """Undo reset_work for `kind`: the old results are served again."""
+        proj = dict(self.get("project", {}) or {})
+        names = [n for k in (kind, *self.DOWNSTREAM.get(kind, ())) for n in [*self._names_like(k)] if n in proj.get("reset", [])]
+        proj["reset"] = [n for n in proj.get("reset", []) if n not in names]
+        proj["stale"] = [n for n in proj.get("stale", []) if n not in names]
+        self.put("project", proj)
+        return sorted(names)
 
     # ---- settings ----
     def settings(self) -> dict:
@@ -275,15 +298,20 @@ class ProjectStore:
     def import_legacy(self, legacy_root: Union[str, Path], media_fingerprint: str) -> list[str]:
         """COPY the old per-fingerprint cache files into this project (transcript, units, pair scores). Originals stay; existing project files are not replaced."""
         done = []
+        cache = ProjectCache(self)
         for stem, src in self.legacy_available(legacy_root, media_fingerprint).items():
-            name = stem if stem in ("transcript", "units") else f"pairs__{stem[len('scores__'):]}" if stem.startswith("scores__") else None
+            name = stem if stem in ("transcript", "units", "units_meta") else f"pairs__{stem[len('scores__'):]}" if stem.startswith("scores__") else None
             if name is None:
                 continue
             name = re.sub(r"[^A-Za-z0-9._-]", "_", name)                                  # model keys contain '+'
             if self.has(name):
                 continue
             try:
-                self.put(name, json.loads(src.read_text(encoding="utf-8")))
+                data = json.loads(src.read_text(encoding="utf-8"))
+                if name == "transcript":
+                    cache.put("transcript", data)                                         # also writes words.json
+                else:
+                    self.put(name, data)
             except (OSError, ValueError):
                 continue
             done.append(name)

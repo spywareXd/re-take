@@ -856,6 +856,7 @@ impl SimpleCutApp {
         if ok {
             self.info(format!("Saved {}.", path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()));
             self.sync_project_folder();
+            self.adopt_existing_work();
         }
         ok
     }
