@@ -1,0 +1,194 @@
+
+
+# ================================================================================================================ rules, input builders, policy
+# Everything below turns a list of takes into the model's input and applies the ReTake hybrid keeper policy. It is a copy of the training-time builders
+# (training/build_decision_data*.py in the ReTake repository) so that the model sees exactly the format it was trained on.
+import hashlib  # noqa: E402
+import re  # noqa: E402
+from difflib import SequenceMatcher  # noqa: E402
+
+RULES = __RULES__
+CUES = __CUES__
+CONTEXT_MARK = "[context, not in this group]"
+MAX_WORDS = 40
+THRESHOLD, UNCLEAR_MARGIN, UNCLEAR_MAX_BELOW = 0.5, 0.15, 0.6
+CUE_THRESHOLD, CUE_MAX_WORDS = 0.8, 8
+
+
+def _f2(x: float) -> float:
+    return float(f"{float(x):.2f}")
+
+
+def _unit(t: dict, i: int = 0) -> dict:
+    return {"id": str(t.get("id", t.get("unit_id", i + 1))), "start": float(t["start"]), "end": float(t["end"]), "text": str(t.get("text", t.get("raw_text", "")))}
+
+
+def build_state(takes: list[dict], before: Optional[dict] = None, after: Optional[dict] = None) -> dict:
+    """takes: dicts with start, end (seconds), text and an optional id (default 1, 2, ...). before / after: the sentence just before / after the group (same keys) or None."""
+    units = sorted((_unit(t, i) for i, t in enumerate(takes)), key=lambda u: (u["start"], u["end"], u["id"]))
+    if not units:
+        raise ValueError("at least one take is required")
+    b = _unit(before) if before else None
+    a = _unit(after) if after else None
+    prev_end, out = (b["end"] if b else None), []
+    for u in units:
+        gap = None if prev_end is None else _f2(max(0.0, u["start"] - prev_end))
+        out.append({"id": u["id"], "start": _f2(u["start"]), "end": _f2(u["end"]), "gap_before_s": gap, "text": u["text"]})
+        prev_end = u["end"]
+    ctx = {side: (None if c is None else {"id": c["id"], "start": _f2(c["start"]), "end": _f2(c["end"]), "text": c["text"], "note": CONTEXT_MARK}) for side, c in (("before", b), ("after", a))}
+    return {"rules": RULES, "takes": out, "context": ctx}
+
+
+def _truncate_words(text: str) -> str:
+    words = text.split()
+    return text.strip() if len(words) <= MAX_WORDS else " ".join(words[:MAX_WORDS]) + "…"
+
+
+def build_questions(state: dict) -> dict:
+    n = len(state["takes"])
+    return {f'keep_{t["id"]}': {"type": "noul", "instructions": f'Should take {t["id"]} ("{_truncate_words(t["text"])}", take {i + 1} of {n}) stay in the final video?'}
+            for i, t in enumerate(state["takes"])}
+
+
+def normalise(text: str) -> str:
+    return re.sub(r"\s+", " ", re.sub(r"[^\w\s']+|_", " ", str(text).lower())).strip()
+
+
+_CUE_SET = {normalise(c) for c in CUES}
+
+
+def _cue_score(text: str) -> float:
+    n = normalise(text)
+    if n in _CUE_SET:
+        return 1.0
+    w, best = set(n.split()), 0.0
+    for c in _CUE_SET:
+        cw = set(c.split())
+        best = max(best, SequenceMatcher(None, n, c).ratio(), len(w & cw) / max(len(w | cw), 1))
+    return best
+
+
+def _is_cue_take(text: str) -> bool:
+    return 0 < len(normalise(text).split()) <= CUE_MAX_WORDS and _cue_score(text) >= CUE_THRESHOLD
+
+
+def _decide_probs(probs: dict[str, float]) -> dict:
+    keep = [u for u, v in probs.items() if v >= THRESHOLD]
+    ranked = sorted(probs.values(), reverse=True)
+    unclear = bool(ranked) and (ranked[0] < UNCLEAR_MAX_BELOW or (len(ranked) > 1 and ranked[0] - ranked[1] <= UNCLEAR_MARGIN))
+    return {"keep": keep, "unclear": unclear if ranked else True}
+
+
+def decide_group(takes: list[dict], before: Optional[dict], after: Optional[dict], predict, cue_rule: bool = True, exact_gate: bool = True,
+                 empty_fallback: bool = True, unclear_default: bool = True) -> dict:
+    """The ReTake hybrid policy for one group. `predict(state, questions) -> {"keep_<id>": p_yes}`.
+    Layers in order: cue rule (every take is a short production cue -> keep none), exact gate (every take has the same words -> keep the last), the model
+    (keep = p >= 0.5), empty fallback (model keeps nothing -> keep the last), unclear (top two within 0.15 or max p < 0.6 -> keep the last, flagged).
+    Returns {"keep": [ids], "keep_none": bool, "unclear": bool, "decided_by": str, "reason": str, "probs": {id: p} | None}."""
+    state = build_state(takes, before, after)
+    ids = [t["id"] for t in state["takes"]]
+    texts = [t["text"] for t in state["takes"]]
+
+    def result(keep, unclear, by, reason, probs=None, **extra):
+        return {"keep": list(keep), "keep_none": not keep, "unclear": bool(unclear), "decided_by": by, "reason": reason, "probs": probs, **extra}
+
+    if cue_rule and all(_is_cue_take(t) for t in texts):
+        return result([], False, "cue_rule", "Every take is a production cue: keep none.")
+    norm = [normalise(t) for t in texts]
+    if exact_gate and len(norm) >= 2 and norm[0] and all(n == norm[0] for n in norm):
+        return result([ids[-1]], False, "exact_gate", "All takes have the same words: keep the last.")
+    raw = predict(state, build_questions(state))
+    probs = {(k[len("keep_"):] if k.startswith("keep_") else k): float(v) for k, v in raw.items()}
+    if set(probs) != set(ids):
+        raise ValueError(f"model answered {sorted(probs)} for takes {ids}")
+    d = _decide_probs(probs)
+    keep = [u for u in ids if u in set(d["keep"])]
+    if not keep and empty_fallback:
+        return result([ids[-1]], d["unclear"], "empty_fallback", "The model kept no take: keeping the last take.", probs)
+    if d["unclear"] and keep and unclear_default:
+        return result([ids[-1]], True, "model", "The model is unsure: keeping the last take; please check this group.", probs, model_keep=keep)
+    return result(keep, d["unclear"], "model", "The model keeps no take." if not keep else f"The model keeps {', '.join(keep)}.", probs)
+
+
+# ================================================================================================================ download and the public API
+MODE_PATTERNS = {
+    "4bit": ["export_manifest.json", "head*", "decision_config.json", "tokenizer*", "vocab.json", "merges.txt", "added_tokens.json", "special_tokens_map.json",
+             "chat_template.jinja", "adapter/*", "base_bnb4/*"],
+    "fp16": ["export_manifest.json", "head*", "decision_config.json", "tokenizer*", "vocab.json", "merges.txt", "added_tokens.json", "special_tokens_map.json",
+             "chat_template.jinja", "config.json", "generation_config.json", "model*.safetensors", "model.safetensors.index.json"],
+}
+DEFAULT_REPO = "spywarex/retake-keeper-qwen3-4b"
+_SHARED = ("head", "decision_config", "tokenizer", "vocab", "merges", "added_tokens", "special_tokens", "chat_template")
+
+
+def verify_files(folder: Path, mode: str) -> list[str]:
+    """SHA-256 of the files the mode uses against export_manifest.json. Returns the problems (empty = all good)."""
+    manifest = json.loads((folder / "export_manifest.json").read_text(encoding="utf-8"))["files"]
+    problems = []
+    for rel, meta in manifest.items():
+        if mode == "4bit" and not rel.startswith(("base_bnb4/", "adapter/") + _SHARED):
+            continue
+        if mode == "fp16" and rel.startswith(("base_bnb4/", "adapter/")):
+            continue
+        p = folder / rel
+        if not p.is_file():
+            problems.append(f"{rel}: missing")
+            continue
+        h = hashlib.sha256()
+        with open(p, "rb") as f:
+            for chunk in iter(lambda: f.read(1 << 22), b""):
+                h.update(chunk)
+        if h.hexdigest() != meta["sha256"]:
+            problems.append(f"{rel}: SHA-256 mismatch")
+    return problems
+
+
+class RetakeKeeper:
+    """Pick the take(s) to keep in a group of retakes.
+
+        keeper = RetakeKeeper.from_pretrained()                        # downloads about 3.5 GB once (mode "4bit"), then runs locally
+        r = keeper.decide([{"start": 12.0, "end": 14.1, "text": "So the main idea is"},
+                           {"start": 15.0, "end": 18.0, "text": "So the main idea is that it works."}])
+        r["keep"]       # ["2"]  (ids default to 1, 2, ... in the order given)
+        keeper.unload()
+    """
+
+    def __init__(self, model: StandaloneDecisionModel, **policy):
+        self.model, self.policy = model, policy
+
+    @classmethod
+    def from_pretrained(cls, repo_or_path: str = DEFAULT_REPO, mode: str = "4bit", device: str = "cuda", revision: Optional[str] = None, verify: bool = False,
+                        gpu_memory_gb: Optional[float] = None, **policy) -> "RetakeKeeper":
+        if mode not in MODES:
+            raise ValueError(f"mode must be one of {MODES}, got {mode!r}")
+        folder = Path(repo_or_path)
+        if not folder.is_dir():
+            try:
+                from huggingface_hub import snapshot_download
+            except ImportError as exc:
+                raise DecisionModelIncompatible("pip install huggingface_hub to download the model") from exc
+            folder = Path(snapshot_download(repo_id=str(repo_or_path), revision=revision, allow_patterns=MODE_PATTERNS[mode]))
+        if verify:
+            problems = verify_files(folder, mode)
+            if problems:
+                raise DecisionModelIncompatible("model files do not match export_manifest.json: " + "; ".join(problems[:5]))
+        return cls(StandaloneDecisionModel(folder, mode=mode, device=device, gpu_memory_gb=gpu_memory_gb), **policy)
+
+    def score(self, takes: list[dict], before: Optional[dict] = None, after: Optional[dict] = None) -> dict[str, float]:
+        """Raw p(yes = keep) per take id, no policy."""
+        state = build_state(takes, before, after)
+        raw = self.model.score(state, build_questions(state))
+        return {k[len("keep_"):]: v for k, v in raw.items()}
+
+    def decide(self, takes: list[dict], before: Optional[dict] = None, after: Optional[dict] = None) -> dict:
+        """The hybrid policy (see decide_group). takes: dicts with start, end, text and an optional id."""
+        return decide_group(takes, before, after, self.model.score, **self.policy)
+
+    def unload(self) -> None:
+        self.model.unload()
+
+    def __enter__(self) -> "RetakeKeeper":
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self.unload()
