@@ -277,6 +277,14 @@ impl SimpleCutApp {
         self.retakes.busy()
     }
 
+    /// The running request's (status text, progress 0..=1), for the Remove Retakes button; None when nothing is running.
+    pub fn analysis_progress(&self) -> Option<(String, f32)> {
+        match &self.retakes.stage {
+            Some(Stage::Analyzing(run)) | Some(Stage::Resolving { run, .. }) => Some((run.status.clone(), run.fraction.clamp(0.0, 1.0))),
+            _ => None,
+        }
+    }
+
     /// Where the user's answers are logged before they are sent.
     pub fn set_label_log(&mut self, path: Option<PathBuf>) {
         self.retakes.label_log = path;

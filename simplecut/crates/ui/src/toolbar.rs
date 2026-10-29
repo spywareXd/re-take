@@ -50,7 +50,7 @@ pub(crate) fn show(app: &mut SimpleCutApp, ui: &mut egui::Ui) {
                 } else {
                     "Find failed takes in the video and review them before cutting."
                 };
-                button(app, ui, "Remove Retakes", tip, Action::StartRetakeAnalysis, has_timeline && !busy && !is_exporting);
+                primary_button(app, ui, "Remove Retakes", tip, Action::StartRetakeAnalysis, has_timeline && !busy && !is_exporting);
             }
             ui.add_space(8.0);
             let dirty = app.editor.is_dirty();
@@ -61,9 +61,111 @@ pub(crate) fn show(app: &mut SimpleCutApp, ui: &mut egui::Ui) {
     });
 }
 
+/// The one primary action of the bar (Remove Retakes): the theme's accent colour, larger and bolder than the other buttons, with its own hover, pressed, keyboard-focus,
+/// disabled and loading looks. While the service works it shows the running stage and percent as a fill (a determinate bar, no animation of its own). The dark label
+/// on the accent fill has a contrast ratio of about 6:1 (WCAG AA needs 4.5:1); keyboard focus draws a bright outline that does not depend on the fill colour.
+fn primary_button(app: &mut SimpleCutApp, ui: &mut egui::Ui, label: &str, tip: &str, action: Action, enabled: bool) {
+    let t = theme::tokens();
+    let progress = app.analysis_progress();
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(PRIMARY_W, PRIMARY_H), egui::Sense::click());
+    let tip = match &progress {
+        Some((status, _)) if !status.is_empty() => format!("{tip} ({status})"),
+        _ => tip.to_string(),
+    };
+    let resp = resp.on_hover_text(tip);
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled && progress.is_none(), label));
+    let live = enabled && progress.is_none();
+    if ui.is_rect_visible(rect) {
+        let radius = egui::CornerRadius::same(6);
+        let (fill, ink) = if progress.is_some() {
+            (t.panel_raised, t.text)
+        } else if !enabled {
+            (t.panel_raised, t.text_dim)
+        } else if resp.is_pointer_button_down_on() {
+            (t.accent.lerp_to_gamma(egui::Color32::BLACK, PRESSED_DARKEN), t.bg)
+        } else if resp.hovered() {
+            (t.accent.lerp_to_gamma(egui::Color32::WHITE, HOVER_LIGHTEN), t.bg)
+        } else {
+            (t.accent, t.bg)
+        };
+        let painter = ui.painter();
+        painter.rect_filled(rect, radius, fill);
+        if let Some((_, fraction)) = &progress {
+            let done = egui::Rect::from_min_size(rect.min, egui::vec2(rect.width() * fraction, rect.height()));
+            painter.rect_filled(done, radius, t.accent.gamma_multiply(0.5));
+        }
+        if !live {
+            painter.rect_stroke(rect, radius, egui::Stroke::new(1.0, t.border), egui::StrokeKind::Inside);
+        }
+        if resp.has_focus() {
+            painter.rect_stroke(rect, radius, egui::Stroke::new(2.5, t.text), egui::StrokeKind::Inside); // inside: the bar's edge would clip a ring drawn outside
+        }
+        let (text, size) = match &progress {
+            Some((status, fraction)) => {
+                let shown: String = if status.chars().count() > 22 { status.chars().take(21).chain(std::iter::once('…')).collect() } else { status.clone() };
+                (format!("{} {}%", if shown.is_empty() { "Working".to_string() } else { shown }, (fraction * 100.0).round() as u32), 13.0)
+            }
+            None => (label.to_string(), 15.0),
+        };
+        painter.text(rect.center(), egui::Align2::CENTER_CENTER, text, egui::FontId::proportional(size), ink);
+    }
+    if live && resp.clicked() {
+        app.queue(action);
+    }
+}
+
+const HOVER_LIGHTEN: f32 = 0.18; // how far the fill moves towards white on hover
+const PRESSED_DARKEN: f32 = 0.08; // ... and towards black while pressed (small: the dark label must stay at 4.5:1 or better)
+const PRIMARY_W: f32 = 196.0; // fixed, so the bar does not jump when the label turns into the progress text
+const PRIMARY_H: f32 = 30.0;
+
 fn button(app: &mut SimpleCutApp, ui: &mut egui::Ui, label: &str, tip: &str, action: Action, enabled: bool) {
     let r = ui.add_enabled(enabled, egui::Button::new(label)).on_hover_text(tip);
     if r.clicked() {
         app.queue(action);
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod tests {
+    use egui::Color32;
+
+    use crate::theme;
+
+    fn luminance(c: Color32) -> f64 {
+        let f = |v: u8| {
+            let v = v as f64 / 255.0;
+            if v <= 0.03928 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) }
+        };
+        0.2126 * f(c.r()) + 0.7152 * f(c.g()) + 0.0722 * f(c.b())
+    }
+
+    fn contrast(a: Color32, b: Color32) -> f64 {
+        let (x, y) = (luminance(a), luminance(b));
+        (x.max(y) + 0.05) / (x.min(y) + 0.05)
+    }
+
+    /// WCAG AA for normal text is 4.5:1. The label colour on the normal, hovered and pressed fills of the Remove Retakes button.
+    #[test]
+    fn the_primary_button_label_meets_wcag_aa_in_every_state() {
+        let t = theme::tokens();
+        for (name, fill) in [
+            ("normal", t.accent),
+            ("hovered", t.accent.lerp_to_gamma(Color32::WHITE, super::HOVER_LIGHTEN)),
+            ("pressed", t.accent.lerp_to_gamma(Color32::BLACK, super::PRESSED_DARKEN)),
+        ] {
+            let ratio = contrast(t.bg, fill);
+            assert!(ratio >= 4.5, "{name}: contrast {ratio:.2}:1 is below 4.5:1");
+        }
+        assert!(contrast(t.text, t.accent) < 4.5, "sanity: light text on the accent would NOT pass, which is why the label is dark");
+    }
+
+    /// The focus ring must stand out from the button fill and from the bar behind it.
+    #[test]
+    fn the_focus_ring_is_visible_against_the_fill_and_the_bar() {
+        let t = theme::tokens();
+        assert!(contrast(t.text, t.accent) >= 2.5, "ring vs fill");
+        assert!(contrast(t.text, t.panel) >= 7.0, "ring vs bar");
     }
 }
