@@ -25,6 +25,11 @@ except ImportError:
     from pipeline.transcription.base import BaseTranscriber  # type: ignore
 
 
+import logging
+
+logger = logging.getLogger(__name__)
+
+
 class WhisperXTranscriber(BaseTranscriber):
     """
     STT Adapter using WhisperX.
@@ -40,6 +45,23 @@ class WhisperXTranscriber(BaseTranscriber):
         self.compute_type = compute_type
         self._model = None
 
+    def _load(self, whisperx, compute_type, st=None):
+        """Load with the requested compute type; if the device refuses it, fall back through the candidates (int8_float16, float16, int8 on GPU; int8, float32 on CPU)."""
+        from .model_catalog import compute_candidates
+
+        last = None
+        for ct in compute_candidates(self.device, compute_type):
+            try:
+                model = whisperx.load_model(self.model_name, self.device, compute_type=ct)
+                self.loaded_compute_type = ct
+                if st is not None:
+                    st.done_message = f"compute type {ct}" + (f" (after {last})" if last else "")
+                return model
+            except (ValueError, RuntimeError) as exc:
+                last = f"{compute_type if ct == compute_type else ct} failed: {str(exc)[:120]}"
+                logger.warning("[WhisperX] compute type %s failed (%s); trying the next", ct, exc)
+        raise RuntimeError(f"could not load {self.model_name} with any compute type ({last})")
+
     def _get_model(self, events=None):
         if self._model is None:
             try:
@@ -50,7 +72,7 @@ class WhisperXTranscriber(BaseTranscriber):
             if self.device == "cuda" and compute_type == "float32":
                 compute_type = "float16"
             if events is None:
-                self._model = whisperx.load_model(self.model_name, self.device, compute_type=compute_type)
+                self._model = self._load(whisperx, compute_type)
             else:                                                       # progress events (service): download with a byte/percent hook, then load
                 from .model_download import download
 
@@ -62,8 +84,8 @@ class WhisperXTranscriber(BaseTranscriber):
                         st.done_message = f"download hook failed ({exc}); loading will fetch it"
                     if not got and not st.done_message:
                         st.done_message = "already downloaded"
-                with events.stage("model_load", f"{self.model_name} on {self.device} ({compute_type})"):
-                    self._model = whisperx.load_model(self.model_name, self.device, compute_type=compute_type)
+                with events.stage("model_load", f"{self.model_name} on {self.device}") as st:
+                    self._model = self._load(whisperx, compute_type, st)
         return self._model
 
     def _transcribe_with_events(self, model, audio, batch_size, events):

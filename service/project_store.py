@@ -189,6 +189,33 @@ class ProjectStore:
         self.put(name, obj)
         return copy
 
+    # ---- stale results: marked, never deleted ----
+    # Downstream of a change: a new transcript invalidates words/units/pairs/keepers/cutlist; new units invalidate pairs/keepers/cutlist; new pairs invalidate keepers/cutlist.
+    DOWNSTREAM = {"transcript": ("words", "units", "pairs", "keepers", "cutlist"), "units": ("pairs", "keepers", "cutlist"), "pairs": ("keepers", "cutlist")}
+
+    def stale(self) -> list[str]:
+        return sorted((self.get("project", {}) or {}).get("stale", []))
+
+    def _names_like(self, kind: str) -> list[str]:
+        if kind == "pairs":
+            return sorted(p.stem for p in self.data.glob("pairs__*.json"))
+        return [kind] if self.has(kind) else []
+
+    def invalidate(self, kind: str) -> list[str]:
+        """Mark `kind` and everything downstream of it stale (only results that exist). The files stay where they are; ProjectCache stops serving them,
+        and when a stale result is replaced the old one is first copied to stale/<name>.<n>.json. Returns the names marked."""
+        names = [n for k in (kind, *self.DOWNSTREAM.get(kind, ())) for n in self._names_like(k)]
+        proj = dict(self.get("project", {}) or {})
+        proj["stale"] = sorted(set(proj.get("stale", [])) | set(names))
+        self.put("project", proj)
+        return names
+
+    def clear_stale(self, name: str) -> None:
+        proj = dict(self.get("project", {}) or {})
+        if name in proj.get("stale", []):
+            proj["stale"] = [n for n in proj["stale"] if n != name]
+            self.put("project", proj)
+
     # ---- settings ----
     def settings(self) -> dict:
         return dict(self.get("settings", {}) or {})
@@ -208,7 +235,7 @@ class ProjectStore:
         except ValueError:                                                                   # a different drive on Windows
             rel = str(v)
         ref = {"path": rel.replace("\\", "/"), "fingerprint": fingerprint(v)}
-        self.put("project", {"source": ref})
+        self.put("project", {**(self.get("project", {}) or {}), "source": ref})
         return ref
 
     def source_path(self) -> Optional[Path]:
@@ -272,19 +299,29 @@ class ProjectStore:
 class ProjectCache:
     """The get/put interface of MediaCache (names 'transcript', 'units', 'scores__<model>') over a ProjectStore, so analyze_media writes into X/data/."""
 
-    def __init__(self, store: ProjectStore):
+    def __init__(self, store: ProjectStore, meta: Optional[dict] = None):
         self.store = store
+        self.meta = meta                                                                 # recorded next to a NEW transcript, e.g. {"model": "large-v2"}
 
     @staticmethod
     def _name(name: str) -> str:
         return re.sub(r"[^A-Za-z0-9._-]", "_", f"pairs__{name[len('scores__'):]}" if name.startswith("scores__") else name)      # model keys contain '+'
 
     def get(self, name: str) -> Optional[Any]:
-        return self.store.get(self._name(name))
+        n = self._name(name)
+        return None if n in self.store.stale() else self.store.get(n)                 # a stale result is not served: it is recomputed
 
     def put(self, name: str, obj: Any) -> Path:
-        p = self.store.put(self._name(name), obj)
+        n = self._name(name)
+        if self.store.has(n):                                                           # replacing an old (stale) result: keep it as a numbered copy first
+            self.store.replace_with_copy(n, obj)
+            p = self.store.json_path(n)
+        else:
+            p = self.store.put(n, obj)
+        self.store.clear_stale(n)
+        if name == "transcript" and self.meta:
+            self.store.put("transcript_meta", self.meta)
         if name == "transcript":                                                             # word-level timestamps, kept apart so units can be re-split without the transcript
             words = [dict(w, segment_id=s.get("id", i)) for i, s in enumerate(obj.get("segments", [])) for w in (s.get("words") or [])]
-            self.store.put("words", words)
+            self.put("words", words)
         return p

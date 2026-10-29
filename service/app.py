@@ -32,6 +32,14 @@ class BadRequest(Exception):
     pass
 
 
+class Conflict(Exception):
+    """HTTP 409 with a machine-readable body: the request would replace an existing result and needs the user's confirmation first."""
+
+    def __init__(self, message: str, **body: Any):
+        super().__init__(message)
+        self.body = {"error": message, **body}
+
+
 @dataclass
 class Deps:
     """Injection points (tests pass fakes; production leaves them None)."""
@@ -102,6 +110,10 @@ def create_app(config: Optional[ServiceConfig] = None, deps: Optional[Deps] = No
     async def _bad(_: Request, exc: BadRequest):
         return JSONResponse({"error": str(exc)}, status_code=400)
 
+    @app.exception_handler(Conflict)
+    async def _conflict(_: Request, exc: Conflict):
+        return JSONResponse(exc.body, status_code=409)
+
     @app.exception_handler(RequestValidationError)
     async def _val(_: Request, exc: RequestValidationError):
         return JSONResponse({"error": "The request is not valid."}, status_code=400)
@@ -136,6 +148,30 @@ def create_app(config: Optional[ServiceConfig] = None, deps: Optional[Deps] = No
             return review_cfg
         return replace(review_cfg, cache_dir=str(store.cache_dir), labels_path=str(store.labels_path), skipped_path=str(store.skipped_path))
 
+    def pick_model(body: dict, store: Optional[ProjectStore]) -> tuple[str, str]:
+        """(offered name, faster-whisper name): the request's 'model', else the project's saved choice, else today's default. Unknown names are a 400."""
+        from pipeline.step_01_transcription import model_catalog as mc
+        name = body.get("model")
+        if name is not None and not isinstance(name, str):
+            raise BadRequest("'model' must be a model name.")
+        name = name or (store.settings().get("transcription_model") if store else None) or mc.DEFAULT_MODEL
+        try:
+            return name, mc.resolve(name)
+        except mc.UnknownModel as exc:
+            raise BadRequest(str(exc))
+
+    def guard_replace(store: ProjectStore, body: dict, model_name: str) -> None:
+        """A changed model never silently overwrites a transcript: the transcript and everything downstream are marked stale, and the request is refused (409)
+        until it is repeated with "replace_existing": true. The old results are kept (stale/ copies)."""
+        meta = store.get("transcript_meta") or {}
+        if store.has("transcript") and meta.get("model") and meta["model"] != model_name:
+            store.invalidate("transcript")
+        if "transcript" in store.stale() and not body.get("replace_existing"):
+            raise Conflict("This project already has a transcript made with a different model. Re-transcribing replaces it and the results built on it; "
+                           "the old ones are kept as numbered copies. Send the request again with 'replace_existing': true to go ahead.",
+                           code="model_changed", transcript_model=meta.get("model"), requested=model_name, stale=store.stale())
+        store.update_settings(transcription_model=model_name)
+
     def need_path(body: dict) -> str:
         path = body.get("path")
         if not isinstance(path, str) or not path.strip():
@@ -146,7 +182,37 @@ def create_app(config: Optional[ServiceConfig] = None, deps: Optional[Deps] = No
     @app.get("/v1/capabilities")
     def capabilities():
         keeper = keeper_state()
-        return {"adjudicate": bool(keeper["providers"][keeper["current"]]["available"]), "refine": refine_available(), "keeper": keeper}
+        from pipeline.step_01_transcription.model_catalog import catalog
+        return {"adjudicate": bool(keeper["providers"][keeper["current"]]["available"]), "refine": refine_available(), "keeper": keeper, "transcription": catalog()}
+
+    # ---- project settings and status ----
+    @app.put("/v1/project/settings")
+    async def project_settings(request: Request):
+        """Change the project's settings. A transcription model that differs from the one the stored transcript was made with marks it (and what depends on it) stale
+        and says so; nothing is recomputed or replaced here."""
+        body = await body_of(request)
+        store = project_of(body)
+        if store is None:
+            raise BadRequest("'project' is required.")
+        changes: dict = {}
+        if "transcription_model" in body:
+            name, _ = pick_model({"model": body["transcription_model"]}, None)
+            changes["transcription_model"] = name
+        if not changes:
+            raise BadRequest("Nothing to change: send 'transcription_model'.")
+        store.update_settings(**changes)
+        meta = store.get("transcript_meta") or {}
+        stale: list[str] = []
+        if "transcription_model" in changes and store.has("transcript") and meta.get("model") and meta["model"] != changes["transcription_model"]:
+            stale = store.invalidate("transcript")
+        return {"settings": store.settings(), "stale": store.stale(), "newly_stale": stale,
+                "ask": "The transcript was made with a different model. Re-transcribe to bring it up to date?" if stale else None}
+
+    @app.get("/v1/project/status")
+    def project_status(project: str):
+        store = ProjectStore(project)
+        return {"settings": store.settings(), "stale": store.stale(), "source": store.check_source(), "transcript_model": (store.get("transcript_meta") or {}).get("model"),
+                "has": {n: store.has(n) for n in ("transcript", "words", "units", "keepers", "cutlist")}}
 
     # ---- keeper provider: read / switch (service-wide, until the service restarts) ----
     @app.get("/v1/keeper")
@@ -181,12 +247,16 @@ def create_app(config: Optional[ServiceConfig] = None, deps: Optional[Deps] = No
         job_id = jobs.new_id("j")
         store = project_of(body)
         rcfg = cfg_for(store)
+        model_name, real_model = pick_model(body, store)
+        rcfg = replace(rcfg, transcription={**rcfg.transcription, "model_name": real_model})
+        if store is not None:
+            guard_replace(store, body, model_name)
 
         def run(ctx: JobContext):
             cache = None
             if store is not None:
                 store.set_source(path)
-                cache = ProjectCache(store)
+                cache = ProjectCache(store, meta={"model": model_name})
             doc = analyze_media(path, name=body.get("name"), duration_seconds=duration, used=used, cfg=rcfg, scorer=deps.scorer,
                                 transcribe_fn=deps.transcribe_fn, job=job_id, progress=ctx.progress, scorer_provider=scorer_provider, cache=cache,
                                 events=ctx.events, audio_dir=store.audio_dir if store else None)
