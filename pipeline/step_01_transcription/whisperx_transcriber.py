@@ -40,7 +40,7 @@ class WhisperXTranscriber(BaseTranscriber):
         self.compute_type = compute_type
         self._model = None
 
-    def _get_model(self):
+    def _get_model(self, events=None):
         if self._model is None:
             try:
                 import whisperx
@@ -49,24 +49,84 @@ class WhisperXTranscriber(BaseTranscriber):
             compute_type = self.compute_type
             if self.device == "cuda" and compute_type == "float32":
                 compute_type = "float16"
-            self._model = whisperx.load_model(self.model_name, self.device, compute_type=compute_type)
+            if events is None:
+                self._model = whisperx.load_model(self.model_name, self.device, compute_type=compute_type)
+            else:                                                       # progress events (service): download with a byte/percent hook, then load
+                from .model_download import download
+
+                with events.stage("model_download", f"Model {self.model_name}") as st:
+                    try:
+                        got = download(self.model_name, lambda pct, done, total: st.progress(pct, f"{done / 1e6:.0f} of {total / 1e6:.0f} MB"))
+                    except Exception as exc:                            # not fatal: whisperx will try to fetch the model itself in the next step
+                        got = False
+                        st.done_message = f"download hook failed ({exc}); loading will fetch it"
+                    if not got and not st.done_message:
+                        st.done_message = "already downloaded"
+                with events.stage("model_load", f"{self.model_name} on {self.device} ({compute_type})"):
+                    self._model = whisperx.load_model(self.model_name, self.device, compute_type=compute_type)
         return self._model
+
+    def _transcribe_with_events(self, model, audio, batch_size, events):
+        """WhisperX runs VAD, then the batches, inside one call and prints 'Progress: x%' per batch. VAD is reported as started/done around the call's first progress
+        line; the percent of the transcription comes from those lines (stdout is parsed only for the duration of this call)."""
+        import contextlib
+        import io
+        import re
+
+        model_name = self.model_name
+
+        class Tap(io.TextIOBase):
+            def __init__(self):
+                self.vad_open = True
+                events.emit("vad", "started", "Finding speech")
+                events.emit("transcription", "started", f"Model {model_name}")
+
+            def write(self, s):
+                m = re.search(r"Progress:\s*([0-9.]+)%", s)
+                if m:
+                    if self.vad_open:
+                        self.vad_open = False
+                        events.emit("vad", "done", "", pct=100.0)
+                    events.emit("transcription", "progress", "", pct=float(m.group(1)))
+                return len(s)
+
+        tap = Tap()
+        try:
+            with contextlib.redirect_stdout(tap):
+                result = model.transcribe(audio, batch_size=batch_size, print_progress=True)
+        except BaseException as exc:
+            events.emit("vad" if tap.vad_open else "transcription", "error", f"{type(exc).__name__}: {exc}")
+            raise
+        if tap.vad_open:
+            events.emit("vad", "done", "", pct=100.0)
+        events.emit("transcription", "done", f"language {result.get('language', '?')}", pct=100.0)
+        return result
 
     def transcribe(self, audio_path: str, source_name: Optional[str] = None, **kwargs) -> Transcript:
         import whisperx
 
-        model = self._get_model()
+        events = kwargs.get("events")
+        model = self._get_model(events)
         audio = whisperx.load_audio(audio_path)
         batch_size = kwargs.get("batch_size", 16)
-        result = model.transcribe(audio, batch_size=batch_size)
+        if events is None:
+            result = model.transcribe(audio, batch_size=batch_size)
+        else:
+            result = self._transcribe_with_events(model, audio, batch_size, events)
 
         # Forced alignment for precise timestamps
-        align_model, metadata = whisperx.load_align_model(
-            language_code=result["language"], device=self.device
-        )
-        aligned_result = whisperx.align(
-            result["segments"], align_model, metadata, audio, self.device, return_char_alignments=False
-        )
+        if events is None:
+            align_model, metadata = whisperx.load_align_model(language_code=result["language"], device=self.device)
+            aligned_result = whisperx.align(
+                result["segments"], align_model, metadata, audio, self.device, return_char_alignments=False
+            )
+        else:
+            with events.stage("alignment", f"Alignment model for '{result['language']}' (downloaded on first use; no byte progress is available)") as st:
+                align_model, metadata = whisperx.load_align_model(language_code=result["language"], device=self.device)
+                st.progress(50.0, "Aligning words")
+                aligned_result = whisperx.align(
+                    result["segments"], align_model, metadata, audio, self.device, return_char_alignments=False
+                )
 
         segments_list = []
         seg_id = 1

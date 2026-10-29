@@ -45,7 +45,12 @@ class TimestampGenerator:
                 wav_path = os.path.join(extracted_audio_dir, f"{base_name}.wav")
             else:
                 wav_path = None
-            audio_path = AudioExtractor.extract_audio(media_path, output_wav_path=wav_path)
+            events = transcribe_kwargs.get("events")
+            if events is None:
+                audio_path = AudioExtractor.extract_audio(media_path, output_wav_path=wav_path)
+            else:
+                with events.stage("audio_extraction", "16 kHz mono WAV"):
+                    audio_path = AudioExtractor.extract_audio(media_path, output_wav_path=wav_path)
         else:
             audio_path = media_path
 

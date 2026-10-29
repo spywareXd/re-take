@@ -7,7 +7,10 @@ import threading
 import uuid
 from collections import OrderedDict
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Callable, Optional
+
+from .events import EventLog
 
 logger = logging.getLogger("service.jobs")
 
@@ -33,6 +36,7 @@ class Job:
     error: Optional[str] = None
     cancel: threading.Event = field(default_factory=threading.Event)
     lock: threading.Lock = field(default_factory=threading.Lock)
+    events: EventLog = field(default_factory=lambda: EventLog(""))
 
     def snapshot(self) -> dict:
         with self.lock:
@@ -51,6 +55,10 @@ class JobContext:
     @property
     def id(self) -> str:
         return self.job.id
+
+    @property
+    def events(self) -> EventLog:
+        return self.job.events
 
     def check(self) -> None:
         if self.job.cancel.is_set():
@@ -78,8 +86,10 @@ class JobManager:
         with self._mu:
             return self._jobs.get(job_id)
 
-    def submit(self, kind: str, fn: Callable[[JobContext], Any], heavy: bool = False, job_id: Optional[str] = None, user_message: str = "The retake service could not finish") -> str:
+    def submit(self, kind: str, fn: Callable[[JobContext], Any], heavy: bool = False, job_id: Optional[str] = None, user_message: str = "The retake service could not finish",
+               events_path: Optional[Path] = None) -> str:
         job = Job(id=job_id or self.new_id("j" if heavy else "r"), kind=kind)
+        job.events = EventLog(job.id, events_path)          # events_path: <project>/data/progress.jsonl, so the log outlives the job
         with self._mu:
             self._jobs[job.id] = job
             self._evict()
@@ -140,5 +150,6 @@ class JobManager:
             # the editor adds "The retake service could not finish:" itself; the job id is the key into the service log
             self._finish(job, FAILED, error=f"Something went wrong while processing the file (job {job.id}). See the service log.")
         finally:
+            job.events.close()
             if acquired:
                 self._heavy.release()

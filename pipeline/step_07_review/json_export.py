@@ -214,10 +214,13 @@ def build_groups(candidates: dict, labels_request: Optional[dict] = None, cfg: O
 # ----------------------------------------------------------------------------- analyze (transcribe once, cache, score)
 
 
-def default_transcribe(cfg: ReviewConfig) -> Callable[[Path], Any]:
+def default_transcribe(cfg: ReviewConfig, events: Any = None, audio_dir: Union[str, Path, None] = None) -> Callable[[Path], Any]:
+    """`events`: an EventLog for stage events; `audio_dir`: where the extracted WAV goes (a project's data/audio; None = next to the video, the old behaviour)."""
     def run(path: Path):
         from pipeline.step_01_transcription import TimestampGenerator
-        return TimestampGenerator(**cfg.transcription).process(media_path=str(path), output_json_path=None)
+        extra = {"events": events} if events is not None else {}
+        return TimestampGenerator(**cfg.transcription).process(media_path=str(path), output_json_path=None,
+                                                               extracted_audio_dir=str(audio_dir) if audio_dir else None, **extra)
     return run
 
 
@@ -241,11 +244,16 @@ def analyze_media(
     progress: Optional[Callable[[str, float], None]] = None,
     scorer_provider: Optional[Callable[[], Any]] = None,
     cache: Any = None,
+    events: Any = None,
+    audio_dir: Union[str, Path, None] = None,
 ) -> dict:
     """The whole file is transcribed once (never a trimmed part), so sentence ids are file-global and independent of `used`. Transcript, units and
     pair scores are cached under cfg.cache_dir/<media fingerprint>; a second run on the same file reuses them and gives identical ids."""
     cfg = cfg or ReviewConfig()
     tick = progress or (lambda status, frac: None)
+    if events is None:
+        from service.events import NullEvents
+        events = NullEvents()
     p = Path(path)
     if not p.is_file():
         raise FileNotFoundError("Could not read the file")
@@ -256,17 +264,23 @@ def analyze_media(
     transcript = cache.get("transcript")
     if transcript is None:
         tick("Transcribing", 0.05)
-        t = (transcribe_fn or default_transcribe(cfg))(p)
+        t = (transcribe_fn or default_transcribe(cfg, events, audio_dir))(p)
         transcript = t if isinstance(t, dict) else t.model_dump()
         cache.put("transcript", transcript)
     else:
         logger.info("[Review] transcript from cache (%s)", fp[:12])
+        for stage in ("model_download", "model_load", "audio_extraction", "vad", "transcription", "alignment"):
+            events.cached(stage)
 
     units = cache.get("units")
     unit_objs = None
+    if units is not None:
+        events.cached("unit_splitting")
     if units is None:
-        unit_objs = _load_units(transcript)
         tick("Splitting sentences", 0.3)
+        with events.stage("unit_splitting") as st:
+            unit_objs = _load_units(transcript)
+            st.done_message = f"{len(unit_objs)} sentences"
         units = [{"unit_id": u.unit_id, "source_segment_id": u.source_segment_id, "start": u.start, "end": u.end, "speaker": u.speaker,
                   "raw_text": u.raw_text, "confidence": u.confidence, "is_below_min_token_length": u.is_below_min_token_length} for u in unit_objs]
         cache.put("units", units)
@@ -276,10 +290,13 @@ def analyze_media(
     scores = cache.get(f"scores__{model_key}")
     if scores is None:
         tick("Scoring sentence pairs", 0.4)
-        scores = _score_pairs(unit_objs if unit_objs is not None else _load_units(transcript), scorer or (scorer_provider() if scorer_provider else None), cfg)
-        cache.put(f"scores__{model_key}", scores)
+        with events.stage("pair_scoring", "Cross-encoder + stacker") as st:
+            scores = _score_pairs(unit_objs if unit_objs is not None else _load_units(transcript), scorer or (scorer_provider() if scorer_provider else None), cfg)
+            cache.put(f"scores__{model_key}", scores)
+            st.done_message = f"{len(scores)} pairs"
     else:
         logger.info("[Review] pair scores from cache (%d pairs)", len(scores))
+        events.cached("pair_scoring")
 
     if duration_seconds is None:
         duration_seconds = _probe_duration(p) or float(transcript.get("duration", 0.0))

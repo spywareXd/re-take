@@ -9,7 +9,9 @@ from typing import Any, Callable, Optional
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import JSONResponse, Response, StreamingResponse
+import asyncio
+
 from starlette.concurrency import run_in_threadpool
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
@@ -17,6 +19,7 @@ from pipeline.step_07_review import ReviewConfig, analyze_media, build_groups, v
 from pipeline.step_07_review.labels import record_answers
 
 from .config import ServiceConfig
+from .events import EventLog, read_log, sse_format
 from .jobs import JobContext, JobManager, UserError
 from .project_store import ProjectCache, ProjectError, ProjectStore
 from .llm import LLMSetup, adjudicate_groups, detect_llm, keeper_advice, record_decision
@@ -185,14 +188,15 @@ def create_app(config: Optional[ServiceConfig] = None, deps: Optional[Deps] = No
                 store.set_source(path)
                 cache = ProjectCache(store)
             doc = analyze_media(path, name=body.get("name"), duration_seconds=duration, used=used, cfg=rcfg, scorer=deps.scorer,
-                                transcribe_fn=deps.transcribe_fn, job=job_id, progress=ctx.progress, scorer_provider=scorer_provider, cache=cache)
+                                transcribe_fn=deps.transcribe_fn, job=job_id, progress=ctx.progress, scorer_provider=scorer_provider, cache=cache,
+                                events=ctx.events, audio_dir=store.audio_dir if store else None)
             ctx.check()
             if not any(p["class"] == "ambiguous" for p in doc["pairs"]):      # nothing to ask: go straight to the groups
                 ctx.progress("Building groups", 0.97)
                 doc = build_groups(doc, None, rcfg)
             return _checked(doc, path, doc["media"]["duration_seconds"], job_id)
 
-        jobs.submit("analyze", run, heavy=True, job_id=job_id)
+        jobs.submit("analyze", run, heavy=True, job_id=job_id, events_path=store.progress_path if store else None)
         return {"job": job_id}
 
     # ---- resolve (stateless: everything comes from the echoed candidates document) ----
@@ -238,6 +242,10 @@ def create_app(config: Optional[ServiceConfig] = None, deps: Optional[Deps] = No
         decisions_path = str(store.keeper_decisions_path) if store else cfg.keeper_decisions_path
 
         def run(ctx: JobContext):
+            with ctx.events.stage("keeper_selection", f"Keeper '{name}' on {len(groups)} groups"):
+                return _advise(ctx)
+
+        def _advise(ctx: JobContext):
             if name in ("finetuned", "keep-last"):
                 try:
                     return keeper_advice(groups, finetuned if name == "finetuned" else keep_last, ctx, path, cache_where, decisions_path,
@@ -252,7 +260,7 @@ def create_app(config: Optional[ServiceConfig] = None, deps: Optional[Deps] = No
                                                             "source": "keeper_advice"})
             return advice
 
-        return {"job": jobs.submit("adjudicate", run)}
+        return {"job": jobs.submit("adjudicate", run, events_path=store.progress_path if store else None)}
 
     # ---- refine (cut-mode code is on this branch) ----
     @app.post("/v1/refine")
@@ -265,8 +273,10 @@ def create_app(config: Optional[ServiceConfig] = None, deps: Optional[Deps] = No
         if not isinstance(remove, list) or not remove or not all(isinstance(r, str) for r in remove):
             raise BadRequest("'remove' must be a non-empty list of sentence ids.")
         store = project_of(body)
+        log = EventLog(jobs.new_id("c"), store.progress_path if store else None)          # refine is synchronous: its events go straight to the project log
         try:
-            return await run_in_threadpool(refine_ranges, path, remove, mode, ProjectCache(store) if store else cfg.cache_dir)       # ffmpeg work must not block the event loop
+            with log.stage("cutlist_build", f"Mode {mode}, {len(remove)} sentences removed"):
+                return await run_in_threadpool(refine_ranges, path, remove, mode, ProjectCache(store) if store else cfg.cache_dir)       # ffmpeg work must not block the event loop
         except FileNotFoundError:
             raise BadRequest("Could not read the file")
         except (ValueError, UserError) as exc:
@@ -279,6 +289,52 @@ def create_app(config: Optional[ServiceConfig] = None, deps: Optional[Deps] = No
         if job is None:
             return JSONResponse({"error": "Unknown job."}, status_code=404)
         return job.snapshot()
+
+    @app.get("/v1/jobs/{job_id}/events")
+    def job_events(job_id: str, after: int = 0):
+        """The job's stage events after sequence number `after` (poll with the last seq you saw). Not a stream: see /stream."""
+        job = jobs.get(job_id)
+        if job is None:
+            return JSONResponse({"error": "Unknown job."}, status_code=404)
+        return {"events": job.events.since(max(0, after)), "finished": job.events.closed}
+
+    @app.get("/v1/jobs/{job_id}/events/stream")
+    async def job_events_stream(job_id: str, request: Request, after: int = 0):
+        """Server-Sent Events: one `stage` event per pipeline event; resumes after `Last-Event-ID` / ?after=. The loop only sleeps and reads memory, never blocks."""
+        job = jobs.get(job_id)
+        if job is None:
+            return JSONResponse({"error": "Unknown job."}, status_code=404)
+        try:
+            seq = max(after, int(request.headers.get("last-event-id", 0)))
+        except ValueError:
+            seq = after
+
+        async def gen():
+            nonlocal seq
+            idle = 0.0
+            while True:
+                evs = job.events.since(seq)
+                for ev in evs:
+                    seq = ev["seq"]
+                    yield sse_format(ev)
+                if not evs and job.events.closed:
+                    yield "event: end\ndata: {}\n\n"
+                    return
+                idle = 0.0 if evs else idle + 0.15
+                if idle >= 15.0:
+                    idle = 0.0
+                    yield ": keep-alive\n\n"
+                if await request.is_disconnected():
+                    return
+                await asyncio.sleep(0.15)
+
+        return StreamingResponse(gen(), media_type="text/event-stream", headers={"Cache-Control": "no-cache"})
+
+    @app.get("/v1/project/events")
+    def project_events(project: str):
+        """The persisted log of a project (data/progress.jsonl): kept after the jobs are gone."""
+        store = ProjectStore(project)
+        return {"events": read_log(store.progress_path)}
 
     @app.delete("/v1/jobs/{job_id}", status_code=204)
     def job_cancel(job_id: str):
