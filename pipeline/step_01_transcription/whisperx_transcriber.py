@@ -49,7 +49,7 @@ class WhisperXTranscriber(BaseTranscriber):
         """Load with the requested compute type; if the device refuses it, fall back through the candidates (int8_float16, float16, int8 on GPU; int8, float32 on CPU)."""
         from .model_catalog import compute_candidates
 
-        last = None
+        last, first_exc = None, None
         for ct in compute_candidates(self.device, compute_type):
             try:
                 model = whisperx.load_model(self.model_name, self.device, compute_type=ct)
@@ -58,9 +58,10 @@ class WhisperXTranscriber(BaseTranscriber):
                     st.done_message = f"compute type {ct}" + (f" (after {last})" if last else "")
                 return model
             except (ValueError, RuntimeError) as exc:
+                first_exc = first_exc or exc                           # the error for the type that was asked for is the one the user sees
                 last = f"{compute_type if ct == compute_type else ct} failed: {str(exc)[:120]}"
                 logger.warning("[WhisperX] compute type %s failed (%s); trying the next", ct, exc)
-        raise RuntimeError(f"could not load {self.model_name} with any compute type ({last})")
+        raise first_exc
 
     def _get_model(self, events=None):
         if self._model is None:
