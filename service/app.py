@@ -27,6 +27,8 @@ from .refine import refine_available, refine_ranges
 
 logger = logging.getLogger("service")
 
+SILENCE_MIN_S, SILENCE_MAX_S, SILENCE_STEP_S = 0.1, 3.0, 0.05            # the slider's range; validated again on the server
+
 
 class BadRequest(Exception):
     pass
@@ -160,17 +162,48 @@ def create_app(config: Optional[ServiceConfig] = None, deps: Optional[Deps] = No
         except mc.UnknownModel as exc:
             raise BadRequest(str(exc))
 
-    def guard_replace(store: ProjectStore, body: dict, model_name: str) -> None:
+    def pick_gap(body: dict, store: Optional[ProjectStore]) -> float:
+        """The silence gap (seconds) that splits sentence units: the request's 'silence_gap_s', else the project's saved value, else today's 0.7. Range-checked here."""
+        from pipeline.step_03_token_matching import PAUSE_SPLIT_THRESHOLD_SECONDS
+        v = body.get("silence_gap_s")
+        if v is None:
+            v = (store.settings().get("silence_gap_s") if store else None)
+        if v is None:
+            return PAUSE_SPLIT_THRESHOLD_SECONDS
+        if not _num(v) or not (SILENCE_MIN_S <= v <= SILENCE_MAX_S):
+            raise BadRequest(f"'silence_gap_s' must be a number of seconds between {SILENCE_MIN_S:g} and {SILENCE_MAX_S:g}.")
+        return round(float(v), 4)
+
+    def units_gap(store: ProjectStore) -> Optional[float]:
+        """The silence gap the stored units were made with (0.7, the old fixed value, when nothing is recorded); None when there are no units."""
+        from pipeline.step_03_token_matching import PAUSE_SPLIT_THRESHOLD_SECONDS
+        return (store.get("units_meta") or {}).get("silence_gap_s", PAUSE_SPLIT_THRESHOLD_SECONDS) if store.has("units") else None
+
+    def revalidate(store: ProjectStore, meta: dict, model_name: str) -> None:
+        """The model was set back to the one the stored transcript was made with: the stale marks that the model change caused are lifted (the files never moved)."""
+        if "transcript" in store.stale() and meta.get("model") == model_name:
+            for n in ("transcript", "words", "units", "keepers", "cutlist", *store._names_like("pairs")):
+                store.clear_stale(n)
+
+    def guard_replace(store: ProjectStore, body: dict, model_name: str, gap: float) -> None:
         """A changed model never silently overwrites a transcript: the transcript and everything downstream are marked stale, and the request is refused (409)
         until it is repeated with "replace_existing": true. The old results are kept (stale/ copies)."""
         meta = store.get("transcript_meta") or {}
+        revalidate(store, meta, model_name)
         if store.has("transcript") and meta.get("model") and meta["model"] != model_name:
             store.invalidate("transcript")
-        if "transcript" in store.stale() and not body.get("replace_existing"):
+        old_gap = units_gap(store)
+        if old_gap is not None and abs(old_gap - gap) > 1e-9 and "transcript" not in store.stale():
+            store.invalidate("units")                                                       # the units (and pairs/keepers/cutlist built on them) no longer match the slider
+        if ("transcript" in store.stale() or "units" in store.stale()) and not body.get("replace_existing"):
+            if "transcript" not in store.stale():
+                raise Conflict(f"The stored sentences were split at a {old_gap:g} s silence gap and the setting is now {gap:g} s. Re-splitting replaces them and the results "
+                               "built on them (pairs, keepers, cut list); the old ones are kept as numbered copies. Send the request again with 'replace_existing': true, "
+                               "or call /v1/project/resplit (no re-transcription).", code="silence_changed", units_silence_gap_s=old_gap, requested=gap, stale=store.stale())
             raise Conflict("This project already has a transcript made with a different model. Re-transcribing replaces it and the results built on it; "
                            "the old ones are kept as numbered copies. Send the request again with 'replace_existing': true to go ahead.",
                            code="model_changed", transcript_model=meta.get("model"), requested=model_name, stale=store.stale())
-        store.update_settings(transcription_model=model_name)
+        store.update_settings(transcription_model=model_name, silence_gap_s=gap)
 
     def need_path(body: dict) -> str:
         path = body.get("path")
@@ -183,7 +216,9 @@ def create_app(config: Optional[ServiceConfig] = None, deps: Optional[Deps] = No
     def capabilities():
         keeper = keeper_state()
         from pipeline.step_01_transcription.model_catalog import catalog
-        return {"adjudicate": bool(keeper["providers"][keeper["current"]]["available"]), "refine": refine_available(), "keeper": keeper, "transcription": catalog()}
+        from pipeline.step_03_token_matching import PAUSE_SPLIT_THRESHOLD_SECONDS
+        return {"adjudicate": bool(keeper["providers"][keeper["current"]]["available"]), "refine": refine_available(), "keeper": keeper, "transcription": catalog(),
+                "silence_gap": {"default": PAUSE_SPLIT_THRESHOLD_SECONDS, "min": SILENCE_MIN_S, "max": SILENCE_MAX_S, "step": SILENCE_STEP_S, "unit": "seconds"}}
 
     # ---- project settings and status ----
     @app.put("/v1/project/settings")
@@ -198,15 +233,61 @@ def create_app(config: Optional[ServiceConfig] = None, deps: Optional[Deps] = No
         if "transcription_model" in body:
             name, _ = pick_model({"model": body["transcription_model"]}, None)
             changes["transcription_model"] = name
+        if "silence_gap_s" in body:
+            changes["silence_gap_s"] = pick_gap({"silence_gap_s": body["silence_gap_s"]}, None)
         if not changes:
-            raise BadRequest("Nothing to change: send 'transcription_model'.")
+            raise BadRequest("Nothing to change: send 'transcription_model' and/or 'silence_gap_s'.")
         store.update_settings(**changes)
         meta = store.get("transcript_meta") or {}
+        if "transcription_model" in changes:
+            revalidate(store, meta, changes["transcription_model"])
         stale: list[str] = []
         if "transcription_model" in changes and store.has("transcript") and meta.get("model") and meta["model"] != changes["transcription_model"]:
             stale = store.invalidate("transcript")
-        return {"settings": store.settings(), "stale": store.stale(), "newly_stale": stale,
-                "ask": "The transcript was made with a different model. Re-transcribe to bring it up to date?" if stale else None}
+        ask = "The transcript was made with a different model. Re-transcribe to bring it up to date?" if stale else None
+        old_gap = units_gap(store)
+        if "silence_gap_s" in changes and old_gap is not None and abs(old_gap - changes["silence_gap_s"]) > 1e-9 and "transcript" not in store.stale():
+            stale = sorted(set(stale) | set(store.invalidate("units")))
+            ask = ask or "The sentences were split at a different silence gap. Re-split them now (no re-transcription)? Pairs, keepers and the cut list built on them will be recomputed."
+        return {"settings": store.settings(), "stale": store.stale(), "newly_stale": stale, "ask": ask}
+
+    @app.get("/v1/project/units-preview")
+    def units_preview(project: str, silence_gap_s: float):
+        """How many sentences a silence gap would produce, from the saved word timestamps (no re-transcription, nothing stored)."""
+        from pipeline.step_07_review.json_export import _load_units
+        store = ProjectStore(project)
+        transcript = store.get("transcript")
+        if transcript is None:
+            raise BadRequest("This project has no transcript yet; the preview needs one.")
+        gap = pick_gap({"silence_gap_s": silence_gap_s}, None)
+        return {"silence_gap_s": gap, "units": len(_load_units(transcript, gap)), "current_silence_gap_s": units_gap(store),
+                "current_units": len(store.get("units") or [])}
+
+    @app.post("/v1/project/resplit")
+    async def resplit(request: Request):
+        """Re-split the saved transcript into sentences at the project's silence gap, WITHOUT re-transcribing. Without "confirm": true it only says what would be
+        replaced (409). With it, the old units are kept as stale/units.<n>.json, and pairs, keepers and cutlist are marked stale (kept, recomputed on the next analyze)."""
+        from pipeline.step_07_review.json_export import _load_units, unit_dicts
+        body = await body_of(request)
+        store = project_of(body)
+        if store is None:
+            raise BadRequest("'project' is required.")
+        transcript = store.get("transcript")
+        if transcript is None:
+            raise BadRequest("This project has no transcript yet.")
+        if "transcript" in store.stale():
+            raise BadRequest("The transcript is out of date (a different model was chosen). Re-transcribe first.")
+        gap = pick_gap(body, store)
+        affected = [n for k in ("units", *ProjectStore.DOWNSTREAM["units"]) for n in store._names_like(k)]
+        if affected and not body.get("confirm"):
+            raise Conflict("Re-splitting replaces the existing sentences and marks everything built on them stale. The old versions are kept as numbered copies. "
+                           "Send 'confirm': true to go ahead.", code="resplit_needs_confirmation", will_replace=affected, silence_gap_s=gap)
+        units = await run_in_threadpool(lambda: unit_dicts(_load_units(transcript, gap)))
+        store.invalidate("units")
+        copy = store.save_result("units", units)
+        store.put("units_meta", {"silence_gap_s": gap})
+        store.update_settings(silence_gap_s=gap)
+        return {"units": len(units), "silence_gap_s": gap, "stale": store.stale(), "previous_units_copy": copy.name if copy else None}
 
     @app.get("/v1/project/status")
     def project_status(project: str):
@@ -249,17 +330,18 @@ def create_app(config: Optional[ServiceConfig] = None, deps: Optional[Deps] = No
         rcfg = cfg_for(store)
         model_name, real_model = pick_model(body, store)
         rcfg = replace(rcfg, transcription={**rcfg.transcription, "model_name": real_model})
+        gap = pick_gap(body, store)
         if store is not None:
-            guard_replace(store, body, model_name)
+            guard_replace(store, body, model_name, gap)
 
         def run(ctx: JobContext):
             cache = None
             if store is not None:
                 store.set_source(path)
-                cache = ProjectCache(store, meta={"model": model_name})
+                cache = ProjectCache(store, meta={"model": model_name}, units_meta={"silence_gap_s": gap})
             doc = analyze_media(path, name=body.get("name"), duration_seconds=duration, used=used, cfg=rcfg, scorer=deps.scorer,
                                 transcribe_fn=deps.transcribe_fn, job=job_id, progress=ctx.progress, scorer_provider=scorer_provider, cache=cache,
-                                events=ctx.events, audio_dir=store.audio_dir if store else None)
+                                events=ctx.events, audio_dir=store.audio_dir if store else None, silence_gap_s=gap)
             ctx.check()
             if not any(p["class"] == "ambiguous" for p in doc["pairs"]):      # nothing to ask: go straight to the groups
                 ctx.progress("Building groups", 0.97)
@@ -346,7 +428,10 @@ def create_app(config: Optional[ServiceConfig] = None, deps: Optional[Deps] = No
         log = EventLog(jobs.new_id("c"), store.progress_path if store else None)          # refine is synchronous: its events go straight to the project log
         try:
             with log.stage("cutlist_build", f"Mode {mode}, {len(remove)} sentences removed"):
-                return await run_in_threadpool(refine_ranges, path, remove, mode, ProjectCache(store) if store else cfg.cache_dir)       # ffmpeg work must not block the event loop
+                result = await run_in_threadpool(refine_ranges, path, remove, mode, ProjectCache(store) if store else cfg.cache_dir)
+                if store is not None:
+                    store.save_result("cutlist", result)
+                return result       # ffmpeg work must not block the event loop
         except FileNotFoundError:
             raise BadRequest("Could not read the file")
         except (ValueError, UserError) as exc:

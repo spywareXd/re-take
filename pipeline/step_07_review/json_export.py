@@ -246,6 +246,7 @@ def analyze_media(
     cache: Any = None,
     events: Any = None,
     audio_dir: Union[str, Path, None] = None,
+    silence_gap_s: Optional[float] = None,
 ) -> dict:
     """The whole file is transcribed once (never a trimmed part), so sentence ids are file-global and independent of `used`. Transcript, units and
     pair scores are cached under cfg.cache_dir/<media fingerprint>; a second run on the same file reuses them and gives identical ids."""
@@ -279,10 +280,9 @@ def analyze_media(
     if units is None:
         tick("Splitting sentences", 0.3)
         with events.stage("unit_splitting") as st:
-            unit_objs = _load_units(transcript)
+            unit_objs = _load_units(transcript, silence_gap_s)
             st.done_message = f"{len(unit_objs)} sentences"
-        units = [{"unit_id": u.unit_id, "source_segment_id": u.source_segment_id, "start": u.start, "end": u.end, "speaker": u.speaker,
-                  "raw_text": u.raw_text, "confidence": u.confidence, "is_below_min_token_length": u.is_below_min_token_length} for u in unit_objs]
+        units = unit_dicts(unit_objs)
         cache.put("units", units)
 
     engine = _decision_engine(scorer, cfg)
@@ -291,7 +291,7 @@ def analyze_media(
     if scores is None:
         tick("Scoring sentence pairs", 0.4)
         with events.stage("pair_scoring", "Cross-encoder + stacker") as st:
-            scores = _score_pairs(unit_objs if unit_objs is not None else _load_units(transcript), scorer or (scorer_provider() if scorer_provider else None), cfg)
+            scores = _score_pairs(unit_objs if unit_objs is not None else _load_units(transcript, silence_gap_s), scorer or (scorer_provider() if scorer_provider else None), cfg)
             cache.put(f"scores__{model_key}", scores)
             st.done_message = f"{len(scores)} pairs"
     else:
@@ -308,10 +308,17 @@ def analyze_media(
     return doc
 
 
-def _load_units(transcript: dict) -> list:
+def unit_dicts(unit_objs: list) -> list[dict]:
+    return [{"unit_id": u.unit_id, "source_segment_id": u.source_segment_id, "start": u.start, "end": u.end, "speaker": u.speaker,
+             "raw_text": u.raw_text, "confidence": u.confidence, "is_below_min_token_length": u.is_below_min_token_length} for u in unit_objs]
+
+
+def _load_units(transcript: dict, silence_gap_s: Optional[float] = None) -> list:
+    """Split the saved transcript (its word timestamps) into sentence units; `silence_gap_s` is the pause that splits them (None = the pipeline default, 0.7 s)."""
     from models.transcript import Transcript
     from pipeline.step_03_token_matching import PAUSE_SPLIT_THRESHOLD_SECONDS, load_transcript_units
-    return load_transcript_units(Transcript.model_validate(transcript), pause_threshold=PAUSE_SPLIT_THRESHOLD_SECONDS)
+    gap = PAUSE_SPLIT_THRESHOLD_SECONDS if silence_gap_s is None else silence_gap_s
+    return load_transcript_units(Transcript.model_validate(transcript), pause_threshold=gap)
 
 
 def _score_pairs(unit_objs: list, scorer: Any, cfg: ReviewConfig) -> list[dict]:

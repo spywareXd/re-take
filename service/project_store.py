@@ -210,6 +210,12 @@ class ProjectStore:
         self.put("project", proj)
         return names
 
+    def save_result(self, name: str, obj: Any) -> Optional[Path]:
+        """Store a computed result (keepers, cutlist, ...): an earlier one is kept as a numbered copy, and the stale mark is cleared."""
+        copy = self.replace_with_copy(name, obj)
+        self.clear_stale(name)
+        return copy
+
     def clear_stale(self, name: str) -> None:
         proj = dict(self.get("project", {}) or {})
         if name in proj.get("stale", []):
@@ -299,8 +305,9 @@ class ProjectStore:
 class ProjectCache:
     """The get/put interface of MediaCache (names 'transcript', 'units', 'scores__<model>') over a ProjectStore, so analyze_media writes into X/data/."""
 
-    def __init__(self, store: ProjectStore, meta: Optional[dict] = None):
+    def __init__(self, store: ProjectStore, meta: Optional[dict] = None, units_meta: Optional[dict] = None):
         self.store = store
+        self.units_meta = units_meta                                                     # recorded next to NEW units, e.g. {"silence_gap_s": 0.7}
         self.meta = meta                                                                 # recorded next to a NEW transcript, e.g. {"model": "large-v2"}
 
     @staticmethod
@@ -319,6 +326,8 @@ class ProjectCache:
         else:
             p = self.store.put(n, obj)
         self.store.clear_stale(n)
+        if name == "units" and self.units_meta:
+            self.store.put("units_meta", self.units_meta)
         if name == "transcript" and self.meta:
             self.store.put("transcript_meta", self.meta)
         if name == "transcript":                                                             # word-level timestamps, kept apart so units can be re-split without the transcript
