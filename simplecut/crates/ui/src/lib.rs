@@ -8,6 +8,7 @@ mod dialogs;
 mod format;
 mod library;
 mod preview;
+mod retake_options;
 mod retakes;
 mod status;
 mod status_text;
@@ -18,3 +19,4 @@ mod toolbar;
 
 pub use app::{Action, Banner, SimpleCutApp, Source, write_crash_log};
 pub use dialogs::{Dialogs, NoDialogs};
+pub use retake_options::OptionsAction;

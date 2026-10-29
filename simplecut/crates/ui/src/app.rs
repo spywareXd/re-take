@@ -78,6 +78,8 @@ pub enum Action {
     ZoomOut,
     ZoomFit,
     DismissBanner,
+    /// A setting or question of the Retake options window.
+    Options(crate::retake_options::OptionsAction),
     OpenExportDialog,
     StartExport {
         path: PathBuf,
@@ -203,6 +205,7 @@ pub struct SimpleCutApp {
     pub(crate) dialogs: Box<dyn Dialogs>,
     pub(crate) service: Option<Box<dyn simplecut_core::RetakeService>>,
     pub(crate) retakes: RetakeUi,
+    pub(crate) options_ui: crate::retake_options::OptionsUi,
 
     pub(crate) source: Source,
     /// Position in the previewed file (the timeline's is the editor's playhead).
@@ -240,6 +243,7 @@ impl SimpleCutApp {
             dialogs,
             service: None,
             retakes: RetakeUi::default(),
+            options_ui: Default::default(),
             source: Source::Timeline,
             media_time: Tick::ZERO,
             thumb_state: HashMap::new(),
@@ -426,6 +430,7 @@ impl SimpleCutApp {
             | Action::SaveGroups
             | Action::SetCutMode(_)
             | Action::ApplyWholeSentences => self.perform_retake(action),
+            Action::Options(a) => self.perform_options(a),
             Action::NewProject => self.guard_unsaved(Then::New),
             Action::OpenProject => {
                 if let Some(path) = self.dialogs.pick_project_to_open() {
@@ -802,6 +807,7 @@ impl SimpleCutApp {
         if self.check(r).is_some() {
             self.info("Started a new project.");
         }
+        self.sync_project_folder();
     }
 
     fn open_now(&mut self, path: PathBuf) {
@@ -810,6 +816,7 @@ impl SimpleCutApp {
             Ok(()) => {
                 let name = self.editor.project_name().to_string();
                 self.info(format!("Opened {name}."));
+                self.sync_project_folder();
             }
             Err(e) => {
                 self.fail(&e);
@@ -832,11 +839,18 @@ impl SimpleCutApp {
 
     fn save_project_as(&mut self) -> bool {
         let suggested = format!("{}.fcproj", self.editor.project_name());
-        let Some(path) = self.dialogs.pick_project_save_path(&suggested) else { return false };
+        let Some(chosen) = self.dialogs.pick_project_save_path(&suggested) else { return false };
+        // a project lives in a folder of its own: X/X.<ext> with X/data/ next to it (the folder is made here; nothing existing is touched)
+        let path = simplecut_core::project_folder::layout_for(&chosen);
+        if let Err(e) = simplecut_core::project_folder::prepare(&path) {
+            self.fail_text(&format!("Could not create the project folder: {e}"));
+            return false;
+        }
         let r = self.editor.save_as(&path);
         let ok = self.check(r).is_some();
         if ok {
             self.info(format!("Saved {}.", path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()));
+            self.sync_project_folder();
         }
         ok
     }
@@ -864,6 +878,7 @@ impl SimpleCutApp {
 
         let state = self.player.tick(&mut self.editor);
         self.pump_retakes();
+        self.pump_options();
         if matches!(self.player.target(), Some(Target::Media(_))) && matches!(self.source, Source::Media(_)) {
             self.media_time = self.player.position();
         }
@@ -1229,6 +1244,7 @@ impl SimpleCutApp {
         });
 
         self.modal_ui(&ctx);
+        crate::retake_options::window(self, &ctx);
 
         if let Some(job) = &self.active_export {
             let t = theme::tokens();

@@ -84,6 +84,7 @@ fn serve(mut stream: TcpStream, handler: &Handler, seen: &Seen) {
 
 fn request() -> AnalysisRequest {
     AnalysisRequest {
+        settings: Default::default(),
         item: ItemId(7),
         name: "take.mp4".into(),
         path: "C:/clips/take.mp4".into(),
@@ -593,4 +594,87 @@ fn hostile_events_are_dropped_and_values_are_clamped() {
     let (_, events) = drain(&mut *s.analyze(request()));
     assert_eq!(events.len(), 1, "only the one valid event survives (a repeated seq is not a new event)");
     assert_eq!(events[0].pct, Some(100.0));
+}
+
+// ── options, project folder and project calls ──────────────────────────────
+
+const CAPS_WITH_OPTIONS: &str = r#"{"adjudicate":false,"refine":false,
+    "transcription":{"default":"large-v2","gpu":{"name":"RTX","total_gb":8.0,"free_gb":5.0},"compute_type":"auto: tries int8_float16",
+      "models":[{"name":"base","downloaded":true,"download_gb":0.15,"vram_gb":1.2,"relative_speed":8.0},
+                {"name":"large-v2","default":true,"downloaded":true,"vram_gb":5.5,"relative_speed":1.0,"warning":"Needs about 5.5 GB"}]},
+    "silence_gap":{"default":0.7,"min":0.1,"max":3.0,"step":0.05,"unit":"seconds"}}"#;
+
+#[test]
+fn the_advertised_options_are_read_with_the_capabilities() {
+    let m = mock(|method, path, _| match (method, path) {
+        ("GET", "/v1/capabilities") => (200, CAPS_WITH_OPTIONS.into()),
+        _ => (404, "{}".into()),
+    });
+    let s = HttpService::connect(&m.url);
+    let o = s.options();
+    let t = o.transcription.expect("models are offered");
+    assert_eq!(t.models.iter().map(|m| m.name.as_str()).collect::<Vec<_>>(), vec!["base", "large-v2"]);
+    assert_eq!(t.default, "large-v2");
+    assert_eq!(t.model("large-v2").and_then(|m| m.warning.clone()).as_deref(), Some("Needs about 5.5 GB"));
+    assert_eq!(o.silence_gap.map(|g| (g.default, g.min, g.max)), Some((0.7, 0.1, 3.0)));
+    let plain = mock(happy);
+    assert_eq!(HttpService::connect(&plain.url).options(), simplecut_core::ServiceOptions::default(), "an older service offers no settings");
+}
+
+#[test]
+fn the_project_folder_and_the_chosen_settings_ride_along_with_requests() {
+    let m = mock(happy);
+    let s = HttpService::connect(&m.url);
+    let mut req = request();
+    req.settings = simplecut_core::AnalysisSettings { model: Some("small".into()), silence_gap_s: Some(0.4), replace_existing: true };
+    let _ = wait(&mut *s.analyze(req.clone()));
+    let first: Value = serde_json::from_str(&m.seen.lock().unwrap().iter().find(|(me, p, _)| me == "POST" && p == "/v1/analyze").unwrap().2).unwrap();
+    assert!(first.get("project").is_none(), "no folder yet: no project field");
+    assert_eq!((first["model"].as_str(), first["silence_gap_s"].as_f64(), first["replace_existing"].as_bool()), (Some("small"), Some(0.4), Some(true)));
+    s.set_project(Some(std::path::PathBuf::from("C:/work/My Film")));
+    req.settings = simplecut_core::AnalysisSettings::default();
+    let _ = wait(&mut *s.analyze(req));
+    let seen = m.seen.lock().unwrap();
+    let bodies: Vec<Value> = seen.iter().filter(|(me, p, _)| me == "POST" && p == "/v1/analyze").map(|(_, _, b)| serde_json::from_str(b).unwrap()).collect();
+    assert_eq!(bodies[1]["project"], "C:/work/My Film");
+    assert!(bodies[1].get("model").is_none() && bodies[1].get("replace_existing").is_none(), "unset settings are not sent");
+}
+
+fn call_result(job: &mut dyn AnalysisJob) -> Value {
+    let JobState::Done(text) = wait(job) else { panic!("a project call finishes with a reply, whatever the status") };
+    serde_json::from_str(&text).unwrap()
+}
+
+#[test]
+fn project_calls_return_the_status_and_the_body_even_for_a_409() {
+    let m = mock(|method, path, body| match (method, path.split('?').next().unwrap_or("")) {
+        ("GET", "/v1/capabilities") => (200, r#"{"adjudicate":false,"refine":false}"#.into()),
+        ("GET", "/v1/project/status") => {
+            (200, r#"{"settings":{"transcription_model":"base"},"stale":[],"source":{"status":"changed","message":"The source video has changed"}}"#.into())
+        }
+        ("PUT", "/v1/project/settings") => (200, format!(r#"{{"echo":{body},"ask":"Re-transcribe?"}}"#)),
+        ("GET", "/v1/project/units-preview") => (200, r#"{"units":12,"current_units":8}"#.into()),
+        ("POST", "/v1/project/resplit") => {
+            (409, r#"{"error":"Re-splitting replaces ...","code":"resplit_needs_confirmation","will_replace":["units","keepers"]}"#.into())
+        }
+        _ => (404, "{}".into()),
+    });
+    let s = HttpService::connect(&m.url);
+    let Some(mut no_folder) = s.project_call(simplecut_core::ProjectCall::Status) else { panic!("a job is returned") };
+    assert!(matches!(wait(&mut *no_folder), JobState::Failed(e) if e.contains("Save the project first")), "no folder: a plain sentence, no request made");
+    assert!(!m.seen.lock().unwrap().iter().any(|(_, p, _)| p.starts_with("/v1/project")));
+    s.set_project(Some(std::path::PathBuf::from("C:/work/My Film & Co")));
+    let st = call_result(&mut *s.project_call(simplecut_core::ProjectCall::Status).unwrap());
+    assert_eq!((st["status"].as_u64(), st["body"]["source"]["status"].as_str()), (Some(200), Some("changed")));
+    let put = call_result(&mut *s.project_call(simplecut_core::ProjectCall::SetSettings { model: Some("medium".into()), silence_gap_s: Some(0.3) }).unwrap());
+    assert_eq!(put["body"]["echo"]["transcription_model"], "medium");
+    assert_eq!((put["body"]["echo"]["silence_gap_s"].as_f64(), put["body"]["echo"]["project"].as_str()), (Some(0.3), Some("C:/work/My Film & Co")));
+    let prev = call_result(&mut *s.project_call(simplecut_core::ProjectCall::UnitsPreview { silence_gap_s: 0.25 }).unwrap());
+    assert_eq!(prev["body"]["units"], 12);
+    let r = call_result(&mut *s.project_call(simplecut_core::ProjectCall::Resplit { silence_gap_s: 0.25, confirm: false }).unwrap());
+    assert_eq!((r["status"].as_u64(), r["body"]["code"].as_str()), (Some(409), Some("resplit_needs_confirmation")));
+    let seen = m.seen.lock().unwrap();
+    let q = seen.iter().find(|(_, p, _)| p.starts_with("/v1/project/status")).unwrap().1.clone();
+    assert!(q.contains("project=C%3A%2Fwork%2FMy%20Film%20%26%20Co"), "the folder is URL-encoded: {q}");
+    assert!(seen.iter().any(|(_, p, _)| p.contains("silence_gap_s=0.25")));
 }

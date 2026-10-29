@@ -12,6 +12,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 import asyncio
 import json
+import re
 
 from starlette.concurrency import run_in_threadpool
 from starlette.exceptions import HTTPException as StarletteHTTPException
@@ -295,7 +296,36 @@ def create_app(config: Optional[ServiceConfig] = None, deps: Optional[Deps] = No
     def project_status(project: str):
         store = ProjectStore(project)
         return {"settings": store.settings(), "stale": store.stale(), "source": store.check_source(), "transcript_model": (store.get("transcript_meta") or {}).get("model"),
-                "has": {n: store.has(n) for n in ("transcript", "words", "units", "keepers", "cutlist")}}
+                "has": {n: store.has(n) for n in ("transcript", "words", "units", "keepers", "cutlist")}, "legacy": legacy_names(store)}
+
+    def legacy_names(store: ProjectStore) -> list[str]:
+        """What the old per-machine cache (service/data/cache/<fingerprint>) holds for this project's source video and the project does not have yet."""
+        ref = (store.get("project", {}) or {}).get("source") or {}
+        fp = (ref.get("fingerprint") or {}).get("sha256")
+        if not fp or not re.fullmatch(r"[0-9a-f]{64}", fp):
+            return []
+        have = {"transcript": store.has("transcript"), "units": store.has("units")}
+        found = []
+        for stem in store.legacy_available(cfg.cache_dir, fp):
+            name = stem if stem in ("transcript", "units") else (f"pairs__{stem[len('scores__'):]}" if stem.startswith("scores__") else None)
+            if name and not have.get(name) and not store.has(re.sub(r"[^A-Za-z0-9._-]", "_", name)):
+                found.append(stem)
+        return sorted(found)
+
+    @app.post("/v1/project/import-legacy")
+    async def project_import_legacy(request: Request):
+        """COPY the old per-machine cache files of this project's source video into the project. The originals are not touched, and nothing the project
+        already has is replaced."""
+        body = await body_of(request)
+        store = project_of(body)
+        if store is None:
+            raise BadRequest("'project' is required.")
+        ref = (store.get("project", {}) or {}).get("source") or {}
+        fp = (ref.get("fingerprint") or {}).get("sha256")
+        if not fp or not re.fullmatch(r"[0-9a-f]{64}", fp):
+            raise BadRequest("This project has no source video recorded, so there is nothing to match old data to.")
+        done = store.import_legacy(cfg.cache_dir, fp)
+        return {"imported": done, "originals_untouched": True}
 
     # ---- export (item 4): options, saved presets, and the export job ----
     @app.get("/v1/export/options")

@@ -128,3 +128,35 @@ def test_analyze_with_project_writes_only_inside_the_project(api):
     assert {"transcript.json", "words.json", "units.json", "project.json"} <= names and any(n.startswith("pairs__") for n in names)
     assert not (tmp / "service_data").exists()                                           # the legacy location stayed untouched (not even created)
     assert ProjectStore(proj).check_source()["status"] == "ok"
+
+
+def test_status_lists_legacy_data_and_import_copies_it_without_touching_originals(tmp_path):
+    from service.project_store import fingerprint
+
+    def transcribe(path):
+        return Transcript.model_validate(json.loads(FIXTURE.read_text(encoding="utf-8")))
+
+    cfg = ServiceConfig(data_dir=str(tmp_path / "service_data"), llm_mock=True, keeper_provider="gpt-oss")
+    client = TestClient(create_app(cfg, Deps(transcribe_fn=transcribe, scorer=FinalScorer(mock=True), llm_client=MockLLMClient())))
+    media = tmp_path / "take.mp4"
+    media.write_bytes(b"stand-in media bytes")
+    fp = fingerprint(media)["sha256"]
+    legacy = Path(cfg.cache_dir) / fp                                             # what an old (pre-folder) run left behind
+    legacy.mkdir(parents=True)
+    (legacy / "transcript.json").write_text('{"segments": []}', encoding="utf-8")
+    (legacy / "scores__final-ce+stacker-v1.json").write_text("[1]", encoding="utf-8")
+    before = {p.name: (p.stat().st_size, p.stat().st_mtime_ns) for p in legacy.iterdir()}
+    proj = tmp_path / "Proj"
+    store = ProjectStore.create(proj)
+    store.set_source(media)
+    st = client.get("/v1/project/status", params={"project": str(proj)}).json()
+    assert st["legacy"] == ["scores__final-ce+stacker-v1", "transcript"]
+    r = client.post("/v1/project/import-legacy", json={"project": str(proj)}).json()
+    assert sorted(r["imported"]) == ["pairs__final-ce_stacker-v1", "transcript"] and r["originals_untouched"] is True
+    assert store.get("transcript") == {"segments": []}
+    assert {p.name: (p.stat().st_size, p.stat().st_mtime_ns) for p in legacy.iterdir()} == before, "the old files are exactly as they were"
+    assert client.get("/v1/project/status", params={"project": str(proj)}).json()["legacy"] == [], "nothing left to offer"
+    assert client.post("/v1/project/import-legacy", json={"project": str(proj)}).json()["imported"] == []        # a second import replaces nothing
+    bare = tmp_path / "Bare"
+    ProjectStore.create(bare)
+    assert client.post("/v1/project/import-legacy", json={"project": str(bare)}).status_code == 400            # no source recorded

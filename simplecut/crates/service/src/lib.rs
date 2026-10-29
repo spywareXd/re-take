@@ -12,7 +12,8 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 use simplecut_core::{
-    AdjudicateRequest, AnalysisJob, AnalysisRequest, Capabilities, ItemId, JobState, KeeperInfo, RefineRequest, ResolveRequest, RetakeService, StageEvent, Tick,
+    AdjudicateRequest, AnalysisJob, AnalysisRequest, Capabilities, ItemId, JobState, KeeperInfo, ProjectCall, RefineRequest, ResolveRequest, RetakeService,
+    ServiceOptions, StageEvent, Tick,
 };
 
 /// The address the service listens on unless told otherwise.
@@ -33,6 +34,10 @@ pub struct HttpService {
     capabilities: Arc<Mutex<Capabilities>>,
     /// The keepers the service offers, as last reported (None: not reported, e.g. an older service).
     keeper: Arc<Mutex<Option<KeeperInfo>>>,
+    /// The settings the service offers (models, silence-gap range), as last reported.
+    options: Arc<Mutex<ServiceOptions>>,
+    /// The project folder the editor has open; sent with every request so the service keeps its data in it.
+    project: Arc<Mutex<Option<String>>>,
     reachable: Arc<AtomicBool>,
     /// Where each analysed file is: `resolve` does not carry the path, the service needs it.
     paths: Arc<Mutex<Vec<(ItemId, String)>>>,
@@ -48,6 +53,8 @@ impl HttpService {
             agent: agent(),
             capabilities: Arc::new(Mutex::new(Capabilities::default())),
             keeper: Arc::new(Mutex::new(None)),
+            options: Arc::new(Mutex::new(ServiceOptions::default())),
+            project: Arc::new(Mutex::new(None)),
             reachable: Arc::new(AtomicBool::new(false)),
             paths: Arc::new(Mutex::new(Vec::new())),
         };
@@ -58,7 +65,7 @@ impl HttpService {
     /// Ask the service again what it can do (after it was started late, for instance). Every
     /// request also does this first, in its own thread.
     pub fn refresh(&self) {
-        refresh_capabilities(&self.agent, &self.base, &self.capabilities, &self.keeper, &self.reachable);
+        refresh_capabilities(&self.agent, &self.base, &self.capabilities, &self.keeper, &self.options, &self.reachable);
     }
 
     /// Whether the last attempt to reach the service worked.
@@ -69,6 +76,39 @@ impl HttpService {
     /// The address this client talks to.
     pub fn base_url(&self) -> &str {
         &self.base
+    }
+
+    fn project(&self) -> Option<String> {
+        self.project.lock().unwrap_or_else(PoisonError::into_inner).clone()
+    }
+
+    /// The request body with the open project folder added (when there is one).
+    fn tagged(&self, mut body: Value) -> String {
+        if let (Some(p), Some(map)) = (self.project(), body.as_object_mut()) {
+            map.insert("project".into(), json!(p));
+        }
+        body.to_string()
+    }
+
+    /// One request, one reply, for the project calls: the result is `{"status": <HTTP status>, "body": <reply>}` whatever the status, so a "please confirm" (409) or a
+    /// refusal (400) reaches the editor with its details. Only a failure to reach the service is a failed job.
+    fn start_call(&self, method: Method, path: String, body: String) -> Box<dyn AnalysisJob> {
+        let state = Arc::new(Mutex::new(JobState::Running { fraction: 0.5, status: "Asking the retake service".into() }));
+        let (agent, url, thread_state) = (self.agent.clone(), format!("{}{path}", self.base), Arc::clone(&state));
+        let spawned = std::thread::Builder::new().name("retake-call".into()).spawn(move || {
+            let end = match send(&agent, method, &url, Some(&body)) {
+                Ok(r) => {
+                    let parsed = serde_json::from_str::<Value>(&r.body).unwrap_or(Value::Null);
+                    JobState::Done(json!({ "status": r.status, "body": parsed }).to_string())
+                }
+                Err(e) => JobState::Failed(e),
+            };
+            set(&thread_state, end);
+        });
+        if spawned.is_err() {
+            return failed("Could not start the request.");
+        }
+        Box::new(HttpJob { state, cancel: Arc::new(AtomicBool::new(false)), immediate: true, events: Arc::new(Mutex::new(Vec::new())), taken: 0 })
     }
 
     fn start(&self, endpoint: &str, body: String) -> Box<dyn AnalysisJob> {
@@ -84,9 +124,10 @@ impl HttpService {
         let cancel = Arc::new(AtomicBool::new(false));
         let (agent, base, endpoint) = (self.agent.clone(), self.base.clone(), endpoint.to_string());
         let (thread_state, thread_cancel) = (Arc::clone(&state), Arc::clone(&cancel));
-        let (caps, keeper, reachable) = (Arc::clone(&self.capabilities), Arc::clone(&self.keeper), Arc::clone(&self.reachable));
+        let (caps, keeper, reachable, options) =
+            (Arc::clone(&self.capabilities), Arc::clone(&self.keeper), Arc::clone(&self.reachable), Arc::clone(&self.options));
         let spawned = std::thread::Builder::new().name("retake-http".into()).spawn(move || {
-            refresh_capabilities(&agent, &base, &caps, &keeper, &reachable);
+            refresh_capabilities(&agent, &base, &caps, &keeper, &options, &reachable);
             let end = if immediate {
                 run_once(&agent, method, &base, &endpoint, &body, &thread_state)
             } else {
@@ -97,7 +138,7 @@ impl HttpService {
                 && let Some(info) = serde_json::from_str::<Value>(reply).ok().as_ref().and_then(KeeperInfo::from_json)
             {
                 *keeper.lock().unwrap_or_else(PoisonError::into_inner) = Some(info);
-                refresh_capabilities(&agent, &base, &caps, &keeper, &reachable);
+                refresh_capabilities(&agent, &base, &caps, &keeper, &options, &reachable);
             }
             if !(immediate && thread_cancel.load(Ordering::SeqCst)) {
                 set(&thread_state, end);
@@ -127,6 +168,42 @@ impl RetakeService for HttpService {
         self.keeper.lock().unwrap_or_else(PoisonError::into_inner).clone()
     }
 
+    fn options(&self) -> ServiceOptions {
+        self.options.lock().unwrap_or_else(PoisonError::into_inner).clone()
+    }
+
+    fn set_project(&self, folder: Option<std::path::PathBuf>) {
+        *self.project.lock().unwrap_or_else(PoisonError::into_inner) = folder.map(|f| f.to_string_lossy().into_owned());
+    }
+
+    fn project_call(&self, call: ProjectCall) -> Option<Box<dyn AnalysisJob>> {
+        let Some(project) = self.project() else { return Some(failed("Save the project first: its settings are kept in the project folder.")) };
+        let q = urlencode(&project);
+        let (method, path, body) = match call {
+            ProjectCall::Status => (Method::Get, format!("/v1/project/status?project={q}"), String::new()),
+            ProjectCall::SetSettings { model, silence_gap_s } => {
+                let mut b = json!({ "project": project });
+                if let Some(map) = b.as_object_mut() {
+                    if let Some(m) = model {
+                        map.insert("transcription_model".into(), json!(m));
+                    }
+                    if let Some(g) = silence_gap_s {
+                        map.insert("silence_gap_s".into(), json!(g));
+                    }
+                }
+                (Method::Put, "/v1/project/settings".to_string(), b.to_string())
+            }
+            ProjectCall::UnitsPreview { silence_gap_s } => {
+                (Method::Get, format!("/v1/project/units-preview?project={q}&silence_gap_s={silence_gap_s}"), String::new())
+            }
+            ProjectCall::ImportLegacy => (Method::Post, "/v1/project/import-legacy".to_string(), json!({ "project": project }).to_string()),
+            ProjectCall::Resplit { silence_gap_s, confirm } => {
+                (Method::Post, "/v1/project/resplit".to_string(), json!({ "project": project, "silence_gap_s": silence_gap_s, "confirm": confirm }).to_string())
+            }
+        };
+        Some(self.start_call(method, path, body))
+    }
+
     fn set_keeper(&self, id: &str) -> Option<Box<dyn AnalysisJob>> {
         // an older service has no /v1/keeper: do not offer a switch it cannot make
         self.keeper()?;
@@ -149,7 +226,18 @@ impl RetakeService for HttpService {
         if let (Some(fp), Some(map)) = (&request.fingerprint, body.as_object_mut()) {
             map.insert("fingerprint".into(), json!(fp));
         }
-        self.start("/v1/analyze", body.to_string())
+        if let Some(map) = body.as_object_mut() {
+            if let Some(m) = &request.settings.model {
+                map.insert("model".into(), json!(m));
+            }
+            if let Some(g) = request.settings.silence_gap_s {
+                map.insert("silence_gap_s".into(), json!(g));
+            }
+            if request.settings.replace_existing {
+                map.insert("replace_existing".into(), json!(true));
+            }
+        }
+        self.start("/v1/analyze", self.tagged(body))
     }
 
     fn resolve(&self, request: ResolveRequest) -> Box<dyn AnalysisJob> {
@@ -163,7 +251,7 @@ impl RetakeService for HttpService {
         let Ok(labels) = serde_json::to_value(&request.labels) else {
             return failed("Could not read the answers.");
         };
-        self.start("/v1/resolve", json!({ "path": path, "labels": labels, "candidates": candidates }).to_string())
+        self.start("/v1/resolve", self.tagged(json!({ "path": path, "labels": labels, "candidates": candidates })))
     }
 
     fn adjudicate(&self, request: AdjudicateRequest) -> Option<Box<dyn AnalysisJob>> {
@@ -189,7 +277,7 @@ impl RetakeService for HttpService {
                 })
             })
             .collect();
-        Some(self.start("/v1/adjudicate", json!({ "path": path, "job": request.job, "groups": groups }).to_string()))
+        Some(self.start("/v1/adjudicate", self.tagged(json!({ "path": path, "job": request.job, "groups": groups }))))
     }
 
     fn refine(&self, request: RefineRequest) -> Option<Box<dyn AnalysisJob>> {
@@ -200,7 +288,7 @@ impl RetakeService for HttpService {
             return Some(failed("The retake service does not know this file yet. Run Remove Retakes again."));
         };
         let body = json!({ "path": path, "job": request.job, "remove": request.remove, "mode": request.mode.as_str() });
-        Some(self.start_as(Method::Post, "/v1/refine", body.to_string(), true))
+        Some(self.start_as(Method::Post, "/v1/refine", self.tagged(body), true))
     }
 }
 
@@ -241,11 +329,20 @@ impl AnalysisJob for HttpJob {
     }
 }
 
-fn refresh_capabilities(agent: &ureq::Agent, base: &str, into: &Mutex<Capabilities>, keeper: &Mutex<Option<KeeperInfo>>, reachable: &AtomicBool) {
+fn refresh_capabilities(
+    agent: &ureq::Agent,
+    base: &str,
+    into: &Mutex<Capabilities>,
+    keeper: &Mutex<Option<KeeperInfo>>,
+    options: &Mutex<ServiceOptions>,
+    reachable: &AtomicBool,
+) {
     let mut info = None;
+    let mut offered = ServiceOptions::default();
     let caps = match send(agent, Method::Get, &format!("{base}/v1/capabilities"), None) {
         Ok(r) if r.status == 200 => serde_json::from_str::<Value>(&r.body).ok().map(|v| {
             info = v.get("keeper").and_then(KeeperInfo::from_json);
+            offered = ServiceOptions::from_capabilities(&v);
             Capabilities { adjudicate: v["adjudicate"].as_bool().unwrap_or(false), refine: v["refine"].as_bool().unwrap_or(false) }
         }),
         Ok(r) => {
@@ -260,6 +357,7 @@ fn refresh_capabilities(agent: &ureq::Agent, base: &str, into: &Mutex<Capabiliti
     reachable.store(caps.is_some(), Ordering::SeqCst);
     *into.lock().unwrap_or_else(PoisonError::into_inner) = caps.unwrap_or_default();
     *keeper.lock().unwrap_or_else(PoisonError::into_inner) = info;
+    *options.lock().unwrap_or_else(PoisonError::into_inner) = offered;
 }
 
 fn failed(why: &str) -> Box<dyn AnalysisJob> {
@@ -418,6 +516,19 @@ fn error_of(reply: &Reply) -> String {
         .and_then(|v| v["error"].as_str().map(|e| e.chars().take(500).collect::<String>()))
         .filter(|e| !e.trim().is_empty())
         .unwrap_or_else(|| format!("The retake service answered with an error (HTTP {}).", reply.status))
+}
+
+/// Percent-encode a value for a URL query.
+fn urlencode(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for b in s.bytes() {
+        if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'~') {
+            out.push(b as char);
+        } else {
+            out.push_str(&format!("%{b:02X}"));
+        }
+    }
+    out
 }
 
 fn seconds(t: Tick) -> f64 {

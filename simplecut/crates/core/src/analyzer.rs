@@ -39,6 +39,8 @@ pub struct AnalysisRequest {
     /// The parts of the file that are on the timeline, in file time (merged, sorted). A service may
     /// skip the rest.
     pub used: Vec<(Tick, Tick)>,
+    /// The transcription model and silence gap chosen for this analysis (None = the project's / the service's default).
+    pub settings: crate::options::AnalysisSettings,
 }
 
 /// The user's answers, to be turned into groups.
@@ -106,6 +108,19 @@ pub trait RetakeService: Send + Sync {
         Capabilities::default()
     }
 
+    /// The settings the service offers (transcription models, silence-gap range). Empty for a service that offers none.
+    fn options(&self) -> crate::options::ServiceOptions {
+        crate::options::ServiceOptions::default()
+    }
+
+    /// The project folder the editor has open (None: no folder yet, or an old project). The service keeps what it computes for the project in it.
+    fn set_project(&self, _folder: Option<std::path::PathBuf>) {}
+
+    /// A request about the project's stored settings and results (see [`crate::ProjectCall`]). None when the service cannot.
+    fn project_call(&self, _call: crate::options::ProjectCall) -> Option<Box<dyn AnalysisJob>> {
+        None
+    }
+
     /// Look at a file. Returns at once; the work happens in the background. The result is a
     /// candidates document (or, when there is nothing to ask, a groups document).
     fn analyze(&self, request: AnalysisRequest) -> Box<dyn AnalysisJob>;
@@ -158,7 +173,15 @@ impl Editor {
                     }
                     let Some(path) = m.path else { continue };
                     let fingerprint = crate::review::fingerprint_file(std::path::Path::new(&path)).ok();
-                    requests.push(AnalysisRequest { item: clip.item, name: m.name, path, duration: m.duration, fingerprint, used: vec![used] });
+                    requests.push(AnalysisRequest {
+                        item: clip.item,
+                        name: m.name,
+                        path,
+                        duration: m.duration,
+                        fingerprint,
+                        used: vec![used],
+                        settings: crate::options::AnalysisSettings::default(),
+                    });
                 }
             }
         }

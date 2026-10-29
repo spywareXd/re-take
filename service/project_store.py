@@ -277,7 +277,10 @@ class ProjectStore:
         done = []
         for stem, src in self.legacy_available(legacy_root, media_fingerprint).items():
             name = stem if stem in ("transcript", "units") else f"pairs__{stem[len('scores__'):]}" if stem.startswith("scores__") else None
-            if name is None or self.has(name):
+            if name is None:
+                continue
+            name = re.sub(r"[^A-Za-z0-9._-]", "_", name)                                  # model keys contain '+'
+            if self.has(name):
                 continue
             try:
                 self.put(name, json.loads(src.read_text(encoding="utf-8")))

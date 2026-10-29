@@ -8,8 +8,10 @@ mod analyzer;
 mod editor;
 mod error;
 mod export;
+pub mod options;
 mod player;
 pub mod progress;
+pub mod project_folder;
 mod refine;
 mod renderer;
 pub mod retake;
@@ -22,6 +24,7 @@ pub use analyzer::{AdjudicateRequest, AnalysisJob, AnalysisRequest, FakeService,
 pub use editor::{Edge, Editor, ItemId, Lane, PlaceAt, TrimMode};
 pub use error::{EditorError, Result};
 pub use export::{ExportJob, ExportOptions, ExportState, verify_export};
+pub use options::{AnalysisSettings, AsrModel, GpuInfo, ProjectCall, ServiceOptions, SilenceInfo, TranscriptionInfo};
 pub use player::{AudioOutput, FillFn, PlayState, Player};
 pub use progress::{STAGES, StageEvent, StageLog, StageState, StageStatus};
 pub use refine::{CutMode, RefinedCuts, WIDEN_SECS, ids_to_refine, plan_cuts};

@@ -169,6 +169,9 @@ pub(crate) struct RetakeUi {
     pub label_log: Option<PathBuf>,
     /// Where sentence span edits are logged before they are applied.
     pub span_log: Option<PathBuf>,
+    /// The logs used when the open project has no folder (the per-user ones the app shell set).
+    pub default_label_log: Option<PathBuf>,
+    pub default_span_log: Option<PathBuf>,
     /// Highlight strength of cut sentences on the timeline (0.1..=0.8).
     pub highlight_strength: f32,
     /// The log of the last finished request: kept after it ends, so the stage that failed (and every message) can still be read.
@@ -179,7 +182,17 @@ pub(crate) struct RetakeUi {
 
 impl Default for RetakeUi {
     fn default() -> Self {
-        Self { stage: None, ai_consented: false, label_log: None, span_log: None, highlight_strength: 0.45, last_log: None, show_last_log: false }
+        Self {
+            stage: None,
+            ai_consented: false,
+            label_log: None,
+            span_log: None,
+            highlight_strength: 0.45,
+            last_log: None,
+            show_last_log: false,
+            default_label_log: None,
+            default_span_log: None,
+        }
     }
 }
 
@@ -305,11 +318,13 @@ impl SimpleCutApp {
 
     /// Where the user's answers are logged before they are sent.
     pub fn set_label_log(&mut self, path: Option<PathBuf>) {
+        self.retakes.default_label_log = path.clone();
         self.retakes.label_log = path;
     }
 
     /// Where sentence span adjustments are logged before they are applied.
     pub fn set_span_log(&mut self, path: Option<PathBuf>) {
+        self.retakes.default_span_log = path.clone();
         self.retakes.span_log = path;
     }
 
@@ -675,8 +690,10 @@ impl SimpleCutApp {
                 return;
             }
         };
-        let Some(first) = requests.first().cloned() else { return };
+        let Some(mut first) = requests.first().cloned() else { return };
+        first.settings = self.options_settings();
         let job = service.analyze(first.clone());
+        self.options_ui.replace_next = false; // a confirmed replacement applies to this one analysis only
         self.retakes.last_log = None;
         self.retakes.show_last_log = false;
         self.player.pause();

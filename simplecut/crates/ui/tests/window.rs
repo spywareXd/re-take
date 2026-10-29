@@ -142,12 +142,18 @@ fn saving_new_and_opening_ask_before_throwing_work_away() {
     }
     let (mut h, script, dir) = with_media();
     click(&mut h, "Add to timeline");
-    let file = dir.join("talk.fcproj");
+    let picked = dir.join("talk.fcproj");
+    // a project lives in a folder of its own: the dialog's choice becomes talk/talk.fcproj with talk/data/ next to it
+    let file = dir.join("talk").join("talk.fcproj");
 
     // Save on a project with no file asks where
-    script.save.lock().unwrap().push_back(file.clone());
+    script.save.lock().unwrap().push_back(picked);
     click(&mut h, "Save");
     assert!(file.exists());
+    assert!(!picked_still_alone(&dir), "nothing was written at the picked path itself");
+    for sub in ["audio", "cache", "stale", "exports"] {
+        assert!(dir.join("talk").join("data").join(sub).is_dir(), "data/{sub} was made");
+    }
     assert!(!h.state().editor().is_dirty());
     assert_eq!(h.state().banner().map(|b| b.text.as_str()), Some("Saved talk.fcproj."));
 
@@ -184,8 +190,8 @@ fn saving_from_the_unsaved_question_saves_then_continues() {
     }
     let (mut h, script, dir) = with_media();
     click(&mut h, "Add to timeline");
-    let file = dir.join("keep.fcproj");
-    script.save.lock().unwrap().push_back(file.clone());
+    let file = dir.join("keep").join("keep.fcproj");
+    script.save.lock().unwrap().push_back(dir.join("keep.fcproj"));
 
     click(&mut h, "New");
     assert!(h.state().asking_about_unsaved());
@@ -263,4 +269,9 @@ fn playing_a_previewed_file_leaves_the_timeline_alone() {
     click(&mut h, "Back to timeline");
     assert!(!h.state().player().is_playing(), "leaving the file stops it");
     assert_eq!(h.state().source(), Source::Timeline);
+}
+
+/// True when a file named talk.fcproj sits directly in `dir` (the project must not be written there any more).
+fn picked_still_alone(dir: &std::path::Path) -> bool {
+    dir.join("talk.fcproj").exists()
 }

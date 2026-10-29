@@ -51,6 +51,14 @@ pub(crate) fn show(app: &mut SimpleCutApp, ui: &mut egui::Ui) {
                     "Find failed takes in the video and review them before cutting."
                 };
                 primary_button(app, ui, "Remove Retakes", tip, Action::StartRetakeAnalysis, has_timeline && !busy && !is_exporting);
+                button(
+                    app,
+                    ui,
+                    "Options",
+                    "Transcription model and sentence splitting for Remove Retakes",
+                    Action::Options(crate::retake_options::OptionsAction::Open),
+                    !is_exporting,
+                );
             }
             ui.add_space(8.0);
             let dirty = app.editor.is_dirty();
