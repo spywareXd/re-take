@@ -32,6 +32,11 @@ def media_fingerprint(path: Union[str, Path]) -> str:
     return h.hexdigest()
 
 
+def open_cache(where: Any, fingerprint: str) -> Any:
+    """`where` is a cache folder (-> MediaCache) or an object with get/put (a project's cache), returned as it is."""
+    return where if hasattr(where, "get") and hasattr(where, "put") else MediaCache(where, fingerprint)
+
+
 class MediaCache:
     """<cache_dir>/<fingerprint>/<name>.json. Writes are atomic (temp file + rename)."""
 

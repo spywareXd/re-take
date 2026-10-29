@@ -96,16 +96,16 @@ def _context_units(path: str, cache_dir: str) -> Optional[list[dict]]:
     """The analysed file's units (from the service cache), for the before/after context the decision model was trained with."""
     from pathlib import Path
 
-    from pipeline.step_07_review.cache import MediaCache, media_fingerprint
+    from pipeline.step_07_review.cache import media_fingerprint, open_cache
 
     try:
         p = Path(path)
-        return MediaCache(cache_dir, media_fingerprint(p)).get("units") if p.is_file() else None
+        return open_cache(cache_dir, media_fingerprint(p)).get("units") if p.is_file() else None
     except Exception:
         return None
 
 
-def keeper_advice(groups: list[dict], provider: Any, ctx: JobContext, path: str, cache_dir: str, decisions_path: str, job: Optional[str]) -> list[dict]:
+def keeper_advice(groups: list[dict], provider: Any, ctx: JobContext, path: str, cache_dir: Any, decisions_path: str, job: Optional[str]) -> list[dict]:
     """/v1/adjudicate with the finetuned provider: [{group, keep, reason} + optional provider / decided_by / model / unclear / probs].
     Same contract as adjudicate_groups: keep is never empty, so a keep-none decision (cue rule) is left out of the array (and recorded)."""
     from pipeline.step_06_llm_adjudication.keeper_providers import _neighbours

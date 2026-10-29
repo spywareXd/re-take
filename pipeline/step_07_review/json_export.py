@@ -240,6 +240,7 @@ def analyze_media(
     job: Optional[str] = None,
     progress: Optional[Callable[[str, float], None]] = None,
     scorer_provider: Optional[Callable[[], Any]] = None,
+    cache: Any = None,
 ) -> dict:
     """The whole file is transcribed once (never a trimmed part), so sentence ids are file-global and independent of `used`. Transcript, units and
     pair scores are cached under cfg.cache_dir/<media fingerprint>; a second run on the same file reuses them and gives identical ids."""
@@ -250,7 +251,7 @@ def analyze_media(
         raise FileNotFoundError("Could not read the file")
     tick("Reading the file", 0.02)
     fp = media_fingerprint(p)
-    cache = MediaCache(cfg.cache_dir, fp)
+    cache = cache if cache is not None else MediaCache(cfg.cache_dir, fp)                       # `cache`: a project's cache (service.project_store.ProjectCache)
 
     transcript = cache.get("transcript")
     if transcript is None:

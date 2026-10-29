@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from pipeline.step_07_review.cache import MediaCache, media_fingerprint
+from pipeline.step_07_review.cache import media_fingerprint, open_cache
 
 from .jobs import UserError
 
@@ -24,7 +24,7 @@ def refine_ranges(path: str, remove: list[str], mode: str, cache_dir: str) -> di
     p = Path(path)
     if not p.is_file():
         raise FileNotFoundError("Could not read the file")
-    cache = MediaCache(cache_dir, media_fingerprint(p))
+    cache = open_cache(cache_dir, media_fingerprint(p))
     transcript, units = cache.get("transcript"), cache.get("units")
     if transcript is None or units is None:
         raise UserError("This file has not been analysed yet. Run Remove Retakes first.")

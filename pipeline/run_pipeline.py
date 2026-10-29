@@ -363,6 +363,7 @@ def run_full_pipeline(
     keeper_provider: str | None = None,
     keeper_config: Any = None,
     keeper_backend: Any = None,
+    write_raw_transcript: bool = True,
 ) -> PipelineResult:
     """
     Run the complete retake detection and video editing pipeline.
@@ -472,7 +473,7 @@ def run_full_pipeline(
                 output_json_path=str(paths.transcript) if save_intermediates else None,
             )
             # Also save per-video raw transcript for safety
-            if save_intermediates:
+            if save_intermediates and write_raw_transcript:         # False for a project run: the app writes only inside the project folder
                 raw_out = project_root / "data" / "raw" / "transcripts" / f"{input_path.stem}.json"
                 raw_out.parent.mkdir(parents=True, exist_ok=True)
                 try:

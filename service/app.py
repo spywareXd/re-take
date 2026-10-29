@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import logging
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Callable, Optional
 
@@ -18,6 +18,7 @@ from pipeline.step_07_review.labels import record_answers
 
 from .config import ServiceConfig
 from .jobs import JobContext, JobManager, UserError
+from .project_store import ProjectCache, ProjectError, ProjectStore
 from .llm import LLMSetup, adjudicate_groups, detect_llm, keeper_advice, record_decision
 from .refine import refine_available, refine_ranges
 
@@ -115,6 +116,23 @@ def create_app(config: Optional[ServiceConfig] = None, deps: Optional[Deps] = No
             raise BadRequest("The request body must be a JSON object.")
         return body
 
+    def project_of(body: dict) -> Optional[ProjectStore]:
+        """The optional 'project' field: the project folder. With it, everything the request stores goes to <project>/data/; without it the old service/data is used."""
+        folder = body.get("project")
+        if folder is None:
+            return None
+        if not isinstance(folder, str) or not folder.strip():
+            raise BadRequest("'project' must be the project folder path.")
+        try:
+            return ProjectStore.create(folder)
+        except (OSError, ProjectError) as exc:
+            raise BadRequest(f"The project folder cannot be used: {exc}")
+
+    def cfg_for(store: Optional[ProjectStore]) -> ReviewConfig:
+        if store is None:
+            return review_cfg
+        return replace(review_cfg, cache_dir=str(store.cache_dir), labels_path=str(store.labels_path), skipped_path=str(store.skipped_path))
+
     def need_path(body: dict) -> str:
         path = body.get("path")
         if not isinstance(path, str) or not path.strip():
@@ -158,14 +176,20 @@ def create_app(config: Optional[ServiceConfig] = None, deps: Optional[Deps] = No
             if not isinstance(used, list) or not all(isinstance(r, (list, tuple)) and len(r) == 2 and _num(r[0]) and _num(r[1]) and r[1] > r[0] for r in used):
                 raise BadRequest("'used' must be a list of [start, end] seconds.")
         job_id = jobs.new_id("j")
+        store = project_of(body)
+        rcfg = cfg_for(store)
 
         def run(ctx: JobContext):
-            doc = analyze_media(path, name=body.get("name"), duration_seconds=duration, used=used, cfg=review_cfg, scorer=deps.scorer,
-                                transcribe_fn=deps.transcribe_fn, job=job_id, progress=ctx.progress, scorer_provider=scorer_provider)
+            cache = None
+            if store is not None:
+                store.set_source(path)
+                cache = ProjectCache(store)
+            doc = analyze_media(path, name=body.get("name"), duration_seconds=duration, used=used, cfg=rcfg, scorer=deps.scorer,
+                                transcribe_fn=deps.transcribe_fn, job=job_id, progress=ctx.progress, scorer_provider=scorer_provider, cache=cache)
             ctx.check()
             if not any(p["class"] == "ambiguous" for p in doc["pairs"]):      # nothing to ask: go straight to the groups
                 ctx.progress("Building groups", 0.97)
-                doc = build_groups(doc, None, review_cfg)
+                doc = build_groups(doc, None, rcfg)
             return _checked(doc, path, doc["media"]["duration_seconds"], job_id)
 
         jobs.submit("analyze", run, heavy=True, job_id=job_id)
@@ -182,12 +206,13 @@ def create_app(config: Optional[ServiceConfig] = None, deps: Optional[Deps] = No
         labels = body.get("labels")
         if labels is not None and not isinstance(labels, dict):
             raise BadRequest("'labels' must be the labels request.")
+        rcfg = cfg_for(project_of(body))
 
         def run(ctx: JobContext):
             ctx.progress("Saving your answers", 0.1)
-            record_answers(cand, labels, review_cfg)                                   # appended BEFORE the groups are built
+            record_answers(cand, labels, rcfg)                                   # appended BEFORE the groups are built
             ctx.progress("Building groups", 0.5)
-            doc = build_groups(cand, labels, review_cfg)
+            doc = build_groups(cand, labels, rcfg)
             return _checked(doc, path, cand["media"]["duration_seconds"], cand["job"])
 
         return {"job": jobs.submit("resolve", run)}
@@ -208,17 +233,21 @@ def create_app(config: Optional[ServiceConfig] = None, deps: Optional[Deps] = No
             and all(isinstance(s, dict) and isinstance(s.get("id"), str) and _num(s.get("start")) and _num(s.get("end")) for s in g["sentences"]) for g in groups):
             raise BadRequest("'groups' must be a non-empty list of groups with at least two sentences each.")
 
+        store = project_of(body)
+        cache_where = ProjectCache(store) if store else cfg.cache_dir
+        decisions_path = str(store.keeper_decisions_path) if store else cfg.keeper_decisions_path
+
         def run(ctx: JobContext):
             if name in ("finetuned", "keep-last"):
                 try:
-                    return keeper_advice(groups, finetuned if name == "finetuned" else keep_last, ctx, path, cfg.cache_dir, cfg.keeper_decisions_path,
+                    return keeper_advice(groups, finetuned if name == "finetuned" else keep_last, ctx, path, cache_where, decisions_path,
                                          body.get("job"))
                 finally:
                     if name == "finetuned" and keeper_cfg.unload_after:
                         finetuned.unload()
             advice = adjudicate_groups(groups, llm, ctx)                                # a plain JSON array, never wrapped (unchanged)
             for a in advice:
-                record_decision(cfg.keeper_decisions_path, {"job": body.get("job"), "group": a["group"], "provider": "gpt-oss", "model": llm.config.model if llm.config else llm.provider,
+                record_decision(decisions_path, {"job": body.get("job"), "group": a["group"], "provider": "gpt-oss", "model": llm.config.model if llm.config else llm.provider,
                                                             "decided_by": "gpt-oss", "status": "resolved", "keep": a["keep"], "reason": a["reason"],
                                                             "source": "keeper_advice"})
             return advice
@@ -235,8 +264,9 @@ def create_app(config: Optional[ServiceConfig] = None, deps: Optional[Deps] = No
         remove, mode = body.get("remove"), body.get("mode", "anchored")
         if not isinstance(remove, list) or not remove or not all(isinstance(r, str) for r in remove):
             raise BadRequest("'remove' must be a non-empty list of sentence ids.")
+        store = project_of(body)
         try:
-            return await run_in_threadpool(refine_ranges, path, remove, mode, cfg.cache_dir)       # ffmpeg work must not block the event loop
+            return await run_in_threadpool(refine_ranges, path, remove, mode, ProjectCache(store) if store else cfg.cache_dir)       # ffmpeg work must not block the event loop
         except FileNotFoundError:
             raise BadRequest("Could not read the file")
         except (ValueError, UserError) as exc:
