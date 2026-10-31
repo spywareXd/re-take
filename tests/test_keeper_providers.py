@@ -59,9 +59,20 @@ def test_cue_rule_keeps_none_without_the_model():
     assert f["adjudication_status"] == "resolved" and f["keeper_unit_id"] is None and f["units_to_remove"] == ["a", "b"] and f["keep_none"] is True
 
 
+def _has_natural_cues() -> bool:
+    cues = json.loads((Path(__file__).resolve().parents[1] / "pipeline" / "step_06_llm_adjudication" / "keeper_cues.json").read_text(encoding="utf-8"))
+    return bool(cues.get("natural_keep_none_cues"))
+
+
+@pytest.mark.skipif(not _has_natural_cues(), reason="requires the cue phrases taken from private recordings, not included in the public repo")
 def test_cue_rule_needs_every_take_to_be_a_cue():
     assert not is_cue_group(["Okay, here we go.", "So the main idea is that it works."], KeeperConfig())
-    assert is_cue_group(["alright from the top"], KeeperConfig())                       # a cue from the bundled list (keeper_cues.json)
+    assert is_cue_group(["let me start from the top"], KeeperConfig())                  # a natural cue from the training folds (keeper_cues.json)
+
+
+def test_cue_rule_needs_every_take_to_be_a_cue_bundled_list():
+    assert not is_cue_group(["Okay, here we go.", "So the main idea is that it works."], KeeperConfig())
+    assert is_cue_group(["alright from the top"], KeeperConfig())                       # a cue from the bundled synthetic list
 
 
 def test_cue_rule_is_a_lexical_band():

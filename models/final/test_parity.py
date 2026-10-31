@@ -25,7 +25,7 @@ def _have(video):
 def tables():
     pytest.importorskip("sentence_transformers")
     if not (TRAIN / "pairs_v2.csv").exists() or not OOF.exists():
-        pytest.skip("needs the private labelled pairs and out-of-fold scores, which are not published")
+        pytest.skip("requires private labels, not included in the public repo")
     sys.path.insert(0, str(REPO))
     csv = pd.read_csv(TRAIN / "pairs_v2.csv", dtype=str, keep_default_na=False)
     csv = csv[csv.is_synthetic == "0"].set_index("pair_id")
