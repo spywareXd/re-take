@@ -92,7 +92,7 @@ def test_scores_reproduce_saved_out_of_fold_values():
 @need_artifacts
 def test_mock_path_runs_without_models_and_separates_obvious_pairs():
     s = FinalScorer(mock=True)
-    same = {"text_a": "[redacted sentence].", "text_b": "[redacted sentence]."}
+    same = {"text_a": "Now you know the answer about this new method.", "text_b": "Now you know the answer about this new method."}
     diff = {"text_a": "The motor might spin up but you are not getting anywhere.", "text_b": "Then to give my garden the extra boost there are three fertilizers."}
     p = s.score_pairs([same, diff])
     assert s.classify(p) == ["retake", "unlikely"] and p[0] > p[1]
@@ -183,7 +183,7 @@ def test_real_models_smoke():
     pytest.importorskip("sentence_transformers")
     s = FinalScorer(device="cpu")
     assert s.mode == "stacker"
-    pairs = [{"text_a": "[redacted sentence].", "text_b": "[redacted sentence]."},
+    pairs = [{"text_a": "Now you know the answer about this new method.", "text_b": "Now you know the answer about this new method."},
              {"text_a": "The motor might spin up, but you're not getting anywhere.", "text_b": "Then to give my garden the extra boost, there are three fertilizers I found helpful."}]
     p = s.score_pairs(pairs)
     assert s.classify(p) == ["retake", "unlikely"]

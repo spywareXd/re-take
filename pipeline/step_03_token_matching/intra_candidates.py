@@ -2,7 +2,7 @@
 Intra-unit retake candidates (OPTIONAL, suggestion-only, for the review UI).
 
 Sometimes the ASR keeps a restart inside ONE unit because there is no pause or punctuation:
-    "Now I use beard, [redacted sentence]."
+    "Now I use green, now I use green tea daily."
 This module flags such units and proposes where the abandoned first attempt ends.
 
 A unit is suggested only when BOTH rules fire (and it has >= min_tokens tokens):

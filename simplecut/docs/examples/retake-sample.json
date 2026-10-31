@@ -18,7 +18,7 @@
       "decision": "remove",
       "reason": "Same sentence restarted; the later take is complete.",
       "removed_text": "So today we're going to, um, so today we are going to",
-      "kept_text": "So [redacted sentence] editing.",
+      "kept_text": "So now we are going to learn about editing.",
       "kept_start": 15.8,
       "kept_end": 19.2,
       "source": "llm",

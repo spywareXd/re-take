@@ -78,7 +78,7 @@ def test_cue_rule_needs_every_take_to_be_a_cue_bundled_list():
 def test_cue_rule_is_a_lexical_band():
     cfg = KeeperConfig(extra_cues=["Okay, here we go.", "Let me start again."])
     assert cue_score("Here we go.", cue_set(cfg)) >= 0.8 and is_cue_group(["Here we go!", "okay here we go"], cfg)       # near matches count
-    assert not is_cue_take("[redacted sentence].", cfg)                         # real content ending in a cue: below the band
+    assert not is_cue_take("the next five steps, here we go.", cfg)                         # real content ending in a cue: below the band
     assert not is_cue_take("Okay, here we go, so today we are going to build a shelf.", cfg)   # too long to be a cue
     assert not is_cue_group(["Let me start again.", "Let me explain the settings."], cfg)
     assert is_cue_group(["Let me start again"], cfg) and not is_cue_group(["Let me start again"], KeeperConfig(extra_cues=cfg.extra_cues, cue_threshold=1.01))

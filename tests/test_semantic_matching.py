@@ -17,7 +17,7 @@ from pipeline.step_04_semantic_matching import (
 
 
 def test_identical_text_semantic_score_near_one():
-    text = "[redacted sentence]."
+    text = "Now you know the answer about this new method."
     model = get_model()
     emb = model.encode([text, text])
     score = semantic_similarity_score(emb[0], emb[1])
@@ -56,7 +56,7 @@ def test_paraphrase_semantic_score_boost():
 def test_batch_embedding_consistency():
     texts = [
         "Now we're going to learn about tea time.",
-        "[redacted sentence].",
+        "Now you know the answer about this new method.",
         "Friends, you wonder why green tea works for some people.",
     ]
     model = get_model()
@@ -179,8 +179,8 @@ def test_run_stage2_end_to_end():
     candidates = [
         {
             "candidate_id": 1,
-            "unit_a": {"unit_id": "1:0", "raw_text": "[redacted sentence]."},
-            "unit_b": {"unit_id": "2:0", "raw_text": "[redacted sentence]."},
+            "unit_a": {"unit_id": "1:0", "raw_text": "Now you know the answer about this new method."},
+            "unit_b": {"unit_id": "2:0", "raw_text": "Now you know the answer about this new method."},
             "scores": {"containment": 1.0, "exact_match": 1.0},
             "combined_score": 1.0,
             "containment_direction": "equal_length",

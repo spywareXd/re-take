@@ -272,8 +272,8 @@ impl Default for FakeService {
 /// (id, start, end, text) at 60 s; scaled to the file.
 const SENTENCES: [(&str, f64, f64, &str); 14] = [
     ("3:0", 4.10, 6.30, "So now we're going to learn about"),
-    ("4:0", 7.00, 9.40, "So [redacted sentence] editing"),
-    ("5:0", 10.20, 14.60, "So [redacted sentence] video editing basics."),
+    ("4:0", 7.00, 9.40, "So now we are going to learn about editing"),
+    ("5:0", 10.20, 14.60, "So now we are going to learn about video editing basics."),
     ("9:0", 21.50, 24.00, "And that is the key idea."),
     ("11:0", 27.30, 31.80, "And that is the key idea of the whole video."),
     ("13:0", 33.00, 34.80, "Let's get started."),

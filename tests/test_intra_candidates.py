@@ -55,11 +55,11 @@ def detect(text: str, **kw):
 
 
 def test_restart_is_flagged_with_split_after_first_attempt():
-    (cand,) = detect("Now I use beard, [redacted sentence].")
+    (cand,) = detect("Now I use green, now I use green tea daily.")
     assert cand.rules_fired == "R1+R2"
     assert cand.split_word_index == 4                      # the restart "now" is the 5th word
-    assert cand.discard_text == "Now I use beard,"
-    assert cand.kept_text == "[redacted sentence]."
+    assert cand.discard_text == "Now I use green,"
+    assert cand.kept_text == "now I use green tea daily."
     assert cand.proposed_discard_start == 0.0
     assert cand.proposed_discard_end == pytest.approx(4 * STEP)    # start of the restart word
     assert cand.pause_at_split_seconds == pytest.approx(STEP - 0.25)
@@ -69,12 +69,12 @@ def test_restart_is_flagged_with_split_after_first_attempt():
 
 
 def test_known_false_alarm_parallel_phrasing_is_flagged_and_not_special_cased():
-    """'I love X and I love Y' was a labelled FALSE alarm in the review sheet. R1 (prefix 'I love tea time'
+    """'I love X and I love Y' was a labelled FALSE alarm in the review sheet. R1 (prefix 'I love tennis'
     reappears) and R2 (3-gram repeated with tokens in between) both fire, so it IS flagged. Documented, not
     special-cased: the UI/user decides, and first_half_complete does not filter it."""
-    (cand,) = detect("[redacted sentence]")
+    (cand,) = detect("I love tennis and I love tennis Grand Slam Day")
     assert cand.split_word_index == 4
-    assert cand.discard_text == "I love tea time and"
+    assert cand.discard_text == "I love tennis and"
     # parallel phrasing with a different structure behaves the same way
     assert detect("Whether it is red, whether it is blue today")
 
@@ -96,8 +96,8 @@ def test_units_under_six_tokens_are_not_flagged():
 
 def test_long_silence_between_adjacent_copies_prevents_r2():
     # adjacent copies of the only 3-gram, separated by 0.6 s of silence: R2 needs a token between or a gap < 0.35 s
-    assert detect("Now I use now I use beard", pause_before_word=3, pause=0.6) == []
-    assert len(detect("Now I use now I use beard", pause_before_word=3, pause=0.2)) == 1
+    assert detect("Now I use now I use green", pause_before_word=3, pause=0.6) == []
+    assert len(detect("Now I use now I use green", pause_before_word=3, pause=0.2)) == 1
 
 
 def test_function_word_only_repeats_are_not_flagged():
@@ -105,17 +105,17 @@ def test_function_word_only_repeats_are_not_flagged():
 
 
 def test_thresholds_and_stoplist_come_from_config():
-    unit, transcript = make_unit("Now I use beard, [redacted sentence].")
+    unit, transcript = make_unit("Now I use green, now I use green tea daily.")
     strict = replace(default_intra_config, min_tokens=20)
     assert find_intra_unit_candidates([unit], transcript, config=strict) == []
-    # the stoplist is data in the config: treat 'beard' and 'use' and 'now' as function words and nothing has content
-    boring = replace(default_intra_config, function_words=default_intra_config.function_words | {"now", "use", "beard"})
+    # the stoplist is data in the config: treat 'green' and 'use' and 'now' as function words and nothing has content
+    boring = replace(default_intra_config, function_words=default_intra_config.function_words | {"now", "use", "green"})
     assert find_intra_unit_candidates([unit], transcript, config=boring) == []
     assert isinstance(default_intra_config, IntraUnitConfig)
 
 
 def test_first_half_complete_is_a_hint_only():
-    assert first_half_complete("Now I use beard,") is True          # subject + verb-like clause
+    assert first_half_complete("Now I use green,") is True          # subject + verb-like clause
     assert first_half_complete("That is done.") is True             # terminal punctuation
     assert first_half_complete("Welcome to the") is False
     # not a filter: an incomplete first half is still emitted
@@ -124,7 +124,7 @@ def test_first_half_complete_is_a_hint_only():
 
 
 def test_artifact_roundtrip(tmp_path: Path):
-    unit, transcript = make_unit("Now I use beard, [redacted sentence].")
+    unit, transcript = make_unit("Now I use green, now I use green tea daily.")
     cands = find_intra_unit_candidates([unit], transcript, video_id="video_t")
     path = save_intra_unit_candidates(cands, tmp_path / "candidates" / "intra_unit_candidates.json", video_id="video_t")
     data = json.loads(path.read_text(encoding="utf-8"))
@@ -147,7 +147,7 @@ def make_cutlist(duration: float = 10.0, discards: list[tuple[float, float]] | N
 
 @pytest.fixture()
 def cand():
-    unit, transcript = make_unit("Now I use beard, [redacted sentence].")
+    unit, transcript = make_unit("Now I use green, now I use green tea daily.")
     return find_intra_unit_candidates([unit], transcript, video_id="video_t")[0]
 
 
@@ -161,7 +161,7 @@ def test_accept_adds_discard_and_leaves_input_untouched(cand):
     out = apply_intra_decisions(cl, [{"candidate_id": cand.candidate_id, "action": "accept"}], [cand])
     assert spans(out, "discard_spans") == [(0.0, 1.2)]
     assert spans(out, "keep_spans") == [(1.2, 10.0)]
-    assert len(out.retake_groups) == 1 and out.retake_groups[0].discarded_text == "Now I use beard,"
+    assert len(out.retake_groups) == 1 and out.retake_groups[0].discarded_text == "Now I use green,"
     assert cl.to_dict() == before and out is not cl            # input not mutated
     assert cand.status == "suggested"                         # candidates are never auto-accepted
 
@@ -227,7 +227,7 @@ def test_flag_defaults_off_and_result_dict_is_unchanged():
 
 def _mini_project(tmp_path: Path):
     """A processed dir with a cached transcript holding one restart unit, so no ASR/GPU/API is needed."""
-    text = "Now I use beard, [redacted sentence]."
+    text = "Now I use green, now I use green tea daily."
     _, transcript = make_unit(text)
     seg = transcript["segments"][0]
     transcript = {"source": "x.mp4", "duration": seg["end"], "language": "en", "segments": [seg]}

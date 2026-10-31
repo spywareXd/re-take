@@ -8,8 +8,8 @@
     { "id": "span_0", "start": 4.10, "end": 14.60, "likely": true,
       "sentences": [
         { "id": "3:0", "start": 4.10,  "end": 6.30,  "text": "So now we're going to learn about" },
-        { "id": "4:0", "start": 7.00,  "end": 9.40,  "text": "So [redacted sentence] editing" },
-        { "id": "5:0", "start": 10.20, "end": 14.60, "text": "So [redacted sentence] video editing basics." } ] },
+        { "id": "4:0", "start": 7.00,  "end": 9.40,  "text": "So now we are going to learn about editing" },
+        { "id": "5:0", "start": 10.20, "end": 14.60, "text": "So now we are going to learn about video editing basics." } ] },
 
     { "id": "span_1", "start": 21.50, "end": 31.80, "likely": true,
       "sentences": [
