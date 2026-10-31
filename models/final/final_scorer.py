@@ -22,6 +22,7 @@ from __future__ import annotations
 import json
 import logging
 import math
+import os
 import re
 import sys
 from difflib import SequenceMatcher
@@ -33,6 +34,7 @@ import numpy as np
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parents[1]
 logger = logging.getLogger("final_scorer")
+HUB_REPO = "spywarex/retake-pair-scorer"           # the trained cross-encoder seeds are published here; override with RETAKE_PAIR_SCORER_REPO
 RETAKE, AMBIGUOUS, UNLIKELY = "retake", "ambiguous", "unlikely"
 OLD_HIGH, OLD_LOW = 0.65, 0.35
 DEFAULT_TUNED_PATH = REPO / "data" / "training" / "results_v2" / "final" / "fair_comparison.json"   # tuned Stage 2 thresholds saved by the evaluation
@@ -68,6 +70,8 @@ class FinalScorer:
                  unsure_band_enabled: bool = True, max_questions: int = 25):
         self.model_dir = Path(model_dir) if model_dir else HERE
         self.mock, self.device, self.batch_size = mock, device, int(batch_size)
+        if model_dir is None and not mock:
+            self._fetch_weights_if_missing()
         self.thresholds_path = Path(thresholds_path) if thresholds_path else self.model_dir / "thresholds.json"
         self.tuned_path = Path(tuned_thresholds_path) if tuned_thresholds_path else DEFAULT_TUNED_PATH
         self.mode, self.scorer_name = "stacker", "stacker_cross_encoder"
@@ -114,6 +118,22 @@ class FinalScorer:
         self.feature_version = self.art.get("feature_version", "v1")
         self.label_version = self.art.get("label_version", "") if self.mode == "stacker" else ""
         self.thresholds_file = str(self.thresholds_path if self.mode == "stacker" else (self.tuned_path if self.mode == "tuned_stage2_fallback" else "legacy 0.65/0.35 rules"))
+
+    def _fetch_weights_if_missing(self) -> None:
+        """Download the cross-encoder seeds from the Hugging Face Hub the first time they are needed (RETAKE_OFFLINE=1 turns this off).
+        A failed download is only logged: the scorer then falls back exactly as it does when the weights are absent."""
+        if os.environ.get("RETAKE_OFFLINE") == "1":
+            return
+        try:
+            names = json.loads((self.model_dir / "thresholds.json").read_text(encoding="utf-8"))["models"]["cross_encoder_weights"]
+            if all((self.model_dir / d / "config.json").exists() for d in names):
+                return
+            from huggingface_hub import snapshot_download
+            repo = os.environ.get("RETAKE_PAIR_SCORER_REPO", HUB_REPO)
+            logger.info("final scorer: downloading the cross-encoder weights from %s (about 270 MB, once)", repo)
+            snapshot_download(repo, local_dir=str(self.model_dir), allow_patterns=[f"{d}/*" for d in names])
+        except Exception as e:
+            logger.warning("final scorer: could not download the cross-encoder weights (%s)", e)
 
     def _enter_fallback(self, missing: list[str]) -> None:
         try:

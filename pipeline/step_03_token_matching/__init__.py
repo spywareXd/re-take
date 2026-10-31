@@ -21,7 +21,29 @@ from .schemas import CandidatePair, CandidateScores, CandidateUnitRef
 from .storage import load_semantic_candidates, save_semantic_candidates
 from .windowing import get_candidates_in_window
 
+# Backward-compatible aliases: these moved to pipeline.step_02_preprocessing. Import them from there in new code.
+from pipeline.step_02_preprocessing import (  # noqa: E402,F401
+    PAUSE_SPLIT_THRESHOLD_SECONDS,
+    ComparableUnit,
+    TranscriptSegment,
+    WordTimestamp,
+    build_comparable_unit,
+    extract_segment_words,
+    flatten_transcript_words,
+    load_comparable_units,
+    load_transcript_units,
+    normalize,
+    save_comparable_units,
+    split_into_units,
+    split_transcript_into_units,
+    split_words_by_pause,
+    tokenize,
+)
+
 __all__ = [
+    "PAUSE_SPLIT_THRESHOLD_SECONDS", "ComparableUnit", "TranscriptSegment", "WordTimestamp", "build_comparable_unit", "extract_segment_words",
+    "flatten_transcript_words", "load_comparable_units", "load_transcript_units", "normalize", "save_comparable_units", "split_into_units",
+    "split_transcript_into_units", "split_words_by_pause", "tokenize",
     "CandidatePair",
     "IntraUnitCandidate",
     "IntraUnitConfig",

@@ -287,3 +287,12 @@ rustc-ice-*.txt
 
 #presentations
 journal/vit_ppt
+# local-only folders
+agent_context/
+archive/
+projects/
+# model weights downloaded from the Hugging Face Hub
+models/final/.cache/
+models/decision_standalone/*
+!models/decision_standalone/.gitignore
+!models/decision_standalone/export_manifest.json
