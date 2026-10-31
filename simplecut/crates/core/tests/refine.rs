@@ -154,7 +154,8 @@ fn modes_have_service_names_and_only_sentences_warns() {
     assert_eq!(CutMode::default(), CutMode::Anchored);
     let names: Vec<&str> = CutMode::ALL.iter().map(|m| m.as_str()).collect();
     assert_eq!(names, ["anchored", "retake_only", "sentences"]);
-    assert!(CutMode::Sentences.warning().is_some_and(|w| w.contains("no speech")));
+    assert!(CutMode::Sentences.warning().is_none(), "Speech only shows its one line and nothing else");
+    assert_eq!(CutMode::Sentences.description(), "Keeps only spoken sentences and remove silences");
     assert!(CutMode::Anchored.warning().is_none() && CutMode::RetakeOnly.warning().is_none());
 }
 

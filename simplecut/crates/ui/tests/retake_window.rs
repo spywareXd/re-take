@@ -705,20 +705,19 @@ fn mode_selector_present_only_with_capability_and_shows_warnings() {
     h.get_by_label("Cut mode: Speech only");
     h.get_by_label("Cut mode: Retakes only");
 
-    // Anchored and RetakeOnly have no warning
-    assert!(CutMode::Anchored.warning().is_none());
-    assert!(CutMode::RetakeOnly.warning().is_none());
-    let sent_warn = CutMode::Sentences.warning().expect("Sentences has warning");
+    // no mode shows a warning
+    assert!(CutMode::ALL.iter().all(|m| m.warning().is_none()));
 
-    // Sentences shows warning text
+    // Speech only shows its one line, and nothing else
     click(&mut h, "Cut mode: Speech only");
     assert_eq!(h.state().review_cut_mode(), Some(CutMode::Sentences));
-    h.get_by_label(sent_warn);
+    h.get_by_label("Keeps only spoken sentences and remove silences");
+    assert!(h.query_by_label_contains("no speech").is_none() && h.query_by_label_contains("silent gameplay").is_none());
 
-    // Switching back to Anchored hides warning
+    // Switching back shows that mode's line instead
     click(&mut h, "Cut mode: Retakes and dead air");
     assert_eq!(h.state().review_cut_mode(), Some(CutMode::Anchored));
-    assert!(h.query_by_label(sent_warn).is_none());
+    assert!(h.query_by_label("Keeps only spoken sentences and remove silences").is_none());
 }
 
 #[test]

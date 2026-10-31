@@ -53,18 +53,15 @@ impl CutMode {
     /// One line for the interface.
     pub fn description(self) -> &'static str {
         match self {
-            CutMode::Sentences => "Keeps only spoken sentences. Anything without speech is removed, including silent gameplay.",
+            CutMode::Sentences => "Keeps only spoken sentences and remove silences",
             CutMode::Anchored => "Removes retakes and the silence or noise around them. Recommended.",
             CutMode::RetakeOnly => "Removes only the retake itself. Least intrusive.",
         }
     }
 
-    /// Shown when the mode is chosen, if it can remove more than the retakes.
+    /// Nothing but the description is shown for any mode.
     pub fn warning(self) -> Option<&'static str> {
-        match self {
-            CutMode::Sentences => Some("Parts of the video with no speech (silent gameplay, screen action, pauses) will be removed."),
-            _ => None,
-        }
+        None
     }
 }
 
