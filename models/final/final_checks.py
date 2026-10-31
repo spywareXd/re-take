@@ -123,7 +123,8 @@ op.to_csv(OUT / "operating_points.csv", index=False)
 # ================= C. Stage 2 consistency with the real pipeline =================
 from models.retake import TimeSpan  # noqa: E402,F401  (repo import check)
 from models.transcript import Transcript  # noqa: E402
-from pipeline.step_03_token_matching import TokenMatchingConfig, generate_candidate_pairs, load_transcript_units  # noqa: E402
+from pipeline.step_02_preprocessing import load_transcript_units  # noqa: E402
+from pipeline.step_03_token_matching import TokenMatchingConfig, generate_candidate_pairs  # noqa: E402
 from pipeline.step_04_semantic_matching import run_stage2  # noqa: E402
 
 VIDEO = "speaker_a_3"

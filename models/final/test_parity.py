@@ -38,7 +38,8 @@ def tables():
 
 def _pipeline_candidates(video):
     from models.transcript import Transcript
-    from pipeline.step_03_token_matching import TokenMatchingConfig, generate_candidate_pairs, load_transcript_units
+    from pipeline.step_02_preprocessing import load_transcript_units
+    from pipeline.step_03_token_matching import TokenMatchingConfig, generate_candidate_pairs
     from pipeline.step_04_semantic_matching import run_stage2
 
     units = load_transcript_units(Transcript.from_json_file(str(TRAIN / "processed" / video / "transcript.json")))

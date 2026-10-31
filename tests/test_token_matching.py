@@ -6,19 +6,11 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from pipeline.step_03_token_matching import (
-    containment_details,
-    exact_match_score,
-    generate_candidate_pairs,
-    jaccard_score,
-    load_transcript_units,
-    near_exact_match_score,
-    restart_phrase_score,
-    sequence_similarity_score,
-)
+from pipeline.step_02_preprocessing import load_transcript_units
+from pipeline.step_03_token_matching import containment_details, exact_match_score, generate_candidate_pairs, jaccard_score, near_exact_match_score, restart_phrase_score, sequence_similarity_score
 from pipeline.step_03_token_matching.config import TokenMatchingConfig
 from pipeline.step_03_token_matching.candidate_generator import rank_similar_sentence_ids
-from pipeline.step_03_token_matching.schemas import ComparableUnit
+from pipeline.step_02_preprocessing.schemas import ComparableUnit
 
 
 def test_load_output_transcript():
@@ -136,7 +128,7 @@ def test_recall_first_scoring_and_contextual_restart_cues():
 
 
 def test_expanded_contractions_and_normalization():
-    from pipeline.step_03_token_matching import normalize
+    from pipeline.step_02_preprocessing import normalize
 
     # Test you're, it's, what's, let's, don't, etc.
     assert normalize("You're not seeing results") == "you are not seeing results"

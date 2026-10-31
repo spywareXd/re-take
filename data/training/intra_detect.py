@@ -243,8 +243,8 @@ from pipeline.step_03_token_matching.edit_distance import containment_score, seq
 from pipeline.step_03_token_matching.exact_match import exact_match_score, near_exact_match_score  # noqa: E402
 from pipeline.step_03_token_matching.jaccard import jaccard_score  # noqa: E402
 from pipeline.step_03_token_matching.ngram_match import ngram_overlap_score  # noqa: E402
-from pipeline.step_03_token_matching.normalize import tokenize  # noqa: E402
-from pipeline.step_03_token_matching.schemas import ComparableUnit  # noqa: E402
+from pipeline.step_02_preprocessing.normalize import tokenize  # noqa: E402
+from pipeline.step_02_preprocessing.schemas import ComparableUnit  # noqa: E402
 from pipeline.step_04_semantic_matching.config import SEMANTIC_WEIGHTS  # noqa: E402
 from pipeline.step_04_semantic_matching.semantic_matching import get_model, semantic_similarity_score  # noqa: E402
 

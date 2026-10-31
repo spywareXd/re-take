@@ -158,8 +158,8 @@ class FinalScorer:
         from pipeline.step_03_token_matching.exact_match import exact_match_score, near_exact_match_score
         from pipeline.step_03_token_matching.jaccard import jaccard_score
         from pipeline.step_03_token_matching.ngram_match import ngram_overlap_score
-        from pipeline.step_03_token_matching.normalize import tokenize
-        from pipeline.step_03_token_matching.schemas import ComparableUnit
+        from pipeline.step_02_preprocessing.normalize import tokenize
+        from pipeline.step_02_preprocessing.schemas import ComparableUnit
         from pipeline.step_04_semantic_matching.semantic_matching import get_model, semantic_similarity_score
 
         def cu(t):

@@ -150,7 +150,8 @@ def test_pipeline_candidates_reproduce_training_scores_and_expose_the_recency_ga
     import sys
     sys.path.insert(0, str(HERE.parents[1]))
     from models.transcript import Transcript
-    from pipeline.step_03_token_matching import TokenMatchingConfig, generate_candidate_pairs, load_transcript_units
+    from pipeline.step_02_preprocessing import load_transcript_units
+    from pipeline.step_03_token_matching import TokenMatchingConfig, generate_candidate_pairs
     from pipeline.step_04_semantic_matching import run_stage2
 
     video = "speaker_a_3"

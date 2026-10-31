@@ -6,9 +6,9 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from pipeline.step_03_token_matching.config import PAUSE_SPLIT_THRESHOLD_SECONDS
-from pipeline.step_03_token_matching.schemas import WordTimestamp
-from pipeline.step_03_token_matching.unit_splitter import (
+from pipeline.step_02_preprocessing.config import PAUSE_SPLIT_THRESHOLD_SECONDS
+from pipeline.step_02_preprocessing.schemas import WordTimestamp
+from pipeline.step_02_preprocessing.unit_splitter import (
     build_comparable_unit,
     extract_segment_words,
     flatten_transcript_words,
@@ -256,7 +256,7 @@ def test_output_transcript_segment_boundaries_and_splits():
     if not transcript_path.exists():
         pytest.skip("output_transcript.json not found")
 
-    from pipeline.step_03_token_matching.normalize import load_transcript_units
+    from pipeline.step_02_preprocessing.normalize import load_transcript_units
 
     units = load_transcript_units(transcript_path, pause_threshold=PAUSE_SPLIT_THRESHOLD_SECONDS)
     assert len(units) >= 1

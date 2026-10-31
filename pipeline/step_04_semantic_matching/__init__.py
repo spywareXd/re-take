@@ -15,10 +15,7 @@ from .semantic_matching import (
     score_candidate,
     semantic_similarity_score,
 )
-from pipeline.step_03_token_matching.storage import (
-    load_semantic_candidates,
-    save_semantic_candidates,
-)
+from pipeline.step_03_token_matching.storage import load_semantic_candidates, save_semantic_candidates
 
 __all__ = [
     "DISAGREEMENT_FLAG_THRESHOLD",

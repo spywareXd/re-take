@@ -10,7 +10,7 @@ if str(_repo_root_path) not in sys.path:
     sys.path.insert(0, str(_repo_root_path))
 
 from pipeline.step_03_token_matching.candidate_generator import rank_similar_sentence_ids
-from pipeline.step_03_token_matching.normalize import load_transcript_units
+from pipeline.step_02_preprocessing.normalize import load_transcript_units
 
 
 def _repo_root() -> Path:

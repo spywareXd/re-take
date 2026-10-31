@@ -167,7 +167,7 @@ def create_app(config: Optional[ServiceConfig] = None, deps: Optional[Deps] = No
 
     def pick_gap(body: dict, store: Optional[ProjectStore]) -> float:
         """The silence gap (seconds) that splits sentence units: the request's 'silence_gap_s', else the project's saved value, else today's 0.7. Range-checked here."""
-        from pipeline.step_03_token_matching import PAUSE_SPLIT_THRESHOLD_SECONDS
+        from pipeline.step_02_preprocessing import PAUSE_SPLIT_THRESHOLD_SECONDS
         v = body.get("silence_gap_s")
         if v is None:
             v = (store.settings().get("silence_gap_s") if store else None)
@@ -179,7 +179,7 @@ def create_app(config: Optional[ServiceConfig] = None, deps: Optional[Deps] = No
 
     def units_gap(store: ProjectStore) -> Optional[float]:
         """The silence gap the stored units were made with (0.7, the old fixed value, when nothing is recorded); None when there are no units."""
-        from pipeline.step_03_token_matching import PAUSE_SPLIT_THRESHOLD_SECONDS
+        from pipeline.step_02_preprocessing import PAUSE_SPLIT_THRESHOLD_SECONDS
         return (store.get("units_meta") or {}).get("silence_gap_s", PAUSE_SPLIT_THRESHOLD_SECONDS) if store.has("units") else None
 
     def revalidate(store: ProjectStore, meta: dict, model_name: str) -> None:
@@ -223,7 +223,7 @@ def create_app(config: Optional[ServiceConfig] = None, deps: Optional[Deps] = No
     def capabilities():
         keeper = keeper_state()
         from pipeline.step_01_transcription.model_catalog import catalog
-        from pipeline.step_03_token_matching import PAUSE_SPLIT_THRESHOLD_SECONDS
+        from pipeline.step_02_preprocessing import PAUSE_SPLIT_THRESHOLD_SECONDS
         return {"adjudicate": bool(keeper["providers"][keeper["current"]]["available"]), "refine": refine_available(), "keeper": keeper, "transcription": catalog(),
                 "silence_gap": {"default": PAUSE_SPLIT_THRESHOLD_SECONDS, "min": SILENCE_MIN_S, "max": SILENCE_MAX_S, "step": SILENCE_STEP_S, "unit": "seconds"}}
 

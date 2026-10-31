@@ -30,7 +30,7 @@ from pathlib import Path
 from typing import Any, Optional, Sequence, Union
 
 from .config import IntraUnitConfig, default_intra_config
-from .unit_splitter import _parse_segments, extract_segment_words
+from pipeline.step_02_preprocessing.unit_splitter import _parse_segments, extract_segment_words
 
 DEFAULT_INTRA_CANDIDATES_FILENAME = "intra_unit_candidates.json"
 _TOKEN_STRIP_RE = re.compile(r"[^a-z0-9']")

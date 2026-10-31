@@ -2,8 +2,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from pipeline.step_02_preprocessing.config import PAUSE_SPLIT_THRESHOLD_SECONDS
 
-PAUSE_SPLIT_THRESHOLD_SECONDS: float = 0.7
+
 
 LEXICAL_WEIGHTS = {
     "sequence": 0.30,

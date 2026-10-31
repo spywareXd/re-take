@@ -493,13 +493,8 @@ def run_full_pipeline(
         _progress("Token Matching", 0.0)
         t0 = time.time()
 
-        from pipeline.step_03_token_matching import (
-            PAUSE_SPLIT_THRESHOLD_SECONDS,
-            default_config as token_config,
-            generate_candidate_pairs,
-            load_transcript_units,
-            save_comparable_units,
-        )
+        from pipeline.step_02_preprocessing import PAUSE_SPLIT_THRESHOLD_SECONDS, load_transcript_units, save_comparable_units
+        from pipeline.step_03_token_matching import default_config as token_config, generate_candidate_pairs
 
         units = load_transcript_units(transcript, pause_threshold=PAUSE_SPLIT_THRESHOLD_SECONDS)
 

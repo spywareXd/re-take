@@ -11,7 +11,7 @@ from fastapi.testclient import TestClient
 
 from models.final.final_scorer import FinalScorer
 from models.transcript import Transcript
-from pipeline.step_03_token_matching import PAUSE_SPLIT_THRESHOLD_SECONDS
+from pipeline.step_02_preprocessing import PAUSE_SPLIT_THRESHOLD_SECONDS
 from pipeline.step_06_llm_adjudication.llm_client import MockLLMClient
 from service.app import Deps, create_app
 from service.config import ServiceConfig

@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from pipeline.step_03_token_matching.config import PAUSE_SPLIT_THRESHOLD_SECONDS
+from pipeline.step_02_preprocessing.config import PAUSE_SPLIT_THRESHOLD_SECONDS
 
 CUT_MODES = ("sentences", "anchored", "retake_only")
 DEFAULT_CUT_MODE = "anchored"

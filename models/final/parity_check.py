@@ -17,7 +17,8 @@ sys.path.insert(0, str(REPO))
 sys.path.insert(0, str(HERE))
 from final_scorer import FinalScorer  # noqa: E402
 from models.transcript import Transcript  # noqa: E402
-from pipeline.step_03_token_matching import TokenMatchingConfig, generate_candidate_pairs, load_transcript_units  # noqa: E402
+from pipeline.step_02_preprocessing import load_transcript_units  # noqa: E402
+from pipeline.step_03_token_matching import TokenMatchingConfig, generate_candidate_pairs  # noqa: E402
 from pipeline.step_04_semantic_matching import run_stage2  # noqa: E402
 
 VIDEOS = ["video_07", "video_02"]                              # chosen in the pre-registration; fall back to video_08 / video_06 only if a cache is missing

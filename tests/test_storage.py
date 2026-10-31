@@ -8,14 +8,10 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from pipeline.step_03_token_matching.config import PAUSE_SPLIT_THRESHOLD_SECONDS
-from pipeline.step_03_token_matching.schemas import ComparableUnit
-from pipeline.step_03_token_matching.storage import (
-    load_comparable_units,
-    load_semantic_candidates,
-    save_comparable_units,
-    save_semantic_candidates,
-)
+from pipeline.step_02_preprocessing.config import PAUSE_SPLIT_THRESHOLD_SECONDS
+from pipeline.step_02_preprocessing.schemas import ComparableUnit
+from pipeline.step_02_preprocessing.storage import load_comparable_units, save_comparable_units
+from pipeline.step_03_token_matching.storage import load_semantic_candidates, save_semantic_candidates
 
 
 def _sample_units() -> list[ComparableUnit]:

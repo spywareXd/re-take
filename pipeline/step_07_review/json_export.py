@@ -279,7 +279,7 @@ def analyze_media(
     if units is not None and not hasattr(cache, "store"):
         # the old per-machine cache keeps ONE split per video: remember which gap made it, and when a different gap is asked for, split again (it used to hand back
         # the old split whatever the setting said, so a shorter silence gap silently did nothing). A project's own files are guarded by the stale / confirm flow instead.
-        from pipeline.step_03_token_matching import PAUSE_SPLIT_THRESHOLD_SECONDS
+        from pipeline.step_02_preprocessing import PAUSE_SPLIT_THRESHOLD_SECONDS
         made_with = float((cache.get("units_meta") or {}).get("silence_gap_s", PAUSE_SPLIT_THRESHOLD_SECONDS))
         wanted = PAUSE_SPLIT_THRESHOLD_SECONDS if silence_gap_s is None else float(silence_gap_s)
         if abs(made_with - wanted) > 1e-9:
@@ -294,7 +294,7 @@ def analyze_media(
         units = unit_dicts(unit_objs)
         cache.put("units", units)
         if not hasattr(cache, "store"):
-            from pipeline.step_03_token_matching import PAUSE_SPLIT_THRESHOLD_SECONDS
+            from pipeline.step_02_preprocessing import PAUSE_SPLIT_THRESHOLD_SECONDS
             cache.put("units_meta", {"silence_gap_s": PAUSE_SPLIT_THRESHOLD_SECONDS if silence_gap_s is None else float(silence_gap_s)})
 
     engine = _decision_engine(scorer, cfg)
@@ -328,7 +328,7 @@ def unit_dicts(unit_objs: list) -> list[dict]:
 def _load_units(transcript: dict, silence_gap_s: Optional[float] = None) -> list:
     """Split the saved transcript (its word timestamps) into sentence units; `silence_gap_s` is the pause that splits them (None = the pipeline default, 0.7 s)."""
     from models.transcript import Transcript
-    from pipeline.step_03_token_matching import PAUSE_SPLIT_THRESHOLD_SECONDS, load_transcript_units
+    from pipeline.step_02_preprocessing import PAUSE_SPLIT_THRESHOLD_SECONDS, load_transcript_units
     gap = PAUSE_SPLIT_THRESHOLD_SECONDS if silence_gap_s is None else silence_gap_s
     return load_transcript_units(Transcript.model_validate(transcript), pause_threshold=gap)
 

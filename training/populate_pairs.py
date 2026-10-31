@@ -26,10 +26,8 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from pipeline.step_03_token_matching.config import (
-    PAUSE_SPLIT_THRESHOLD_SECONDS,
-    TokenMatchingConfig,
-)
+from pipeline.step_02_preprocessing.config import PAUSE_SPLIT_THRESHOLD_SECONDS
+from pipeline.step_03_token_matching.config import TokenMatchingConfig
 from pipeline.step_04_semantic_matching.config import (
     default_semantic_config,
 )
@@ -542,10 +540,8 @@ def run_pipeline_for_video(
     """
     from models.transcript import Transcript
     from pipeline.step_01_transcription import TimestampGenerator
-    from pipeline.step_03_token_matching import (
-        generate_candidate_pairs,
-        load_transcript_units,
-    )
+    from pipeline.step_02_preprocessing import load_transcript_units
+    from pipeline.step_03_token_matching import generate_candidate_pairs
     from pipeline.step_04_semantic_matching import run_stage2
 
     video_proc_dir = processed_dir / video_id

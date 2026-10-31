@@ -16,13 +16,7 @@ import pytest
 
 from models.retake import CutList, TimeSpan
 from pipeline.run_pipeline import PipelineResult, run_full_pipeline
-from pipeline.step_03_token_matching import (
-    IntraUnitConfig,
-    default_intra_config,
-    find_intra_unit_candidates,
-    load_intra_unit_candidates,
-    save_intra_unit_candidates,
-)
+from pipeline.step_03_token_matching import IntraUnitConfig, default_intra_config, find_intra_unit_candidates, load_intra_unit_candidates, save_intra_unit_candidates
 from pipeline.step_03_token_matching.intra_candidates import first_half_complete
 from pipeline.step_08_video_edit import apply_intra_decisions
 
