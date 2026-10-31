@@ -1,7 +1,7 @@
 # App changes: models, progress, silence gap, exports, project folders
 
-Branch `app-ux-and-storage`. The "app" is the SimpleCut editor (`simplecut/`, Rust/egui) plus the Python retake service (`service/`). The service does the work and keeps
-its data; the editor shows the settings, asks before replacing anything, and sends the choices. Plan: `plan.md`. Storage audit: `storage_audit.md`.
+The "app" is the SimpleCut editor (`simplecut/`, Rust/egui) plus the Python retake service (`service/`). The service does the work and keeps
+its data; the editor shows the settings, asks before replacing anything, and sends the choices.
 
 ## What changed, per item
 
@@ -19,13 +19,13 @@ its data; the editor shows the settings, asks before replacing anything, and sen
 `track_headers` laid the name, mute button and dB box left to right in a cell with 146 px of usable width; they need about 172 px ("Dialogue" is longer than "Music"),
 and nothing shrank, wrapped or clipped. Fix: the controls are anchored to the right edge, the name takes what is left (shortened with "…", full text as hover and accessible
 name), the cell clips, and the header column is 196 px instead of 168 (without that, "Dialogue" was cut to "Dia…"). Tests: `crates/ui/tests/timeline_headers.rs` (fails before
-the fix, at 960×600, 1100×700, 1300×820 and 1920×1080 and with dB values from −60 to +12). Screenshots: `screenshots/item5_*`.
+the fix, at 960×600, 1100×700, 1300×820 and 1920×1080 and with dB values from −60 to +12). 
 
 ### Item 6: the button
 Same size and font as the other buttons, filled with the theme's accent colour (it was first made larger; that was changed back after use). Dark label on the fill (about
 5.7:1; WCAG AA needs 4.5:1, and white text would be 3.2:1). Hover lighter, pressed slightly darker (kept above 4.5:1; a first version at 4.06:1 was caught by the contrast
 test), keyboard focus has a 2.5 px inside outline, disabled is flat grey with a border, while the service works the label gets the percent and the button fills like a bar
-(no animation of its own; the stage is in the tooltip). Constants: `HOVER_LIGHTEN`, `PRESSED_DARKEN` in `toolbar.rs`. Current screenshots: `screenshots/item6b_*`.
+(no animation of its own; the stage is in the tooltip). Constants: `HOVER_LIGHTEN`, `PRESSED_DARKEN` in `toolbar.rs`. Screenshots: `screenshots/toolbar.png`.
 
 ## Project folder layout
 
