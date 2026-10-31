@@ -121,7 +121,7 @@ def synth_pool(all_rows: list[dict[str, str]]) -> dict[str, list[str]]:
     """Unrelated base sentences per synthetic video: every distinct text of the video in synthetic_pairs_v1.csv (the video's own base sentence, its
     paraphrases and hard negatives) plus the longest (most complete) take of every synthetic group of that video."""
     pool: dict[str, set[str]] = {}
-    pairs_csv = TRAIN / "synthetic_pairs_v1.csv"
+    pairs_csv = REPO / "data" / "synthetic" / "synthetic_pairs_v1.csv"
     if pairs_csv.exists():
         for r in read_csv(pairs_csv):
             pool.setdefault(r["video_id"], set()).update(t.strip() for t in (r["text_a"], r["text_b"]) if t.strip())
