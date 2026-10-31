@@ -1,0 +1,414 @@
+{
+  "source": "sample.mp4",
+  "duration": 25.28,
+  "language": "en",
+  "created_at": "2026-01-01T00:00:00+00:00",
+  "segments": [
+    {
+      "id": 1,
+      "start": 0.82,
+      "end": 4.39,
+      "speaker": "speaker_0",
+      "text": "Today I want to show you how to brew coffee. Let's start with the beans.",
+      "confidence": 1.0,
+      "words": [
+        {
+          "word": "Today",
+          "start": 0.82,
+          "end": 1.01,
+          "confidence": 0.95
+        },
+        {
+          "word": "I",
+          "start": 1.04,
+          "end": 1.23,
+          "confidence": 0.95
+        },
+        {
+          "word": "want",
+          "start": 1.26,
+          "end": 1.45,
+          "confidence": 0.95
+        },
+        {
+          "word": "to",
+          "start": 1.48,
+          "end": 1.67,
+          "confidence": 0.95
+        },
+        {
+          "word": "show",
+          "start": 1.7,
+          "end": 1.89,
+          "confidence": 0.95
+        },
+        {
+          "word": "you",
+          "start": 1.92,
+          "end": 2.11,
+          "confidence": 0.95
+        },
+        {
+          "word": "how",
+          "start": 2.14,
+          "end": 2.33,
+          "confidence": 0.95
+        },
+        {
+          "word": "to",
+          "start": 2.36,
+          "end": 2.55,
+          "confidence": 0.95
+        },
+        {
+          "word": "brew",
+          "start": 2.58,
+          "end": 2.77,
+          "confidence": 0.95
+        },
+        {
+          "word": "coffee.",
+          "start": 2.8,
+          "end": 2.99,
+          "confidence": 0.95
+        },
+        {
+          "word": "Let's",
+          "start": 3.32,
+          "end": 3.51,
+          "confidence": 0.95
+        },
+        {
+          "word": "start",
+          "start": 3.54,
+          "end": 3.73,
+          "confidence": 0.95
+        },
+        {
+          "word": "with",
+          "start": 3.76,
+          "end": 3.95,
+          "confidence": 0.95
+        },
+        {
+          "word": "the",
+          "start": 3.98,
+          "end": 4.17,
+          "confidence": 0.95
+        },
+        {
+          "word": "beans",
+          "start": 4.2,
+          "end": 4.39,
+          "confidence": 0.95
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "start": 8.7,
+      "end": 10.95,
+      "speaker": "speaker_0",
+      "text": "First you need some fresh beans and clean water.",
+      "confidence": 1.0,
+      "words": [
+        {
+          "word": "First",
+          "start": 8.7,
+          "end": 8.89,
+          "confidence": 0.95
+        },
+        {
+          "word": "you",
+          "start": 8.92,
+          "end": 9.11,
+          "confidence": 0.95
+        },
+        {
+          "word": "need",
+          "start": 9.14,
+          "end": 9.33,
+          "confidence": 0.95
+        },
+        {
+          "word": "some",
+          "start": 9.36,
+          "end": 9.55,
+          "confidence": 0.95
+        },
+        {
+          "word": "fresh",
+          "start": 9.58,
+          "end": 9.77,
+          "confidence": 0.95
+        },
+        {
+          "word": "beans",
+          "start": 10.1,
+          "end": 10.29,
+          "confidence": 0.95
+        },
+        {
+          "word": "and",
+          "start": 10.32,
+          "end": 10.51,
+          "confidence": 0.95
+        },
+        {
+          "word": "clean",
+          "start": 10.54,
+          "end": 10.73,
+          "confidence": 0.95
+        },
+        {
+          "word": "water",
+          "start": 10.76,
+          "end": 10.95,
+          "confidence": 0.95
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "start": 11.1,
+      "end": 13.57,
+      "speaker": "speaker_0",
+      "text": "First you need some fresh beans and really clean water.",
+      "confidence": 1.0,
+      "words": [
+        {
+          "word": "First",
+          "start": 11.1,
+          "end": 11.29,
+          "confidence": 0.95
+        },
+        {
+          "word": "you",
+          "start": 11.32,
+          "end": 11.51,
+          "confidence": 0.95
+        },
+        {
+          "word": "need",
+          "start": 11.54,
+          "end": 11.73,
+          "confidence": 0.95
+        },
+        {
+          "word": "some",
+          "start": 11.76,
+          "end": 11.95,
+          "confidence": 0.95
+        },
+        {
+          "word": "fresh",
+          "start": 11.98,
+          "end": 12.17,
+          "confidence": 0.95
+        },
+        {
+          "word": "beans",
+          "start": 12.5,
+          "end": 12.69,
+          "confidence": 0.95
+        },
+        {
+          "word": "and",
+          "start": 12.72,
+          "end": 12.91,
+          "confidence": 0.95
+        },
+        {
+          "word": "really",
+          "start": 12.94,
+          "end": 13.13,
+          "confidence": 0.95
+        },
+        {
+          "word": "clean",
+          "start": 13.16,
+          "end": 13.35,
+          "confidence": 0.95
+        },
+        {
+          "word": "water",
+          "start": 13.38,
+          "end": 13.57,
+          "confidence": 0.95
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "start": 14.2,
+      "end": 15.27,
+      "speaker": "speaker_0",
+      "text": "Then grind the beans coarse.",
+      "confidence": 1.0,
+      "words": [
+        {
+          "word": "Then",
+          "start": 14.2,
+          "end": 14.39,
+          "confidence": 0.95
+        },
+        {
+          "word": "grind",
+          "start": 14.42,
+          "end": 14.61,
+          "confidence": 0.95
+        },
+        {
+          "word": "the",
+          "start": 14.64,
+          "end": 14.83,
+          "confidence": 0.95
+        },
+        {
+          "word": "beans",
+          "start": 14.86,
+          "end": 15.05,
+          "confidence": 0.95
+        },
+        {
+          "word": "coarse",
+          "start": 15.08,
+          "end": 15.27,
+          "confidence": 0.95
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "start": 17.7,
+      "end": 19.29,
+      "speaker": "speaker_0",
+      "text": "Afterwards the beans get ground coarse.",
+      "confidence": 1.0,
+      "words": [
+        {
+          "word": "Afterwards",
+          "start": 17.7,
+          "end": 17.89,
+          "confidence": 0.95
+        },
+        {
+          "word": "the",
+          "start": 17.92,
+          "end": 18.11,
+          "confidence": 0.95
+        },
+        {
+          "word": "beans",
+          "start": 18.14,
+          "end": 18.33,
+          "confidence": 0.95
+        },
+        {
+          "word": "get",
+          "start": 18.66,
+          "end": 18.85,
+          "confidence": 0.95
+        },
+        {
+          "word": "ground",
+          "start": 18.88,
+          "end": 19.07,
+          "confidence": 0.95
+        },
+        {
+          "word": "coarse",
+          "start": 19.1,
+          "end": 19.29,
+          "confidence": 0.95
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "start": 21.6,
+      "end": 22.01,
+      "speaker": "speaker_0",
+      "text": "Wait sorry.",
+      "confidence": 1.0,
+      "words": [
+        {
+          "word": "Wait",
+          "start": 21.6,
+          "end": 21.79,
+          "confidence": 0.95
+        },
+        {
+          "word": "sorry",
+          "start": 21.82,
+          "end": 22.01,
+          "confidence": 0.95
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "start": 23.0,
+      "end": 25.25,
+      "speaker": "speaker_0",
+      "text": "Pour hot water slowly over the grounds and wait.",
+      "confidence": 1.0,
+      "words": [
+        {
+          "word": "Pour",
+          "start": 23.0,
+          "end": 23.19,
+          "confidence": 0.95
+        },
+        {
+          "word": "hot",
+          "start": 23.22,
+          "end": 23.41,
+          "confidence": 0.95
+        },
+        {
+          "word": "water",
+          "start": 23.44,
+          "end": 23.63,
+          "confidence": 0.95
+        },
+        {
+          "word": "slowly",
+          "start": 23.96,
+          "end": 24.15,
+          "confidence": 0.95
+        },
+        {
+          "word": "over",
+          "start": 24.18,
+          "end": 24.37,
+          "confidence": 0.95
+        },
+        {
+          "word": "the",
+          "start": 24.4,
+          "end": 24.59,
+          "confidence": 0.95
+        },
+        {
+          "word": "grounds",
+          "start": 24.62,
+          "end": 24.81,
+          "confidence": 0.95
+        },
+        {
+          "word": "and",
+          "start": 24.84,
+          "end": 25.03,
+          "confidence": 0.95
+        },
+        {
+          "word": "wait",
+          "start": 25.06,
+          "end": 25.25,
+          "confidence": 0.95
+        }
+      ]
+    }
+  ]
+}

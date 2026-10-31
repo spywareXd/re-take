@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  python:
+    # uv.lock is resolved for Windows x64 (see pyproject.toml), so CI runs there.
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - name: Install ffmpeg
+        run: choco install ffmpeg --no-progress -y
+      - name: Install dependencies
+        run: uv sync --frozen
+      - name: Dependencies are consistent
+        run: uv pip check
+      - name: Tests (offline, CPU only)
+        env:
+          RETAKE_OFFLINE: "1"
+        run: uv run pytest tests models/final -q
+
+  rust:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: simplecut
+    steps:
+      - uses: actions/checkout@v4
+      - name: Get the FilmCraft media crates at the pinned commit
+        working-directory: .
+        run: |
+          git clone https://github.com/storytold/filmcraft filmcraft
+          git -C filmcraft checkout a504f3c5
+      - name: Install ffmpeg
+        run: choco install ffmpeg --no-progress -y
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - run: cargo fmt --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo test --workspace

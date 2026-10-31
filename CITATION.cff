@@ -1,0 +1,12 @@
+cff-version: 1.2.0
+message: "If you use re-take, please cite it as below."
+title: "re-take: finding and removing retakes in spoken video"
+type: software
+license: MIT
+authors:
+  - family-names: Nayak
+    given-names: Shreyan
+  - family-names: Raj
+    given-names: Ashwin
+repository-code: "https://github.com/spywareXd/re-take"
+date-released: "2026-11-01"

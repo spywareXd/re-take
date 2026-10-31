@@ -1,8 +1,12 @@
 [project]
 name = "re-take"
 version = "0.1.0"
-description = "Add your description here"
+description = "Find and group retakes (repeated sentences) in spoken video, with a local service for the SimpleCut editor"
 readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Shreyan Nayak" }, { name = "Ashwin Raj" }]
+keywords = ["video-editing", "retake-detection", "speech", "transcription", "nlp"]
 requires-python = ">=3.11,<3.14"
 dependencies = [
     "assemblyai>=0.20.0",
@@ -27,6 +31,9 @@ dependencies = [
     "streamlit>=1.30.0",
     "whisperx>=3.4.5",
 ]
+
+[project.urls]
+Repository = "https://github.com/spywareXd/re-take"
 
 [dependency-groups]
 dev = [

@@ -761,7 +761,7 @@ def main():
     import argparse
 
     parser = argparse.ArgumentParser(description="Run the end-to-end retake detection and video editing pipeline.")
-    parser.add_argument("input_video", nargs="?", default="data/videos/sample_e.mp4", help="Path to input video (default: data/videos/sample_e.mp4)")
+    parser.add_argument("input_video", help="Path to the input video")
     parser.add_argument("--output", "-o", default=None, help="Custom output video path")
     parser.add_argument("--provider", default="whisperx", choices=["whisperx", "whisper", "assemblyai"], help="ASR provider")
     parser.add_argument("--model", default="large-v2", help="ASR model size")
