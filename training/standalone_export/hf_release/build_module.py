@@ -39,7 +39,7 @@ body = cut(body, "from transformers import AutoModelForCausalLM, AutoTokenizer, 
 body = cut(body, "# ---------------------------------------------------------------------------------------------------------------------", "# ---------------------------------------------------------------------------------------------------------------------", ) if False else body
 
 cues = json.loads((REPO / "pipeline" / "step_06_llm_adjudication" / "keeper_cues.json").read_text(encoding="utf-8"))
-cue_list = list(cues["bank_cues"]) + [t for texts in cues["natural_keep_none_cues"].values() for t in texts]
+cue_list = list(cues["bank_cues"]) + [t for texts in cues.get("natural_keep_none_cues", {}).values() for t in texts]
 tail = (HERE / "tail.py.in").read_text(encoding="utf-8").replace("__RULES__", repr(decision_rules())).replace("__CUES__", json.dumps(cue_list, ensure_ascii=False))
 
 header = '''"""

@@ -95,7 +95,7 @@ def normalise(text: str) -> str:
 
 def load_cues(path: Path = CUES_PATH) -> list[str]:
     d = json.loads(path.read_text(encoding="utf-8"))
-    return list(d["bank_cues"]) + [t for texts in d["natural_keep_none_cues"].values() for t in texts]
+    return list(d["bank_cues"]) + [t for texts in d.get("natural_keep_none_cues", {}).values() for t in texts]
 
 
 _CUES_CACHE: dict[str, set[str]] = {}

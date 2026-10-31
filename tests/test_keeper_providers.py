@@ -61,7 +61,7 @@ def test_cue_rule_keeps_none_without_the_model():
 
 def test_cue_rule_needs_every_take_to_be_a_cue():
     assert not is_cue_group(["Okay, here we go.", "So the main idea is that it works."], KeeperConfig())
-    assert is_cue_group(["let me start from the top"], KeeperConfig())                  # a natural cue from the training folds (keeper_cues.json)
+    assert is_cue_group(["alright from the top"], KeeperConfig())                       # a cue from the bundled list (keeper_cues.json)
 
 
 def test_cue_rule_is_a_lexical_band():
