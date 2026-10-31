@@ -75,7 +75,7 @@ Useful flags: `--provider whisperx|whisper|assemblyai`, `--model large-v2`, `--d
 
 ## Tests
 
-`uv run pytest tests models/final` runs offline. Tests that need private data, a video, a GPU or the downloaded weights are skipped with a reason. To run the scorer tests against the real weights: `RETAKE_OFFLINE=0 uv run pytest models/final`.
+`uv run pytest tests models/final` runs offline. Tests that need private data, a video, a GPU or the downloaded weights are skipped with a reason. With `RETAKE_OFFLINE=0 uv run pytest models/final` the scorer downloads the real weights and the smoke test that loads them runs; the other scorer tests need artifacts of the private training run and stay skipped.
 
 ## Repository layout
 
