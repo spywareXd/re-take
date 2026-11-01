@@ -29,8 +29,8 @@ Weights are not stored in git. They are downloaded from the Hugging Face Hub the
 
 | Model | Used for | Link |
 |---|---|---|
-| retake-pair-scorer (3 cross-encoder seeds + stacker thresholds) | step 4: retake / not retake / ambiguous | HF_PAIR_SCORER_URL_PLACEHOLDER |
-| retake-keeper-qwen3-4b (Qwen3-4B QLoRA + decision head) | step 6: optional keeper suggestion | HF_MODEL_URL_PLACEHOLDER |
+| retake-pair-scorer (3 cross-encoder seeds + stacker thresholds) | step 4: retake / not retake / ambiguous | [spywarex/retake-pair-scorer](https://huggingface.co/spywarex/retake-pair-scorer) |
+| retake-keeper-qwen3-4b (Qwen3-4B QLoRA + decision head) | step 6: optional keeper suggestion | [spywarex/retake-keeper-qwen3-4b](https://huggingface.co/spywarex/retake-keeper-qwen3-4b) |
 
 Both are usable without this repository through the single-file loaders in their model cards. Offline use: download the files once, or set `RETAKE_OFFLINE=1` to stop the scorer from trying to download (it then falls back to the plain stage-2 score and logs a warning).
 
@@ -72,7 +72,7 @@ To get only a subtitle file of the sentences that would be kept (nothing is cut,
 
 - **Data.** The scorer and the keeper were trained and evaluated on labelled sentences from private recordings that we do not have the right to publish. **Only the synthetic part of the data is published, so the published dataset is incomplete** and the training cannot be reproduced from this repository. See [data/synthetic/README.md](data/synthetic/README.md).
 - **Pair scorer.** On four held-out folds, with thresholds chosen on the other folds, the retake tier had precision 0.90 and recall 0.84, and 10.5% of pairs were left ambiguous. The data covers few speakers; the weakest fold had precision 0.75.
-- **Keeper model.** On 131 labelled groups (one model per outer fold; folds 3 and 4 were also the set the recipe was tuned on) the fine-tuned model alone gets the exact keeper set right in 114 groups, the keep-last baseline in 117 and the hosted Groq model in 108. The model is statistically tied with Groq and does not beat keep-last. The default "hybrid" (model plus rules such as the keep-last fallback) scores 118 of 131, but its rules were chosen after seeing these results, so treat that number as optimistic. A final model trained on all 131 groups has no held-out estimate; its accuracy on its own training groups is not a performance figure. Charts: [docs/figures/](docs/figures/).
+- **Keeper model.** On 131 labelled groups (one model per outer fold; folds 3 and 4 were also the set the recipe was tuned on) the fine-tuned model alone gets the exact keeper set right in 114 groups, the keep-last baseline in 117 and the hosted Groq model in 108. Against Groq and against keep-last the paired bootstrap intervals touch or cross zero (see `docs/figures/f3_paired_differences.png`), so there is no reliable difference from either: the model is on par with Groq and does not beat keep-last. The default "hybrid" (model plus rules such as the keep-last fallback) scores 118 of 131, but its rules were chosen after seeing these results, so treat that number as optimistic. A final model trained on all 131 groups has no held-out estimate; its accuracy on its own training groups is not a performance figure. Charts: [docs/figures/](docs/figures/).
 - **Cut modes** are editing choices, not accuracy claims.
 
 ## Tests

@@ -4,8 +4,8 @@ No weights are stored in git. Two trained models are used, both published on the
 
 | Model | Where it is used | Size | Link |
 |---|---|---|---|
-| retake-pair-scorer | step 4, `models/final/final_scorer.py` | about 270 MB (3 cross-encoder seeds) | HF_PAIR_SCORER_URL_PLACEHOLDER |
-| retake-keeper-qwen3-4b | step 6, optional keeper | about 3.5 GB | HF_MODEL_URL_PLACEHOLDER |
+| retake-pair-scorer | step 4, `models/final/final_scorer.py` | about 270 MB (3 cross-encoder seeds) | [spywarex/retake-pair-scorer](https://huggingface.co/spywarex/retake-pair-scorer) |
+| retake-keeper-qwen3-4b | step 6, optional keeper | about 3.5 GB | [spywarex/retake-keeper-qwen3-4b](https://huggingface.co/spywarex/retake-keeper-qwen3-4b) |
 
 ## Pair scorer
 
