@@ -1,10 +1,10 @@
-"""Configuration for the review documents (candidates / groups) the editor (SimpleCut) reads. See backend-handoff.md, schema simplecut.retakes/2."""
+"""Configuration for the review documents (candidates / groups) the editor (Retake Editor) reads. See backend-handoff.md, schema retake-editor.retakes/2."""
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
-SCHEMA = "simplecut.retakes/2"
+SCHEMA = "retake-editor.retakes/2"
 STAGE_CANDIDATES = "candidates"
 STAGE_GROUPS = "groups"
 GENERATOR_NAME = "retake"

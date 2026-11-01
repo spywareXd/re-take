@@ -1,7 +1,7 @@
-# ReTake backend: overview for the frontend (SimpleCut)
+# ReTake backend: overview for the frontend (Retake Editor)
 
 What the backend does, how it is built, what already exists and where, and exactly how the editor connects to it.
-Companion documents: `backend-handoff.md` (the editor-side contract, schema `simplecut.retakes/2`) and `docs/frontend_integration/cut_modes.md`.
+Companion documents: `backend-handoff.md` (the editor-side contract, schema `retake-editor.retakes/2`) and `docs/frontend_integration/cut_modes.md`.
 This file is the source of truth for what the **service actually does today**; where it differs from `backend-handoff.md`, the differences are listed in section 6.
 
 ## 1. The one-paragraph version
@@ -95,7 +95,7 @@ An unknown or unavailable `keeper_provider` -> 400 with the reason; providers ar
 first (400 `This file has not been analysed yet...` otherwise). Ranges are in file time; see `cut_modes.md` for what each mode removes.
 
 ### Document shapes
-Exactly the handoff shapes (`schema: "simplecut.retakes/2"`), plus these fields, which the editor may ignore **except** where noted:
+Exactly the handoff shapes (`schema: "retake-editor.retakes/2"`), plus these fields, which the editor may ignore **except** where noted:
 
 | Where | Field | Meaning |
 |---|---|---|

@@ -1,4 +1,4 @@
-"""FastAPI app: the local retake service for the SimpleCut editor (backend-handoff.md section 3, schema simplecut.retakes/2). 127.0.0.1, no auth."""
+"""FastAPI app: the local retake service for the Retake Editor editor (backend-handoff.md section 3, schema retake-editor.retakes/2). 127.0.0.1, no auth."""
 from __future__ import annotations
 
 import logging

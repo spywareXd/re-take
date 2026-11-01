@@ -1,6 +1,6 @@
 # Service
 
-A local FastAPI service that runs the pipeline for the SimpleCut editor. It listens on `127.0.0.1` only and keeps its state on disk.
+A local FastAPI service that runs the pipeline for the Retake Editor editor. It listens on `127.0.0.1` only and keeps its state on disk.
 
 ```
 uv run python -m service [--host 127.0.0.1] [--port 8765]
@@ -32,7 +32,7 @@ Long jobs return `202 {"job": "..."}`; poll `GET /v1/jobs/{job}` or follow the p
 | `POST /v1/work/reset`, `POST /v1/work/restore` | set transcription or keeper results aside, bring them back (nothing is deleted) |
 | `GET /v1/export/options`, presets, `POST /v1/export` | export presets, render and verify the output |
 
-The full contract (every field, status codes, how the editor uses each) is in [../docs/api/backend_contract.md](../docs/api/backend_contract.md); a shorter form is [../docs/api/retake_contract.md](../docs/api/retake_contract.md), and the cut modes are in [../docs/api/cut_modes.md](../docs/api/cut_modes.md). Sample documents the editor tests read are in `../simplecut/docs/examples/`.
+The full contract (every field, status codes, how the editor uses each) is in [../docs/api/backend_contract.md](../docs/api/backend_contract.md); a shorter form is [../docs/api/retake_contract.md](../docs/api/retake_contract.md), and the cut modes are in [../docs/api/cut_modes.md](../docs/api/cut_modes.md). Sample documents the editor tests read are in `../retake-editor/docs/examples/`.
 
 ## Project folders
 

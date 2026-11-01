@@ -1,5 +1,5 @@
 """
-Builders for the editor's review documents (backend-handoff.md, schema "simplecut.retakes/2"):
+Builders for the editor's review documents (backend-handoff.md, schema "retake-editor.retakes/2"):
 
     build_candidates(...)  sentences + pairs (likely / ambiguous) from scored pairs; the unsure band decides which pairs are asked
     build_groups(...)      groups from the ECHOED candidates document alone + the user's labels (no model, no earlier job state)

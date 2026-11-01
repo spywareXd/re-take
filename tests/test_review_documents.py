@@ -1,4 +1,4 @@
-"""Backend handoff (schema simplecut.retakes/2): unsure band, constrained clustering, stable ids + cache, builders vs validator."""
+"""Backend handoff (schema retake-editor.retakes/2): unsure band, constrained clustering, stable ids + cache, builders vs validator."""
 from __future__ import annotations
 
 import json

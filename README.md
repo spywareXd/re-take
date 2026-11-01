@@ -5,7 +5,7 @@ re-take finds the retakes in a spoken recording: the places where a speaker stum
 This repository has two parts:
 
 - **The retake pipeline** (Python, `pipeline/`, `models/`, `service/`): transcription, sentence splitting, retake detection, grouping, an optional "which take to keep" suggestion, and a local HTTP service.
-- **SimpleCut** (Rust, `simplecut/`): a small video editor that uses the service. You review the groups, tick the sentences to keep, and everything not kept is cut in one undoable step.
+- **Retake Editor** (Rust, `retake-editor/`): a small video editor that uses the service. You review the groups, tick the sentences to keep, and everything not kept is cut in one undoable step.
 
 ## How it works
 
@@ -66,7 +66,7 @@ To get only a subtitle file of the sentences that would be kept (nothing is cut,
 
 ## Service and editor
 
-`uv run python -m service` starts the local service on `127.0.0.1:8765`. The editor talks to it over HTTP: [service/README.md](service/README.md), contract in [docs/api/](docs/api/). The editor is built with Cargo: [simplecut/README.md](simplecut/README.md).
+`uv run python -m service` starts the local service on `127.0.0.1:8765`. The editor talks to it over HTTP: [service/README.md](service/README.md), contract in [docs/api/](docs/api/). The editor is built with Cargo: [retake-editor/README.md](retake-editor/README.md).
 
 ## What the data and results do and do not show
 
@@ -86,7 +86,7 @@ To get only a subtitle file of the sentences that would be kept (nothing is cut,
 | `pipeline/` | the eight pipeline steps |
 | `models/` | data models, the final pair scorer, thresholds |
 | `service/` | local FastAPI service for the editor |
-| `simplecut/` | the Rust editor |
+| `retake-editor/` | the Rust editor |
 | `training/`, `data/training/` | training and evaluation scripts (they need the private data) |
 | `data/synthetic/` | the published synthetic data and its generators |
 | `docs/` | pipeline notes, API contract, figures, screenshots |

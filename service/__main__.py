@@ -20,7 +20,7 @@ def main() -> None:
     load_dotenv(REPO / ".env")
     cfg = ServiceConfig.from_env()
     logfile = setup_logging(cfg.data_dir)
-    ap = argparse.ArgumentParser(description="Local retake service for SimpleCut")
+    ap = argparse.ArgumentParser(description="Local retake service for Retake Editor")
     ap.add_argument("--host", default=cfg.host)
     ap.add_argument("--port", type=int, default=cfg.port)
     args = ap.parse_args()

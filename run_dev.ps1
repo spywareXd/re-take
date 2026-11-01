@@ -1,9 +1,9 @@
-# Start the retake service and the SimpleCut editor together.
+# Start the retake service and the Retake Editor editor together.
 #   .\run_dev.ps1              real service (LLM keys from .env, Groq by default), editor connected to it
 #   .\run_dev.ps1 -Llm gemini  use another provider (groq | gemini | openai | auto)
 #   .\run_dev.ps1 -MockLlm     "Ask AI" answers from a mock, no key or network
 #   .\run_dev.ps1 -Release     run the optimised editor build (slower to build, smoother to use)
-#   .\run_dev.ps1 -ServiceOnly just the service (open the editor yourself with SIMPLECUT_RETAKE_URL=1)
+#   .\run_dev.ps1 -ServiceOnly just the service (open the editor yourself with RETAKE_EDITOR_SERVICE_URL=1)
 # Closing the editor stops the service.
 param(
     [ValidateSet('groq', 'gemini', 'openai', 'auto')][string]$Llm = 'groq',   # which LLM answers "Ask AI" (auto = first key found: gemini, groq, openai)
@@ -53,10 +53,10 @@ try {
         Write-Host "Service only. Press Ctrl+C to stop."
         if ($service) { $service.WaitForExit() }
     } else {
-        $env:SIMPLECUT_RETAKE_URL = $url
-        Push-Location (Join-Path $root 'simplecut')
+        $env:RETAKE_EDITOR_SERVICE_URL = $url
+        Push-Location (Join-Path $root 'retake-editor')
         try {
-            if ($Release) { cargo run --release -p simplecut } else { cargo run -p simplecut }
+            if ($Release) { cargo run --release -p retake-editor } else { cargo run -p retake-editor }
         } finally { Pop-Location }
     }
 } finally {

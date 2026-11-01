@@ -1,7 +1,7 @@
 [project]
 name = "re-take"
 version = "0.1.0"
-description = "Find and group retakes (repeated sentences) in spoken video, with a local service for the SimpleCut editor"
+description = "Find and group retakes (repeated sentences) in spoken video, with a local service for the Retake Editor editor"
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]

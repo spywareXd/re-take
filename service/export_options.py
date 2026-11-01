@@ -264,13 +264,13 @@ PRESET_KEYS = ("video", "resolution", "fps", "audio")
 
 
 def user_config_dir() -> Path:
-    """Per-user (not per-project) settings: RETAKE_USER_DIR, else SIMPLECUT_DATA_DIR (the editor's folder), else %APPDATA%\\SimpleCut, else ~/.config/simplecut."""
-    for var in ("RETAKE_USER_DIR", "SIMPLECUT_DATA_DIR"):
+    """Per-user (not per-project) settings: RETAKE_USER_DIR, else RETAKE_EDITOR_DATA_DIR (the editor's folder), else %APPDATA%\\Retake Editor, else ~/.config/retake-editor."""
+    for var in ("RETAKE_USER_DIR", "RETAKE_EDITOR_DATA_DIR"):
         if os.environ.get(var):
             return Path(os.environ[var])
     if os.environ.get("APPDATA"):
-        return Path(os.environ["APPDATA"]) / "SimpleCut"
-    return Path.home() / ".config" / "simplecut"
+        return Path(os.environ["APPDATA"]) / "RetakeEditor"
+    return Path.home() / ".config" / "retake-editor"
 
 
 def presets_path() -> Path:

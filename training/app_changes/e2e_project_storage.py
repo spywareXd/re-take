@@ -7,7 +7,7 @@ Output: runs/app_changes_e2e_<timestamp>/  (a NEW folder; refuses an existing on
   MyProject/            the throwaway project (MyProject/data/...)
   fs_diff.json          what changed outside the project folder (must be empty)
   summary.json
-Snapshot scope: the whole repo (names, sizes, mtimes) except .git, .venv, simplecut/target, __pycache__ and the new run folder, plus the system temp folder
+Snapshot scope: the whole repo (names, sizes, mtimes) except .git, .venv, retake-editor/target, __pycache__ and the new run folder, plus the system temp folder
 entries whose name starts with 'retake' or '_temp'. Global caches that are not project data (Hugging Face model cache, user config) are outside the scope on purpose.
 """
 import argparse

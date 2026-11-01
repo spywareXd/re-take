@@ -1,0 +1,48 @@
+{
+  "schema": "retake-editor.retakes/1",
+  "media": { "path": "C:/videos/take1.mp4", "duration_seconds": 60.0 },
+  "generator": { "name": "retake", "version": "0.3.0", "model": "whisperx-large-v2 + gemini-2.5-flash" },
+  "transcript": {
+    "language": "en",
+    "words": [
+      { "text": "So", "start": 12.34, "end": 12.5, "confidence": 0.98 },
+      { "text": "today", "start": 12.5, "end": 12.9, "confidence": 0.97 }
+    ]
+  },
+  "proposals": [
+    {
+      "id": "span_0:0",
+      "start": 12.34,
+      "end": 15.8,
+      "confidence": 0.93,
+      "decision": "remove",
+      "reason": "Same sentence restarted; the later take is complete.",
+      "removed_text": "So today we're going to, um, so today we are going to",
+      "kept_text": "So now we are going to learn about editing.",
+      "kept_start": 15.8,
+      "kept_end": 19.2,
+      "source": "llm",
+      "group": "span_0"
+    },
+    {
+      "id": "span_1:0",
+      "start": 31.0,
+      "end": 33.5,
+      "confidence": 0.5,
+      "decision": "review",
+      "reason": "Similar wording, but it may be a deliberate repeat.",
+      "removed_text": "and that is the key idea",
+      "kept_text": "and that is the key idea of the whole video",
+      "source": "llm",
+      "group": "span_1"
+    },
+    {
+      "id": "span_2:0",
+      "start": 44.0,
+      "end": 45.2,
+      "confidence": 0.88,
+      "source": "stage2",
+      "group": "span_2"
+    }
+  ]
+}

@@ -1,6 +1,6 @@
 # App changes: models, progress, silence gap, exports, project folders
 
-The "app" is the SimpleCut editor (`simplecut/`, Rust/egui) plus the Python retake service (`service/`). The service does the work and keeps
+The "app" is the Retake Editor editor (`retake-editor/`, Rust/egui) plus the Python retake service (`service/`). The service does the work and keeps
 its data; the editor shows the settings, asks before replacing anything, and sends the choices.
 
 ## What changed, per item
@@ -78,7 +78,7 @@ without a wait over 0.5 s.
 | Codec | H.264, H.265 | NVENC offered only if ffmpeg lists the encoder **and** a test encode works |
 | Quality | CRF presets draft / standard / high (x264 28 / 23 / 18, x265 32 / 28 / 23), explicit CRF 0 to 51, or bitrate 100 to 200000 kbps | encoder speed ultrafast to veryslow |
 | Audio | AAC 64 to 512 kbps; crossfade at cuts 0 to 100 ms (default 15 ms = `CutConfig.fade_ms`, the pipeline's own setting); loudness normalisation off by default | the cut uses the pipeline's own `build_concat_filter` |
-| Presets | Match Source, YouTube 1080p, YouTube 4K, Shorts / Reels / TikTok, Draft / Preview, and your own | yours are saved in the user config (`%APPDATA%\SimpleCut\export_presets.json`, or `RETAKE_USER_DIR`), not in the project |
+| Presets | Match Source, YouTube 1080p, YouTube 4K, Shorts / Reels / TikTok, Draft / Preview, and your own | yours are saved in the user config (`%APPDATA%\RetakeEditor\export_presets.json`, or `RETAKE_USER_DIR`), not in the project |
 | Other exports | audio only (MP3, WAV), subtitles of the kept text (SRT, VTT, timings on the cut timeline), cut list (EDL, JSON), transcript (TXT, JSON) | |
 
 Assumptions (Filmcraft's built-in presets are documented in `filmcraft/crates/export/src/presets.rs`): the list follows its "Match Source", "Web & Social" and "Audio Only" groups where
@@ -95,7 +95,7 @@ CRF instead of Filmcraft's fixed 16 / 45 Mbps. EDL timecode is non-drop-frame at
 | Silence gap (0.7 s) and its range | `PAUSE_SPLIT_THRESHOLD_SECONDS` in `pipeline/step_03_token_matching/config.py`; `SILENCE_MIN_S / MAX_S / STEP_S` in `service/app.py` |
 | Export presets, CRF values, option ranges | `BUILTIN_PRESETS`, `CRF_PRESETS` and the range constants in `service/export_options.py` |
 | Crossfade at cuts (15 ms) | `CutConfig.fade_ms` in `pipeline/step_08_video_edit/cut_config.py` |
-| Button colours / sizes | `HOVER_LIGHTEN`, `PRESSED_DARKEN`, `PRIMARY_W`, `PRIMARY_H` in `simplecut/crates/ui/src/toolbar.rs`; the accent is `theme::DARK.accent` |
+| Button colours / sizes | `HOVER_LIGHTEN`, `PRESSED_DARKEN`, `PRIMARY_W`, `PRIMARY_H` in `retake-editor/crates/ui/src/toolbar.rs`; the accent is `theme::DARK.accent` |
 
 ## Known limits
 
@@ -105,7 +105,7 @@ CRF instead of Filmcraft's fixed 16 / 45 Mbps. EDL timecode is non-drop-frame at
 - **VFR detection** looks at the first 400 packets and at `r_frame_rate` vs `avg_frame_rate`.
 - **Editor against the real service** is not tested end to end: the editor tests use scripted service doubles, the client is tested against a mock HTTP server, and the service is tested through its API. The export options fixture is a capture of the real service's reply.
 - **Without a project folder** (an unsaved or old project) the service falls back to its old locations, and the extracted audio is written next to the video as before.
-- **Still outside the project folder, by design:** the service's own log (`service/data/logs/service.log`), the editor's crash-recovery autosave (`%APPDATA%\SimpleCut`), the Hugging Face and torch model caches, and the user's export presets.
+- **Still outside the project folder, by design:** the service's own log (`service/data/logs/service.log`), the editor's crash-recovery autosave (`%APPDATA%\RetakeEditor`), the Hugging Face and torch model caches, and the user's export presets.
 - **`max_absorb_s`** of the cut modes still imports the 0.7 s constant; changing the silence gap does not change it.
 - **Cold `GET /v1/capabilities`** can take tens of seconds the first time (the keeper availability check loads its libraries). That check is the keeper's and was not changed.
 - The existing core test `export_to_unwritable_path_fails_cleanly` assumes the drive `X:` does not exist; on a machine with an `X:` drive it exports a real file there (it did here: `X:\cannot\exist\rendered.mp4`). It is skipped in the runs for this work and was not changed.

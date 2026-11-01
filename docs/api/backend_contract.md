@@ -1,7 +1,7 @@
 # Backend handoff: the retake service
 
 For whoever builds the Python side (the retake pipeline with the trained cross-encoder). The editor
-(SimpleCut, Rust/egui) is finished on its side of the contract and tested against a fake service;
+(Retake Editor, Rust/egui) is finished on its side of the contract and tested against a fake service;
 **the real HTTP client in the editor is not written yet** (see section 9). Everything here is what the
 backend must provide so that client can be a thin layer.
 
@@ -148,14 +148,14 @@ Result: a job whose `done` result is **refined ranges** (4.5): `{"ranges": [{"st
 
 ## 4. Data models
 
-Schema string everywhere: `"schema": "simplecut.retakes/2"`. Unknown extra fields are ignored; missing
+Schema string everywhere: `"schema": "retake-editor.retakes/2"`. Unknown extra fields are ignored; missing
 required fields drop the entry (section 6).
 
 ### 4.1 Candidates (`"stage": "candidates"`)
 Example: `docs/examples/retake-candidates.json` (14 sentences, 9 pairs, 4 ambiguous).
 ```json
 {
-  "schema": "simplecut.retakes/2",
+  "schema": "retake-editor.retakes/2",
   "stage": "candidates",
   "job": "j_8f3a",
   "media": { "path": "C:/videos/take1.mp4", "duration_seconds": 60.0 },
@@ -211,7 +211,7 @@ Example: `docs/examples/retake-labels.json`.
 Example: `docs/examples/retake-groups.json` (6 groups).
 ```json
 {
-  "schema": "simplecut.retakes/2",
+  "schema": "retake-editor.retakes/2",
   "stage": "groups",
   "job": "j_8f3a",
   "media": { "path": "C:/videos/take1.mp4", "duration_seconds": 60.0 },
@@ -268,7 +268,7 @@ Example: `docs/examples/retake-adjudication.json`.
 `{ "adjudicate": true, "refine": true }` (section 3).
 
 ### 4.7 Local files the editor writes (read them if useful for training)
-- `labels.jsonl` (in the SimpleCut data dir, `%APPDATA%\SimpleCut`): one object per user answer **before
+- `labels.jsonl` (in the Retake Editor data dir, `%APPDATA%\RetakeEditor`): one object per user answer **before
   it is sent**:
   `{"time": <unix s>, "job", "pair", "label": "retake"|"different", "source": "user", "a": {"id","text","start","end"}, "b": {...}, "score"}`.
 - `span_edits.jsonl` (see `HANDOFF.md` section 16): `{"time","job","sentence","old":{start,end},"new":{start,end},"source":"user"}`
@@ -349,14 +349,14 @@ Backend (this document):
 
 Editor (not backend, listed so nobody assumes it exists): an HTTP implementation of the `RetakeService`
 trait (`analyze`, `resolve`, `adjudicate`, `capabilities`) that speaks section 3, with timeouts, a
-background poll thread per job, and cancel. Until it exists, `SIMPLECUT_FAKE_RETAKES=1` runs the fake
+background poll thread per job, and cancel. Until it exists, `RETAKE_EDITOR_FAKE_RETAKES=1` runs the fake
 service, and "open analysis file" (Ctrl+Shift+R) loads a hand-made candidates or groups file, which is
 also the quickest way to test your output without any HTTP at all.
 
 ## 10. How to test your output today (no HTTP needed)
 
 1. Produce a candidates or groups JSON for a real file.
-2. Open SimpleCut, import the same video, put it on the timeline.
+2. Open Retake Editor, import the same video, put it on the timeline.
 3. Press Ctrl+Shift+R and pick your file. A candidates file opens the Questions step; a groups file opens
    the Review step.
 4. Dropped entries are reported ("N unusable entries ignored"). A refusal message names the reason.

@@ -1,0 +1,16 @@
+[package]
+name = "retake-editor-service"
+description = "Retake Editor's HTTP client for the local retake service (docs/backend-handoff.md)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+retake-editor-core = { workspace = true }
+serde_json = { workspace = true }
+log = { workspace = true }
+ureq = { workspace = true }

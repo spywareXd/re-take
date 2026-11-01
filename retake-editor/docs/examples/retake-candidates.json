@@ -1,0 +1,34 @@
+{
+  "schema": "retake-editor.retakes/2",
+  "stage": "candidates",
+  "job": "j_8f3a",
+  "media": { "path": "C:/videos/take1.mp4", "duration_seconds": 60.0, "fingerprint": "4f1c0c6e9b7a5d2e8a3b1c9d0e7f6a5b4c3d2e1f0a9b8c7d6e5f4a3b2c1d0e9f" },
+  "generator": { "name": "retake", "version": "0.4.0" },
+  "sentences": [
+    { "id": "3:0",  "start": 4.10,  "end": 6.30,  "text": "So now we're going to learn about", "confidence": 0.95 },
+    { "id": "4:0",  "start": 7.00,  "end": 9.40,  "text": "So now we are going to learn about editing", "confidence": 0.97 },
+    { "id": "5:0",  "start": 10.20, "end": 14.60, "text": "So now we are going to learn about video editing basics.", "confidence": 0.98 },
+    { "id": "9:0",  "start": 21.50, "end": 24.00, "text": "And that is the key idea.", "confidence": 0.96 },
+    { "id": "11:0", "start": 27.30, "end": 31.80, "text": "And that is the key idea of the whole video.", "confidence": 0.97 },
+    { "id": "13:0", "start": 33.00, "end": 34.80, "text": "Let's get started.", "confidence": 0.99 },
+    { "id": "14:0", "start": 35.00, "end": 37.40, "text": "Let's get started with the first step.", "confidence": 0.98 },
+    { "id": "15:0", "start": 38.00, "end": 40.20, "text": "Click export and wait.", "confidence": 0.99 },
+    { "id": "16:0", "start": 41.00, "end": 43.10, "text": "Click export and then wait.", "confidence": 0.98 },
+    { "id": "17:0", "start": 44.00, "end": 45.50, "text": "Now open the menu.", "confidence": 0.98 },
+    { "id": "18:0", "start": 46.00, "end": 48.00, "text": "Now open the file menu.", "confidence": 0.97 },
+    { "id": "20:0", "start": 49.00, "end": 51.40, "text": "Thanks for watching.", "confidence": 0.99 },
+    { "id": "21:0", "start": 52.10, "end": 54.00, "text": "Thanks so much for watching.", "confidence": 0.97 },
+    { "id": "22:0", "start": 55.00, "end": 58.20, "text": "Thanks for watching and see you next time.", "confidence": 0.98 }
+  ],
+  "pairs": [
+    { "id": "3:0|4:0",   "a": "3:0",  "b": "4:0",  "class": "likely",    "score": 0.93, "lean": "retake" },
+    { "id": "3:0|5:0",   "a": "3:0",  "b": "5:0",  "class": "likely",    "score": 0.90, "lean": "retake" },
+    { "id": "4:0|5:0",   "a": "4:0",  "b": "5:0",  "class": "likely",    "score": 0.96, "lean": "retake" },
+    { "id": "9:0|11:0",  "a": "9:0",  "b": "11:0", "class": "ambiguous", "score": 0.58, "lean": "retake" },
+    { "id": "13:0|14:0", "a": "13:0", "b": "14:0", "class": "ambiguous", "score": 0.55, "lean": "retake" },
+    { "id": "15:0|16:0", "a": "15:0", "b": "16:0", "class": "likely",    "score": 0.89, "lean": "retake" },
+    { "id": "17:0|18:0", "a": "17:0", "b": "18:0", "class": "ambiguous", "score": 0.52, "lean": "retake" },
+    { "id": "20:0|21:0", "a": "20:0", "b": "21:0", "class": "likely",    "score": 0.91, "lean": "retake" },
+    { "id": "21:0|22:0", "a": "21:0", "b": "22:0", "class": "ambiguous", "score": 0.62, "lean": "retake" }
+  ]
+}

@@ -1,4 +1,4 @@
-# Retake contract `simplecut.retakes/2`
+# Retake contract `retake-editor.retakes/2`
 
 What the editor and the retake service (the owner's Python pipeline: transcribe, split into
 sentences, trained cross-encoder, grouping) say to each other. Examples are in `docs/examples/`.
@@ -25,7 +25,7 @@ Calls are background jobs (progress, cancel).
 
 ## Documents
 
-Every document has `schema: "simplecut.retakes/2"`, `stage`, `job`, `media {path, duration_seconds}`
+Every document has `schema: "retake-editor.retakes/2"`, `stage`, `job`, `media {path, duration_seconds}`
 and `generator {name, version, model}`.
 
 **candidates** (`docs/examples/retake-candidates.json`): `sentences[ {id,start,end,text,confidence?} ]`,
@@ -93,10 +93,10 @@ Format: JSON Lines (`application/x-ndjson`), one line per edit:
 
 ## Saved groups file
 
-The "Save groups..." button exports the current review groups (including all user-edited spans and group bounds) to a JSON document conforming to `schema: "simplecut.retakes/2"`, `stage: "groups"`:
+The "Save groups..." button exports the current review groups (including all user-edited spans and group bounds) to a JSON document conforming to `schema: "retake-editor.retakes/2"`, `stage: "groups"`:
 ```json
 {
-  "schema": "simplecut.retakes/2",
+  "schema": "retake-editor.retakes/2",
   "stage": "groups",
   "job": "fake-1",
   "media": {
@@ -104,7 +104,7 @@ The "Save groups..." button exports the current review groups (including all use
     "duration_seconds": 60.0
   },
   "generator": {
-    "name": "simplecut",
+    "name": "retake-editor",
     "version": "0.1.0"
   },
   "groups": [
@@ -126,7 +126,7 @@ The "Save groups..." button exports the current review groups (including all use
   ]
 }
 ```
-This document can be loaded back into SimpleCut at any time with Ctrl+Shift+R ("Open analysis...").
+This document can be loaded back into Retake Editor at any time with Ctrl+Shift+R ("Open analysis...").
 
 ## Additions (optional fields)
 

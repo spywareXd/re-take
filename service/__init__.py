@@ -1,1 +1,1 @@
-"""Local HTTP service for the SimpleCut editor (FastAPI). Run: python -m service"""
+"""Local HTTP service for the Retake Editor editor (FastAPI). Run: python -m service"""
