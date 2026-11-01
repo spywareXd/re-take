@@ -6,16 +6,35 @@ Rust workspace: `crates/core` (editor model, review and cut planning), `crates/s
 
 ![The editor](../docs/screenshots/editor_window.png)
 
-## Get the media crates first
+## Built on FilmCraft
 
-Retake Editor uses the FilmCraft media crates (time, frame, media, codecs, project, edit, render) as path dependencies, and they are **not** part of this repository. Clone them next to `retake-editor/` (so they are at `<repo>/filmcraft`) and check out the commit this editor was built against:
+The editing front end is built on [FilmCraft](https://github.com/storytold/filmcraft), an open-source video editor written in Rust (MIT OR Apache-2.0, copyright the ArtCraft Team and the FilmCraft contributors). Retake Editor does not copy FilmCraft's source; it depends on ten of its engine crates and puts its own, much smaller window and review workflow on top.
+
+What is used from FilmCraft:
+
+| FilmCraft crate | What Retake Editor uses it for |
+|---|---|
+| `filmcraft-engine` | the editing `Session` (command registry, undo and redo history, media pool, autosave and crash recovery); every edit goes through it |
+| `filmcraft-project` | the document model: projects, tracks and clip items. Projects are saved as FilmCraft's native `.fcproj` files |
+| `filmcraft-edit` | the pure timeline edit operations (for example `extract`, used to cut sentences out) |
+| `filmcraft-render`, `filmcraft-frame` | evaluating the timeline for preview and mixing the audio (`render_sequence`, `render_item`, `mix_sequence`, `AudioBuffer`) |
+| `filmcraft-export` | the render, encode and mux pipeline with progress and cancel, behind the Export dialog |
+| `filmcraft-media`, `filmcraft-codecs` | probing imported files and decoding the common containers and codecs |
+| `filmcraft-platform` | operating-system hardware video decoding (Media Foundation on Windows), with fallback to the pure-Rust decoders |
+| `filmcraft-time` | the exact time unit (`Tick`) used on the timeline |
+
+The window itself uses the same `egui` / `eframe` versions as FilmCraft. What Retake Editor adds is its own: the retake review (candidate pairs, groups, ticks to keep), the cut modes, the Retake options and progress panels, the HTTP client for the retake service, and the project-folder storage. FilmCraft's own UI crates and its ArtCraft branding are not used.
+
+### Get the FilmCraft crates first
+
+They are **not** part of this repository. Clone them next to `retake-editor/` (so they are at `<repo>/filmcraft`) and check out the commit this editor was built against:
 
 ```
 git clone https://github.com/storytold/filmcraft filmcraft
 git -C filmcraft checkout a504f3c5
 ```
 
-FilmCraft is licensed MIT OR Apache-2.0. The folder is git-ignored here, so it is never committed by accident. Do not edit it; moving to a newer commit is a deliberate change that needs a rebuild and a test run.
+FilmCraft is licensed MIT OR Apache-2.0; keep its `LICENSE-MIT`, `LICENSE-APACHE` and `NOTICE` files with any build you distribute. The folder is git-ignored here, so it is never committed by accident. Do not edit it; moving to a newer commit is a deliberate change that needs a rebuild and a test run.
 
 ## Build and run
 

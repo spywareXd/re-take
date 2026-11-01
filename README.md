@@ -5,7 +5,7 @@ re-take finds the retakes in a spoken recording: the places where a speaker stum
 This repository has two parts:
 
 - **The retake pipeline** (Python, `pipeline/`, `models/`, `service/`): transcription, sentence splitting, retake detection, grouping, an optional "which take to keep" suggestion, and a local HTTP service.
-- **Retake Editor** (Rust, `retake-editor/`): a small video editor that uses the service. You review the groups, tick the sentences to keep, and everything not kept is cut in one undoable step.
+- **Retake Editor** (Rust, `retake-editor/`): a small video editor that uses the service. Its editing engine is the open-source [FilmCraft](https://github.com/storytold/filmcraft) (MIT OR Apache-2.0); see [retake-editor/README.md](retake-editor/README.md#built-on-filmcraft). You review the groups, tick the sentences to keep, and everything not kept is cut in one undoable step.
 
 ## How it works
 
@@ -96,4 +96,4 @@ To get only a subtitle file of the sentences that would be kept (nothing is cut,
 
 MIT, see [LICENSE](LICENSE). To cite, see [CITATION.cff](CITATION.cff).
 
-Built on faster-whisper / WhisperX, sentence-transformers (`all-MiniLM-L6-v2`), `cross-encoder/ms-marco-MiniLM-L-6-v2`, Qwen3-4B-Instruct-2507, Cloudflare's Clef decision head (Apache-2.0) and the FilmCraft media crates (MIT OR Apache-2.0).
+Built on faster-whisper / WhisperX, sentence-transformers (`all-MiniLM-L6-v2`), `cross-encoder/ms-marco-MiniLM-L-6-v2`, Qwen3-4B-Instruct-2507, Cloudflare's Clef decision head (Apache-2.0) and FilmCraft, the video-editing engine under the editor (MIT OR Apache-2.0, ArtCraft Team and FilmCraft contributors).
