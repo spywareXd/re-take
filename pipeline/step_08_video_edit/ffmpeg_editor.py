@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Sequence, Union
 
 from pipeline.step_05_cutlist.schemas import CutList, TimeSpan
+from pipeline.step_08_video_edit.ffmpeg_compat import filter_graph_file_args
 
 logger = logging.getLogger(__name__)
 
@@ -204,7 +205,7 @@ def _edit_single_pass(input_p: Path, spans: Sequence[TimeSpan], output_p: Path, 
     args = ["-y"]
     for s in spans:
         args += ["-ss", f"{s.start:.3f}", "-t", f"{s.duration:.3f}", "-i", str(input_p)]
-    args += ["-filter_complex_script", str(script), "-map", "[outv]"]
+    args += filter_graph_file_args(script) + ["-map", "[outv]"]
     if has_audio:
         args += ["-map", "[outa]"]
     args += ["-c:v", "libx264", "-preset", "fast", "-crf", "18"]

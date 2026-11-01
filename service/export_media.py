@@ -16,6 +16,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any, Callable, Optional, Sequence
 
+from pipeline.step_08_video_edit.ffmpeg_compat import filter_graph_file_args
 from .export_options import (OptionError, plan_audio, plan_fps, plan_resolution, plan_video)
 
 MIN_KEEP_S = 0.04                       # a kept sliver shorter than this (about one frame) is dropped
@@ -198,7 +199,7 @@ def build_render_command(info: VideoInfo, keeps: Sequence[tuple[float, float]], 
     args = ["-y", "-hide_banner", "-nostats", "-progress", "pipe:1"]
     for s, e in keeps:
         args += ["-ss", f"{s:.3f}", "-t", f"{e - s:.3f}", "-i", str(info.path)]
-    args += ["-filter_complex_script", str(script), "-map", "[ov]"] + (["-map", "[oa]"] if has_audio else [])
+    args += filter_graph_file_args(script) + ["-map", "[ov]"] + (["-map", "[oa]"] if has_audio else [])
     args += list(vid.args) + ["-fps_mode", fps.fps_mode_arg]
     if has_audio:
         args += ["-c:a", aud.codec, "-b:a", f"{aud.bitrate_kbps}k"]
@@ -276,7 +277,7 @@ def render_audio(info: VideoInfo, keeps: Sequence[tuple[float, float]], out: Pat
     args = ["-y", "-hide_banner", "-nostats", "-progress", "pipe:1"]
     for s, e in keeps:
         args += ["-ss", f"{s:.3f}", "-t", f"{e - s:.3f}", "-i", str(info.path)]
-    args += ["-filter_complex_script", str(script), "-map", "[oa]"]
+    args += filter_graph_file_args(script) + ["-map", "[oa]"]
     args += ["-c:a", "libmp3lame", "-b:a", f"{aud.bitrate_kbps}k"] if fmt == "mp3" else ["-c:a", "pcm_s16le"]
     args.append(str(out))
     try:
