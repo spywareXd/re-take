@@ -62,6 +62,8 @@ uv run python -m pipeline.run_pipeline path/to/video.mp4 --cut-mode anchored
 
 Useful flags: `--provider whisperx|whisper|assemblyai`, `--model large-v2`, `--device cuda|cpu`, `--keeper-provider finetuned|gpt-oss|keep-last`, `--cut-mode sentences|anchored|retake_only`. The keeper step needs either the local keeper model or an API key in `.env` (`GEMINI_API_KEY`, `GROQ_API_KEY`); with `--keeper-provider keep-last` nothing external is used. See [service/README.md](service/README.md) and [docs/api/cut_modes.md](docs/api/cut_modes.md).
 
+To get only a subtitle file of the sentences that would be kept (nothing is cut, the timeline is not shortened): `uv run python -m pipeline.export_keeper_srt path/to/video.mp4`.
+
 ## Service and editor
 
 `uv run python -m service` starts the local service on `127.0.0.1:8765`. The editor talks to it over HTTP: [service/README.md](service/README.md), contract in [docs/api/](docs/api/). The editor is built with Cargo: [simplecut/README.md](simplecut/README.md).
